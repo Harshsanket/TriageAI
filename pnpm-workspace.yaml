@@ -1,0 +1,8 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 12 blocks dependency build scripts by default. esbuild (via Vite)
+# needs its postinstall to install the correct platform binary.
+allowBuilds:
+  esbuild: true

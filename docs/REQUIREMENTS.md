@@ -18,11 +18,11 @@ Success means: high automated-resolution rate for routine tickets, near-zero uns
 
 ## 2. Personas
 
-| Persona | Goals |
-| --- | --- |
-| **Customer** | Create tickets, track status, read/reply to responses, confirm whether a proposed solution worked |
+| Persona           | Goals                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------- |
+| **Customer**      | Create tickets, track status, read/reply to responses, confirm whether a proposed solution worked  |
 | **Support agent** | Work a queue of human-review tickets with full AI context, reply, correct classifications, resolve |
-| **Administrator** | Manage users/agents, categories, routing policies, knowledge base, integrations, settings |
+| **Administrator** | Manage users/agents, categories, routing policies, knowledge base, integrations, settings          |
 
 ## 3. Functional requirements
 
@@ -30,7 +30,7 @@ Success means: high automated-resolution rate for routine tickets, near-zero uns
 
 - FR-1.1 Customers can register/log in and create tickets (title, description). **Attachments (screenshots, images, PDFs) are deferred for v1** — text-only tickets. The data model and APIs must reserve room for attachments later (e.g. an `TicketAttachment` entity/interface stub) without implementing upload now.
 - FR-1.2 System validates input, generates a unique ticket ID, stores the original ticket with status `OPEN`, and enqueues asynchronous processing. Ticket creation must be idempotent (no duplicate tickets from retries).
-- FR-1.3 Customers can view their ticket history, current status, full conversation, and classification summary (plain-language category, not internal scores). *(Ticket detail APIs/UI leave room for a future attachments list without exposing upload yet.)*
+- FR-1.3 Customers can view their ticket history, current status, full conversation, and classification summary (plain-language category, not internal scores). _(Ticket detail APIs/UI leave room for a future attachments list without exposing upload yet.)_
 - FR-1.4 Customers can reply to a ticket at any point.
 - FR-1.5 After an automated reply, the customer can confirm "this solved my issue" or "still need help". Confirmation → `RESOLVED`; still-need-help → escalate to human (`HUMAN_REVIEW`) — the system must not re-send the same failed solution.
 - FR-1.6 If a customer opens a new ticket about an same/overlapping issue, the system links it to prior tickets (Phase 7 deduplication; basic manual visibility earlier).
@@ -58,7 +58,7 @@ Success means: high automated-resolution rate for routine tickets, near-zero uns
 
 - FR-4.1 Admins can upload/approve knowledge-base documents: product docs, FAQs, troubleshooting guides, known issues, verified resolved tickets (approved by agents).
 - FR-4.2 Ingestion pipeline: extract text → chunk → embed → store in pgvector with metadata (doc id, section, version, approved flag).
-- FR-4.3 For an eligible ticket: embed ticket → semantic search top-k chunks → **sufficiency check** (score margin / threshold) → if insufficient, escalate *without* calling the LLM → else build grounded prompt with retrieved context → generate response.
+- FR-4.3 For an eligible ticket: embed ticket → semantic search top-k chunks → **sufficiency check** (score margin / threshold) → if insufficient, escalate _without_ calling the LLM → else build grounded prompt with retrieved context → generate response.
 - FR-4.4 Generated responses must be **grounded**: the model may only use retrieved information; no invented troubleshooting steps. Prompt design treats ticket text and retrieved docs as untrusted data (prompt-injection defenses, see FR-8).
 - FR-4.5 **Response validation before send** (deterministic where possible): retrieved-context support check (e.g. NLI/overlap heuristics + citation presence), policy checks (no promises of refunds, no security advice beyond policy, no PII leakage), and quality gates. On failure → escalate, do not send.
 - FR-4.6 Validated reply is sent to the customer; ticket → `AWAITING_CUSTOMER`. Automated reply never auto-resolves the ticket (FR-1.5).
@@ -103,7 +103,7 @@ States: `OPEN → CLASSIFYING → ROUTING → RAG_PROCESSING → AWAITING_CUSTOM
 ### FR-10 Extensibility (designed-for in Phase 1, built in Phases 7–8)
 
 - **Advanced classifier:** priority (P0–P3 by impact/severity/urgency/availability — not keywords/tone), technical category (frontend/backend/db/infra/auth/payment/security/performance), team assignment (configurable mapping; ambiguous → manual triage).
-- **Integrations:** GitHub issue creation (structured: title, description, repro steps *only if present in ticket*, labels, ticket link; duplicate detection before create), Slack notifications (configurable policy: critical = immediate, others batched/reviewed), bidirectional status sync with conflict rules, human approval gates for high-impact actions, full audit of attempts/failures.
+- **Integrations:** GitHub issue creation (structured: title, description, repro steps _only if present in ticket_, labels, ticket link; duplicate detection before create), Slack notifications (configurable policy: critical = immediate, others batched/reviewed), bidirectional status sync with conflict rules, human approval gates for high-impact actions, full audit of attempts/failures.
 - Corrections by agents (category, priority, team) recorded as labeled data for model improvement.
 
 ### FR-11 Observability & metrics
@@ -138,5 +138,5 @@ States: `OPEN → CLASSIFYING → ROUTING → RAG_PROCESSING → AWAITING_CUSTOM
 2. **Cost efficiency** — zero LLM tokens for routing; zero per-token inference cost overall (all-local AI); RAG only when eligible and retrieval is sufficient.
 3. **Testability** — every rule unit-testable; ML measurable.
 4. **Maintainability** — small modules, explicit types, no speculative abstraction.
-5. **Learnability** — each phase teaches a concrete skill; comments/docs explain *why*.
+5. **Learnability** — each phase teaches a concrete skill; comments/docs explain _why_.
 6. **Performance** — classify < 500ms p95 target; full auto-resolution path measured, not guessed.

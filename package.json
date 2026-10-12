@@ -1,0 +1,28 @@
+{
+  "name": "triageai",
+  "private": true,
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "build": "pnpm --filter \"./apps/*\" build",
+    "test": "pnpm --filter \"./apps/*\" test && pnpm test:python",
+    "test:ts": "pnpm --filter \"./apps/*\" test",
+    "test:python": "uv --directory apps/ai-service run pytest",
+    "lint": "eslint .",
+    "typecheck": "pnpm --filter \"./apps/*\" typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  }
+}

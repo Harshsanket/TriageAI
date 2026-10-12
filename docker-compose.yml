@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: triageai-postgres
+    environment:
+      POSTGRES_USER: triageai
+      POSTGRES_PASSWORD: triageai
+      POSTGRES_DB: triageai
+    ports:
+      - '5432:5432'
+    volumes:
+      - triageai-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U triageai -d triageai']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: triageai-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  triageai-pgdata:

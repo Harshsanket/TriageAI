@@ -25,6 +25,7 @@ out/
 *.tsbuildinfo
 .npm
 .pnpm-store/
+coverage/
 
 # Environment / secrets
 .env
