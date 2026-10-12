@@ -34,6 +34,7 @@ Phased, vertical-slice delivery. Each phase: goal → deliverables → acceptanc
 - Agent queue view (basic list + detail) and customer ticket list/detail with status timeline.
 - Audit events for classification + routing + transitions.
 - Seeded demo data script (users, exemplars, sample tickets).
+- **Classification evaluation from day one (Phase 1, not later):** small labeled fixture set (≈10–20 examples/category, including safety-critical categories), evaluation script producing per-category precision/recall/F1 + confusion matrix; **safety metric: false-auto-routing rate** — tickets that must go to human (security, refunds, account, unknown, low-confidence) but were classified/routed as automation-eligible. This is treated as a critical reliability metric, not a nice-to-have.
 
 **AC:**
 - Creating a ticket with known-troubleshooting wording → classified with correct category, routed to `HUMAN_REVIEW` (RAG not built yet), visible to customer & agent with classification summary.
@@ -41,6 +42,7 @@ Phased, vertical-slice delivery. Each phase: goal → deliverables → acceptanc
 - Ambiguous gibberish ticket → `unknown`/low confidence → human.
 - Classification returns < 500ms p95 on CPU for a 500-char ticket (measured in test).
 - State machine rejects illegal transitions (property-style tests for the transition table).
+- Eval script runs in CI (report artifact); **false-auto-routing rate on the fixture set = 0 for safety-critical categories** (any miss blocks merge until threshold/exemplars fixed).
 
 **Tests:** unit (state machine, routing rules, similarity classifier with fixture embeddings), integration (classify job happy/retry/timeout paths, Node↔Python contract), API (auth, tickets), component (ticket list, status timeline), Playwright smoke: login → create → see status.
 
@@ -69,10 +71,11 @@ Phased, vertical-slice delivery. Each phase: goal → deliverables → acceptanc
 
 **Deliverables:**
 - Routing v2: eligible categories can now route to `RAG_PROCESSING`.
-- RAG orchestration worker: retrieve → sufficiency gate → prompt build → LLM adapter (OpenAI + Ollama impls; env-selectable) → validation (grounding, policy, PII) → send as `system` message → `AWAITING_CUSTOMER`.
+- RAG orchestration worker: retrieve → sufficiency gate → prompt build → **local** LLM adapter (MLX + Ollama implementations; LM Studio optional; env-selectable) → validation (grounding, policy, PII) → send as `system` message → `AWAITING_CUSTOMER`.
+- **Local generation model evaluation (no hosted APIs):** baseline with SmolLM2-360M-Instruct (memory floor), then 1–2B instruct candidates (e.g. Qwen2.5-1.5B-Instruct, Llama-3.2-1B-Instruct, SmolLM2-1.7B) on the golden set — groundedness, instruction-following, format compliance, correct insufficient-info escalation, latency, peak memory on the M4 16GB. **Adopt the smallest model meeting the bar; do not assume the smallest is good enough, and do not default to a large general-purpose model.** Written comparison in docs.
 - Sufficiency thresholds + escalation without LLM call when retrieval weak.
 - Customer "solved / still need help" flow; still-need-help → `HUMAN_REVIEW` with full RagRun context; agent `AI context` view.
-- `RagRun` persistence; token/cost counters; prompt versioning.
+- `RagRun` persistence; token/latency/memory counters; prompt versioning.
 - RAG eval harness: groundedness / unsupported-claim checks on golden set.
 
 **AC:**
@@ -114,9 +117,11 @@ Phased, vertical-slice delivery. Each phase: goal → deliverables → acceptanc
 
 **AC:** failure suite green with defined behaviors (typed errors, escalations, no duplicates); load smoke meets classification latency budget.
 
-## Phase 6 — Deployment prep (optional gate)
+## Phase 6 — Deployment prep (**deferred**)
 
-**Goal:** deployable demo. Dockerfiles, production build, hosted Postgres/Redis, secrets, staging environment, basic uptime check. *(Defer entirely if you'd rather go straight to Phase 7 — product decision.)*
+**Per product decision: deployment is postponed until after Phase 8.** Priority is a complete, reliable, well-tested local application plus advanced triage and integrations. The phase content below is preserved for when we return to it (after Phase 8): Dockerfiles, production build, hosted Postgres/Redis, secrets, staging, uptime checks. Local reproducibility (Compose, env config, CI) stays mandatory throughout — see continuous practices.
+
+**Goal (when resumed):** deployable demo. Dockerfiles, production build, hosted Postgres/Redis, secrets, staging environment, basic uptime check.
 
 ## Phase 7 — Advanced triage (classifier Stage 2, priority, team)
 
@@ -130,6 +135,16 @@ Phased, vertical-slice delivery. Each phase: goal → deliverables → acceptanc
 - Eval reports: macro-F1, per-category PR, confusion matrices, latency/RAM; fine-tuning decision documented.
 
 **AC:** trained classifier beats Stage 1 k-NN baseline on held-out set by agreed margin (or documented decision to keep baseline); priority/team overrides flow into training export; ambiguous cases go to manual triage (never arbitrary team).
+
+### Phase 7b — Generative model fine-tuning (LoRA/MLX) — only if baseline shows gaps
+
+**Preconditions:** Phase 3 RAG pipeline working + representative eval dataset + measured baseline performance documented.
+
+**Goal:** improve the *behavior* of the selected local generative model via parameter-efficient fine-tuning (LoRA via Apple's MLX ecosystem) — instruction-following, use of retrieved context, response formatting, and correct "insufficient information → escalate" behavior. **Explicitly not** memorizing the knowledge base (KB updates must not require retraining; retrieval remains independent).
+
+**Deliverables:** training data derived from baseline failure analysis (bad formats, ignored context, hallucinated steps, missed escalations); MLX LoRA training script + hyperparameter notes; before/after eval on the same golden set; model card/versioning; adapter swapped in via the same local inference interface.
+
+**AC:** fine-tuned model improves the targeted behavior metrics without regressing groundedness; KB doc change still requires no retraining; eval report merges with baseline report for direct comparison.
 
 ## Phase 8 — Integrations (GitHub & Slack)
 
@@ -164,12 +179,13 @@ Metrics dashboard polish, README with architecture diagram + demo GIF/video, see
 | Phase | Focus | Depends on |
 | --- | --- | --- |
 | 0 | Foundation | — |
-| 1 | Vertical slice (auth, tickets, classify, route) | 0 |
+| 1 | Vertical slice (auth, tickets, classify, route) + classification eval harness | 0 |
 | 2 | KB & retrieval | 1 |
-| 3 | RAG + validation + auto-reply | 2 |
+| 3 | RAG + validation + auto-reply + **local LLM model evaluation** | 2 |
 | 4 | Human workflow & admin | 3 (can overlap late 3) |
 | 5 | Hardening & test depth | 4 |
-| 6 | Deployment prep (optional) | 5 |
-| 7 | Advanced triage | 5 |
-| 8 | Integrations | 7 |
-| 9 | Polish | 5–8 |
+| 6 | Deployment prep — **deferred until after Phase 8** | — |
+| 7 | Advanced triage (classifier Stage 2, priority, team) | 5 |
+| 7b | Generative fine-tuning (LoRA/MLX) — conditional on Phase 3 baseline gaps | 3 (+ eval dataset) |
+| 8 | Integrations (GitHub, Slack) | 7 |
+| 9 | Polish & portfolio packaging | 5–8 |

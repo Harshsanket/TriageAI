@@ -15,12 +15,15 @@ TriageAI receives support tickets, classifies them with a lightweight local ML m
 | [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) | Phased implementation plan with acceptance criteria and testing strategy |
 | [docs/RISKS_AND_OPEN_QUESTIONS.md](docs/RISKS_AND_OPEN_QUESTIONS.md) | Technical risks, mitigations, and decisions awaiting confirmation |
 
-## Planned stack (proposed — see ARCHITECTURE.md for rationale)
+## Planned stack (locked — see ARCHITECTURE.md for rationale)
 
 - **Frontend:** React + TypeScript (Vite), customer / support-agent / admin dashboards
-- **Backend:** Node.js + TypeScript (Fastify, Zod, Prisma, PostgreSQL + pgvector, Redis + BullMQ)
-- **AI service:** Python (FastAPI, SentenceTransformers) — stateless inference only
+- **Backend:** Node.js + TypeScript (Fastify, Zod, **Drizzle ORM**, PostgreSQL + pgvector, Redis + BullMQ)
+- **AI service:** Python (FastAPI, SentenceTransformers) — stateless local inference only
+- **AI models (all local, offline after install):** classification via `all-MiniLM-L6-v2` embeddings; RAG generation via small instruct models (SmolLM2-360M-Instruct and 1–2B candidates) through an MLX / LM Studio / Ollama adapter — **no hosted LLM APIs**
 - **Testing:** Vitest, pytest, React Testing Library, Playwright; CI via GitHub Actions
+- **Target hardware:** MacBook Air M4, 16GB — memory/speed efficiency are design constraints
+- **v1 scope:** single-tenant, text-only tickets (no attachments), local-first (deployment deferred)
 
 ## Repository layout (planned)
 

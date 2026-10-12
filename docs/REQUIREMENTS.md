@@ -28,9 +28,9 @@ Success means: high automated-resolution rate for routine tickets, near-zero uns
 
 ### FR-1 Ticket intake (customer)
 
-- FR-1.1 Customers can register/log in and create tickets (title, description, optional attachments later).
+- FR-1.1 Customers can register/log in and create tickets (title, description). **Attachments (screenshots, images, PDFs) are deferred for v1** — text-only tickets. The data model and APIs must reserve room for attachments later (e.g. an `TicketAttachment` entity/interface stub) without implementing upload now.
 - FR-1.2 System validates input, generates a unique ticket ID, stores the original ticket with status `OPEN`, and enqueues asynchronous processing. Ticket creation must be idempotent (no duplicate tickets from retries).
-- FR-1.3 Customers can view their ticket history, current status, full conversation, and classification summary (plain-language category, not internal scores).
+- FR-1.3 Customers can view their ticket history, current status, full conversation, and classification summary (plain-language category, not internal scores). *(Ticket detail APIs/UI leave room for a future attachments list without exposing upload yet.)*
 - FR-1.4 Customers can reply to a ticket at any point.
 - FR-1.5 After an automated reply, the customer can confirm "this solved my issue" or "still need help". Confirmation → `RESOLVED`; still-need-help → escalate to human (`HUMAN_REVIEW`) — the system must not re-send the same failed solution.
 - FR-1.6 If a customer opens a new ticket about an same/overlapping issue, the system links it to prior tickets (Phase 7 deduplication; basic manual visibility earlier).
@@ -63,6 +63,8 @@ Success means: high automated-resolution rate for routine tickets, near-zero uns
 - FR-4.5 **Response validation before send** (deterministic where possible): retrieved-context support check (e.g. NLI/overlap heuristics + citation presence), policy checks (no promises of refunds, no security advice beyond policy, no PII leakage), and quality gates. On failure → escalate, do not send.
 - FR-4.6 Validated reply is sent to the customer; ticket → `AWAITING_CUSTOMER`. Automated reply never auto-resolves the ticket (FR-1.5).
 - FR-4.7 Every RAG run persists: retrieved chunk ids + scores, prompt version, model + params, output, validation results — for debugging, eval, and agent context.
+- FR-4.8 **Generation is local-only**: no hosted LLM APIs (OpenAI/Anthropic/etc.) anywhere in the pipeline. Inference runs via a configurable local adapter (MLX, LM Studio, or Ollama). After dependencies and model weights are installed, the AI pipeline works **without an internet connection**. Target hardware: MacBook Air M4, 16GB unified memory — memory efficiency, inference speed, and resource consumption are design constraints.
+- FR-4.9 Knowledge retrieval is **independent of generation**: KB documents can be updated/re-ingested without retraining or reconfiguring the generative model. Any later fine-tuning of the generator targets instruction-following/context-usage/formatting/escalation behavior — never memorizing KB content.
 
 ### FR-5 Human support workflow
 
@@ -123,16 +125,17 @@ States: `OPEN → CLASSIFYING → ROUTING → RAG_PROCESSING → AWAITING_CUSTOM
 ### FR-13 Local development & delivery
 
 - Reproducible setup: `docker compose up` for Postgres(+pgvector), Redis; documented env config (`.env.example` per app).
-- Deployment is out of scope for early phases; architecture must not preclude it.
+- AI models are downloaded/cached locally once; no internet required at runtime.
+- **Deployment is deferred** (originally Phase 6) until after the core phases and advanced triage/integrations are functional and tested. Local-first: reliable Docker Compose environment, env-based config, automated tests, GitHub Actions CI. Deployment returns to the plan after Phase 8.
 
 ## 4. Explicit non-goals (initial release)
 
-- Multi-tenancy, mobile apps, real-time chat/video, SLA billing, marketplace integrations beyond Slack/GitHub, training/fine-tuning large LLMs, GPU-dependent inference.
+- Multi-tenancy (**single-tenant v1**: one organization with multiple customers, agents, admins, and internal teams; proper RBAC maintained; avoid schema/API decisions that would make later multi-tenancy unnecessarily hard, but do not build it), mobile apps, real-time chat/video, SLA billing, marketplace integrations beyond Slack/GitHub, training/fine-tuning large LLMs, GPU-dependent inference, **attachment uploads (text-only tickets in v1)**.
 
 ## 5. Quality attributes (priority order)
 
 1. **Correctness & safety** — no unsupported AI replies reach customers.
-2. **Cost efficiency** — zero LLM tokens for routing; RAG only when eligible and retrieval is sufficient.
+2. **Cost efficiency** — zero LLM tokens for routing; zero per-token inference cost overall (all-local AI); RAG only when eligible and retrieval is sufficient.
 3. **Testability** — every rule unit-testable; ML measurable.
 4. **Maintainability** — small modules, explicit types, no speculative abstraction.
 5. **Learnability** — each phase teaches a concrete skill; comments/docs explain *why*.
