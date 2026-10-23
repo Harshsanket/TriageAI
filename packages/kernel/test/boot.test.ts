@@ -211,3 +211,70 @@ describeIfDb('bootKernel', () => {
     await database2.close();
   }, 30000);
 });
+
+describeIfDb('bootKernel capability validation', () => {
+  it('rejects modules whose required capability adapter is not configured', async () => {
+    const database = new PostgresDatabase(DATABASE_URL);
+    const module: TriageModule = {
+      id: 'needs-ai',
+      version: '0.1.0',
+      capabilities: [],
+      dependsOn: { modules: [], capabilities: [{ capability: 'classifier' }] },
+      manifest: { routes: [], nav: [], background: [] },
+      lifecycle: {},
+      register: () => undefined,
+    };
+    await expect(
+      bootKernel({
+        config: {
+          profile: 'core',
+          queue: { adapter: 'inline' },
+          modules: { 'needs-ai': { enabled: true } },
+          capabilities: {},
+        },
+        database,
+        logger: noopLogger,
+        modules: { 'needs-ai': module },
+      }),
+    ).rejects.toMatchObject({ code: 'kernel.BOOT_VALIDATION_FAILED' });
+    await database.close();
+  }, 30000);
+
+  it('boots once the capability adapter is provided', async () => {
+    const database = new PostgresDatabase(DATABASE_URL);
+    const module: TriageModule = {
+      id: 'needs-ai',
+      version: '0.1.0',
+      capabilities: [],
+      dependsOn: { modules: [], capabilities: [{ capability: 'classifier' }] },
+      manifest: { routes: [], nav: [], background: [] },
+      lifecycle: {},
+      register: () => undefined,
+    };
+    const classifier = {
+      classify: async () => ({
+        category: 'general_question',
+        confidence: 0.9,
+        margin: 0.4,
+        method: 'zero-shot' as const,
+        modelVersion: 'test',
+        scores: [],
+      }),
+    };
+    const kernel = await bootKernel({
+      config: {
+        profile: 'core',
+        queue: { adapter: 'inline' },
+        modules: { 'needs-ai': { enabled: true } },
+        capabilities: {},
+      },
+      database,
+      logger: noopLogger,
+      capabilities: { classifier },
+      modules: { 'needs-ai': module },
+    });
+    expect(kernel.modules).toContain('needs-ai');
+    await kernel.shutdown();
+    await database.close();
+  }, 30000);
+});

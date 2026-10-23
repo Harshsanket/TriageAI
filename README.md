@@ -12,15 +12,16 @@ TriageAI is designed to combine classification, retrieval, generation, validatio
 
 ## Development Status
 
-**Phase 0, 1 and 2 complete:**
+**Phase 0, 1, 2 and 3 complete:**
 
 - **Kernel + module system** — config-driven enable/disable, capability seams, Docker profiles, and the `echo` reference module running queue-backed workflows on PostgreSQL.
 - **Workflow engine (Phase 2)** — safe `when` guards, per-stage retries/backoff, per-attempt timeouts (`AbortSignal`), cancellation, and fallback policies (`retry_alternative_retrieval`, `halt_run`, `AWAITING` outcomes).
 - **Inspector + feedback** — run list/detail at `/runs` with stage timelines, retries, and append-only decision records; corrections saved to `candidate_examples` with provenance.
 - **Observability** — `/metrics` (runs, stages, queue, dead letters, decisions, process), hw-monitor at `/system`, and the optional `observ` profile (Prometheus + Grafana).
 - **Performance** — k6 ingest/drain suite with a recorded baseline (0% errors, p95 ≈ 8 ms ingest, ~12.5 runs/s processing on the local Docker stack).
+- **Support slice (Phase 3, no LLM)** — tickets → MiniLM embedding-similarity classification (τ/δ thresholds, per-category) → deterministic versioned routing → agent review queue with a typed ticket state machine. Safety-critical categories always escalate; an eval harness gates macro-F1, p95 latency, and **zero false auto-routing**.
 
-**Next:** Phase 3 — support vertical slice without an LLM (tickets → similarity classification → routing → human review).
+**Next:** Phase 4 — knowledge base, retrieval, grounded generation, and the `assistant` profile.
 
 Support automation, RAG, and assistant capabilities are planned for later phases and are not yet complete.
 
@@ -73,6 +74,17 @@ The local development setup is intended to expose the API on port `3000`, the AI
 
 Phase-2 surfaces: workflow inspector at `/runs`, hardware monitor at `/system`, Prometheus metrics at `/metrics`, and the optional observability stack via `docker compose --profile observ up -d` (Prometheus `:9090`, Grafana `:3310`).
 
+Support profile (classification + routing, **no LLM**): start the AI service and point the API at the support config:
+
+```bash
+docker compose --profile core --profile ai up --build
+# or, with a host ai-service:
+TRIAGEAI_CONFIG=/app/triage.config.support.json AI_SERVICE_URL=http://host.docker.internal:8000 \
+  docker compose --profile core up --build
+```
+
+Then open `/support` in the web app and create a ticket — it is classified, routed, and (for security/unknown cases) escalated to human review.
+
 ## Scripts
 
 | Command            | Purpose                           |
@@ -90,7 +102,7 @@ Phase-2 surfaces: workflow inspector at `/runs`, hardware monitor at `/system`, 
 **TriageAI** is an open-source project focused on building modular, self-hosted AI automation systems. It prioritizes extensibility, local inference, and transparent decision-making.
 
 Developed and maintained by **Harsh Sanket**.  
-**GLM 5.3** by **Z.ai** was used during development.
+**DeepSeek 4.1** was used during development.
 
 ## Tech Stack
 

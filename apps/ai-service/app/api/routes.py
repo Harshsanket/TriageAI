@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.api.schemas import ClassifyRequest, ClassifyResponse, EmbedRequest, EmbedResponse, HealthResponse
-from app.modules import classification, generation, retrieval
+from app.modules import classification, embeddings, generation, retrieval
 
 router = APIRouter(prefix="/ai/v1")
 
@@ -15,16 +15,13 @@ async def health() -> HealthResponse:
 
 @router.post("/classify", response_model=ClassifyResponse)
 async def classify(request: ClassifyRequest) -> ClassifyResponse:
-    """
-    Stage 1 (Phase 1): similarity-based classification with pretrained
-    SentenceTransformers embeddings — never a generative LLM call.
-    """
+    """Embedding-similarity classification. Never a generative LLM call."""
     try:
         return classification.classify(request.text)
-    except NotImplementedError:
+    except Exception as exc:  # noqa: BLE001 - surfaced as a typed 503, never a stack trace
         raise HTTPException(
-            status_code=501,
-            detail={"code": "NOT_IMPLEMENTED", "title": "NOT_IMPLEMENTED", "detail": "classify() pending Phase 1"},
+            status_code=503,
+            detail={"code": "MODEL_UNAVAILABLE", "title": "MODEL_UNAVAILABLE", "detail": str(exc)},
         ) from None
 
 
@@ -32,18 +29,19 @@ async def classify(request: ClassifyRequest) -> ClassifyResponse:
 async def embed(request: EmbedRequest) -> EmbedResponse:
     try:
         return classification.embed(request.texts)
-    except NotImplementedError:
+    except Exception as exc:  # noqa: BLE001
         raise HTTPException(
-            status_code=501,
-            detail={"code": "NOT_IMPLEMENTED", "title": "NOT_IMPLEMENTED", "detail": "embed() pending Phase 1"},
+            status_code=503,
+            detail={"code": "MODEL_UNAVAILABLE", "title": "MODEL_UNAVAILABLE", "detail": str(exc)},
         ) from None
 
 
 @router.get("/modules")
 async def modules() -> dict[str, str]:
-    """Phase 0 introspection: proves the three AI modules are separate and loadable."""
+    """Introspection: proves the three AI modules are separate and loadable."""
     return {
         "classification": classification.describe(),
+        "embedding_model": embeddings.model_version(),
         "retrieval": retrieval.describe(),
         "generation": generation.describe(),
     }

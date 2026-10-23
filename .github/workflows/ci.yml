@@ -38,6 +38,35 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test:ts
 
+  ai-contract:
+    name: Node/Python AI contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - run: pnpm install --frozen-lockfile
+      - name: Install ai-service deps
+        working-directory: apps/ai-service
+        run: uv sync --extra dev
+      - name: Start ai-service
+        working-directory: apps/ai-service
+        run: |
+          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/ai-service.log 2>&1 &
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/readyz || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          test "$code" = "200" || { cat /tmp/ai-service.log; exit 1; }
+      - run: RUN_AI_CONTRACT_TESTS=1 AI_SERVICE_URL=http://127.0.0.1:8000 pnpm --filter @triageai/api exec vitest run test/ai.contract.test.ts
+
   python:
     name: Python (pytest)
     runs-on: ubuntu-latest
@@ -51,6 +80,26 @@ jobs:
           python-version: '3.13'
       - run: uv sync --extra dev
       - run: uv run pytest
+
+  classification-eval:
+    name: Classification eval (gates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - name: Install ai-service deps
+        working-directory: apps/ai-service
+        run: uv sync --extra dev
+      - name: Run eval (macro-F1, p95, false auto-routing gates)
+        working-directory: apps/ai-service
+        run: uv run python -m eval.run_eval
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: classification-eval-reports
+          path: apps/ai-service/eval/reports/
 
   docker-smoke:
     name: Docker Compose (build + boot + curl smoke)

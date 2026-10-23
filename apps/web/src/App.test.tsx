@@ -142,3 +142,58 @@ describe('run inspector (host page)', () => {
     expect((await screen.findAllByText('evidence')).length).toBeGreaterThan(0);
   });
 });
+
+describe('support module (manifest gated)', () => {
+  it('shows Support from the manifest and renders the ticket queue', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('/api/v1/system/manifest')) {
+        return new Response(
+          JSON.stringify({
+            generatedAt: new Date().toISOString(),
+            modules: [
+              {
+                id: 'support',
+                version: '0.1.0',
+                manifest: {
+                  routes: [{ path: '/support', title: 'Support' }],
+                  nav: [{ label: 'Support', order: 5, path: '/support' }],
+                  background: [],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes('/api/v1/support/tickets')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 't1',
+              subject: 'Double charge',
+              body: 'charged twice',
+              requester: 'me',
+              status: 'ROUTED',
+              category: 'billing',
+              confidence: 0.9,
+              margin: 0.3,
+              priority: 'high',
+              team: 'billing',
+              classification: null,
+              routing: null,
+              createdAt: new Date().toISOString(),
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      return new Response('[]', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    window.history.pushState({}, '', '/');
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Support' }));
+    expect(await screen.findByRole('heading', { name: 'Support' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Double charge' })).toBeInTheDocument();
+  });
+});

@@ -16,6 +16,7 @@ import type { Queue } from './queue/types.js';
 import { satisfiesRange } from './semver.js';
 import { MIGRATIONS_TABLE_SQL, MigrationRunner } from './storage.js';
 import type {
+  Capabilities,
   Database,
   KernelConfig,
   KernelContext,
@@ -52,6 +53,7 @@ function createKernelContext(
   moduleId: string,
   module: TriageModule,
   moduleOptions: Record<string, unknown>,
+  capabilities: Capabilities,
   engine: WorkflowEngine,
   routes: KernelRouteDef[],
   database: Database,
@@ -98,6 +100,7 @@ function createKernelContext(
 
   const context: KernelContext = {
     moduleOptions,
+    capabilities,
     database,
     events,
     queue: queueCapability,
@@ -133,6 +136,31 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   const resolution = resolveModules(config, options.modules);
   if (resolution.error) throw bootValidationError('Boot validation failed', resolution.error);
   const ordered = resolution.ordered;
+
+  const capabilities: Capabilities = options.capabilities ?? {};
+  const capabilityProblems: string[] = [];
+  for (const resolved of ordered) {
+    for (const dep of resolved.module.dependsOn.capabilities ?? []) {
+      if (
+        dep.capability === 'storage' ||
+        dep.capability === 'queue' ||
+        dep.capability === 'eventBus'
+      ) {
+        continue; // always present on KernelContext
+      }
+      if (
+        !(dep.capability in capabilities) ||
+        !capabilities[dep.capability as keyof Capabilities]
+      ) {
+        capabilityProblems.push(
+          `module "${resolved.module.id}" requires capability "${dep.capability}", but no adapter is configured for it`,
+        );
+      }
+    }
+  }
+  if (capabilityProblems.length > 0) {
+    throw bootValidationError('Boot validation failed', capabilityProblems);
+  }
 
   const events = createEventBus(logger);
   const queue: Queue =
@@ -172,6 +200,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       module.id,
       module,
       parsedOptions,
+      capabilities,
       engine,
       routes,
       database,

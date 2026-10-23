@@ -47,3 +47,6 @@ docs/
 
 # Local tooling state
 .freebuff/
+
+# Timestamped eval artifacts (latest.json is committed)
+apps/ai-service/eval/reports/classification-*.json

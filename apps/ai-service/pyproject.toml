@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic-settings>=2.6.0",
+    "sentence-transformers>=6.2.0",
 ]
 
 [project.optional-dependencies]
@@ -23,3 +24,4 @@ package = false
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+markers = ["real_model: loads the actual SentenceTransformers model (set RUN_MODEL_TESTS=1)"]

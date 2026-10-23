@@ -85,12 +85,33 @@ export interface HealthDetail {
   detail?: string;
 }
 
+export interface EmbedResult {
+  vectors: number[][];
+  modelVersion: string;
+}
+
+export interface ClassificationResult {
+  category: string;
+  confidence: number;
+  margin: number;
+  method: 'zero-shot' | 'trained';
+  modelVersion: string;
+  scores: Array<{ category: string; score: number }>;
+}
+
+/** Resolvable capability adapters (Phase 3: embedder + classifier). */
+export interface Capabilities {
+  embedder?: { embed(texts: string[]): Promise<EmbedResult> };
+  classifier?: { classify(text: string): Promise<ClassificationResult> };
+}
+
 /**
  * The only way modules touch anything outside themselves (ADR-0001 §DI).
  * Capabilities are validated against the module's declared `dependsOn`.
  */
 export interface KernelContext {
   moduleOptions: Record<string, unknown>;
+  capabilities: Capabilities;
   database: Database;
   events: EventBus;
   queue: QueueCapability;
@@ -228,6 +249,8 @@ export interface KernelOptions {
   modules: Record<string, TriageModule>;
   database: Database;
   logger: KernelLogger;
+  /** Host-provided capability adapters, selected by config.capabilities. */
+  capabilities?: Capabilities;
 }
 
 export interface ResolvedModule {

@@ -1,0 +1,64 @@
+{
+  "general_question": [
+    "How do I change my email address?",
+    "What are your support hours?",
+    "Where can I find the user guide?",
+    "How do I invite someone to my workspace?",
+    "Can you explain how the free plan differs from the paid plan?"
+  ],
+  "known_troubleshooting": [
+    "I cannot upload a PDF larger than 25MB",
+    "The app crashes when I click export",
+    "My password reset link has expired",
+    "Sync is stuck and nothing updates",
+    "The page keeps loading forever after login",
+    "I get a timeout error when saving a document"
+  ],
+  "feature_question": [
+    "Does your product support single sign-on?",
+    "Can I export reports to CSV?",
+    "Is there an API for creating tickets automatically?",
+    "Do you support webhooks?",
+    "Can multiple users edit the same document?"
+  ],
+  "billing": [
+    "I was charged twice this month",
+    "Where can I download my invoice?",
+    "My credit card was declined",
+    "Why did my subscription price increase?",
+    "Please update the billing email on my account"
+  ],
+  "bug_report": [
+    "The dashboard shows an error 500",
+    "Data disappears after refreshing the page",
+    "Search returns wrong results",
+    "The notification badge never clears",
+    "Charts render with missing labels"
+  ],
+  "security": [
+    "I think my account was hacked",
+    "Someone logged in from another country",
+    "I received a suspicious login alert",
+    "I found a vulnerability in your API",
+    "My credentials were leaked and used",
+    "There is unauthorized access to our workspace",
+    "A stranger added themselves to our team as admin",
+    "An unauthorised person joined our workspace",
+    "Someone gained administrator access without permission",
+    "A user escalated their own privileges to admin"
+  ],
+  "account": [
+    "I want to delete my account",
+    "How do I add a team member?",
+    "Please transfer ownership of this workspace",
+    "I need to reset my two-factor authentication",
+    "How do I change my username?"
+  ],
+  "refund_dispute": [
+    "I want a refund for last month",
+    "I dispute this charge",
+    "Cancel my subscription and refund me",
+    "This billing charge is not mine",
+    "I was promised a refund but never received it"
+  ]
+}

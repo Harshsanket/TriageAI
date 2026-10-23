@@ -199,12 +199,18 @@ importers:
       '@triageai/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@triageai/module-ai-pipeline':
+        specifier: workspace:*
+        version: link:../../modules/ai-pipeline
       '@triageai/module-chat':
         specifier: workspace:*
         version: link:../../modules/chat
       '@triageai/module-echo':
         specifier: workspace:*
         version: link:../../modules/echo
+      '@triageai/module-support':
+        specifier: workspace:*
+        version: link:../../modules/support
       '@triageai/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -295,6 +301,25 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
 
+  modules/ai-pipeline:
+    dependencies:
+      '@triageai/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   modules/chat:
     dependencies:
       '@triageai/contracts':
@@ -335,6 +360,31 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  modules/support:
+    dependencies:
+      '@triageai/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
 
   packages/contracts:
     dependencies:

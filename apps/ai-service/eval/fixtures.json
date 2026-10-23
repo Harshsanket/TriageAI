@@ -1,0 +1,153 @@
+[
+  { "text": "How can I change the email address on my profile?", "expected": "general_question" },
+  { "text": "What time does your support team answer chats?", "expected": "general_question" },
+  { "text": "Where is the getting started guide?", "expected": "general_question" },
+  { "text": "How do I invite a colleague to my workspace?", "expected": "general_question" },
+  {
+    "text": "What is the difference between the starter and pro plans?",
+    "expected": "general_question"
+  },
+  {
+    "text": "Can you tell me where to find the API documentation?",
+    "expected": "general_question"
+  },
+  { "text": "How many users can I add to one workspace?", "expected": "general_question" },
+  { "text": "Do you have a mobile app I can install?", "expected": "general_question" },
+  { "text": "What are your opening hours for phone support?", "expected": "general_question" },
+  { "text": "How do I change the language of the interface?", "expected": "general_question" },
+
+  { "text": "Uploading a 40MB PDF fails with an error", "expected": "known_troubleshooting" },
+  { "text": "The export button crashes the application", "expected": "known_troubleshooting" },
+  { "text": "My reset password link says it has expired", "expected": "known_troubleshooting" },
+  { "text": "Files are not syncing and stay pending forever", "expected": "known_troubleshooting" },
+  {
+    "text": "The app times out whenever I save a big document",
+    "expected": "known_troubleshooting"
+  },
+  { "text": "After login the page spins and never loads", "expected": "known_troubleshooting" },
+  { "text": "Uploads above 25MB are rejected", "expected": "known_troubleshooting" },
+  {
+    "text": "Clearing the cache did not fix the blank screen",
+    "expected": "known_troubleshooting"
+  },
+  { "text": "The integration keeps disconnecting every hour", "expected": "known_troubleshooting" },
+  { "text": "I cannot connect from Safari, Chrome works", "expected": "known_troubleshooting" },
+
+  {
+    "text": "Is SAML single sign-on available on the business plan?",
+    "expected": "feature_question"
+  },
+  { "text": "Can I export the analytics to CSV?", "expected": "feature_question" },
+  { "text": "Do you offer webhooks for ticket updates?", "expected": "feature_question" },
+  {
+    "text": "Can several people edit a document at the same time?",
+    "expected": "feature_question"
+  },
+  {
+    "text": "Does the API support pagination on the tickets endpoint?",
+    "expected": "feature_question"
+  },
+  { "text": "Is there a dark mode?", "expected": "feature_question" },
+  { "text": "Can we set custom retention periods per project?", "expected": "feature_question" },
+  { "text": "Do you support SCIM provisioning?", "expected": "feature_question" },
+  { "text": "Are audit logs available to admins?", "expected": "feature_question" },
+  { "text": "Can notifications go to a Slack channel?", "expected": "feature_question" },
+
+  { "text": "I see two identical charges on my invoice", "expected": "billing" },
+  { "text": "Where do I download the receipt for my payment?", "expected": "billing" },
+  { "text": "My card was rejected when renewing the subscription", "expected": "billing" },
+  { "text": "Why is my plan more expensive this month?", "expected": "billing" },
+  { "text": "Please update the billing contact to finance@example.com", "expected": "billing" },
+  { "text": "I need a VAT invoice for last quarter", "expected": "billing" },
+  { "text": "The payment failed but the money left my account", "expected": "billing" },
+  { "text": "How do I change the card used for the subscription?", "expected": "billing" },
+  { "text": "We were charged for five seats but only use three", "expected": "billing" },
+  { "text": "Can you send the invoice to a different address?", "expected": "billing" },
+
+  { "text": "The dashboard displays a 500 error after saving", "expected": "bug_report" },
+  { "text": "Charts are rendering without labels since yesterday", "expected": "bug_report" },
+  { "text": "Search returns results from the wrong project", "expected": "bug_report" },
+  {
+    "text": "The notification badge stays even after reading everything",
+    "expected": "bug_report"
+  },
+  { "text": "Rows disappear from the table when I refresh", "expected": "bug_report" },
+  { "text": "The date picker selects the wrong day in February", "expected": "bug_report" },
+  { "text": "Exported PDF has overlapping text on page two", "expected": "bug_report" },
+  { "text": "Sorting the list breaks the pagination", "expected": "bug_report" },
+  { "text": "The app shows stale data for about ten minutes", "expected": "bug_report" },
+  { "text": "Clicking save twice creates duplicate records", "expected": "bug_report" },
+
+  {
+    "text": "I believe someone has taken over my account",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "There was a login from a country I have never visited",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "I received an alert about a login I did not make",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "We found an authentication bypass in your API",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "Our API keys were exposed in a public repository",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "Unauthorized users can see our workspace data",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "Someone changed the password without my permission",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "I want to report a data leak affecting our organisation",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "A stranger added themselves to our team as admin",
+    "expected": "security",
+    "safetyCritical": true
+  },
+  {
+    "text": "Suspicious activity on my account needs investigation",
+    "expected": "security",
+    "safetyCritical": true
+  },
+
+  { "text": "Please delete my account and all data", "expected": "account" },
+  { "text": "How do I add a new administrator?", "expected": "account" },
+  { "text": "Transfer the workspace ownership to my colleague", "expected": "account" },
+  { "text": "I lost my two-factor authentication device", "expected": "account" },
+  { "text": "Can I change my login username?", "expected": "account" },
+  { "text": "Remove a former employee from the team", "expected": "account" },
+  { "text": "I want to merge two accounts into one", "expected": "account" },
+  { "text": "How do I update the phone number for 2FA?", "expected": "account" },
+  { "text": "Please deactivate the profile of a departed teammate", "expected": "account" },
+  { "text": "I need to reclaim an account registered with an old email", "expected": "account" },
+
+  { "text": "I want my money back for this month", "expected": "refund_dispute" },
+  { "text": "This charge on my statement is not authorised", "expected": "refund_dispute" },
+  { "text": "Cancel the plan and return the annual payment", "expected": "refund_dispute" },
+  { "text": "I was promised a refund two weeks ago and got nothing", "expected": "refund_dispute" },
+  { "text": "We were billed after cancelling the subscription", "expected": "refund_dispute" },
+  { "text": "Please reverse the duplicate transaction", "expected": "refund_dispute" },
+  { "text": "I am disputing the invoice amount with my bank", "expected": "refund_dispute" },
+  { "text": "The refund has not arrived on my card yet", "expected": "refund_dispute" },
+  { "text": "I want to cancel and get a prorated refund", "expected": "refund_dispute" },
+  { "text": "You charged us twice, please return one payment", "expected": "refund_dispute" }
+]

@@ -1,6 +1,7 @@
 /** JSON Schema export for cross-language contract sync (Node ↔ Python). */
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
+import * as ai from './ai.js';
 import * as dto from './manifest.js';
 
 export function exportJsonSchemas(): Record<string, unknown> {
@@ -18,5 +19,10 @@ export function exportJsonSchemas(): Record<string, unknown> {
     RunDto: zodToJsonSchema(dto.RunDtoSchema),
     DecisionRecordDto: zodToJsonSchema(dto.DecisionRecordDtoSchema),
     HealthReport: zodToJsonSchema(dto.HealthReportSchema),
+    AiEmbedRequest: zodToJsonSchema(ai.AiEmbedRequestSchema),
+    AiEmbedResponse: zodToJsonSchema(ai.AiEmbedResponseSchema),
+    AiClassifyRequest: zodToJsonSchema(ai.AiClassifyRequestSchema),
+    AiCategoryScore: zodToJsonSchema(ai.AiCategoryScoreSchema),
+    AiClassifyResponse: zodToJsonSchema(ai.AiClassifyResponseSchema),
   };
 }

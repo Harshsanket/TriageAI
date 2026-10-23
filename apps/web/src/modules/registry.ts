@@ -6,4 +6,5 @@ import type { ComponentType } from 'react';
 export const moduleRegistry: Record<string, ComponentType> = {
   echo: lazy(() => import('./echo/EchoApp')),
   chat: lazy(() => import('./chat/ChatApp')),
+  support: lazy(() => import('./support/SupportApp')),
 };

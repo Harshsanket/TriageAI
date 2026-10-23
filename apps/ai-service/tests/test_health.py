@@ -23,5 +23,5 @@ def test_modules_are_separate_and_describable() -> None:
     response = client.get("/ai/v1/modules")
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"classification", "retrieval", "generation"}
+    assert set(body) == {"classification", "embedding_model", "retrieval", "generation"}
     assert all(isinstance(v, str) and v for v in body.values())

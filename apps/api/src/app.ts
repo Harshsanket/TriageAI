@@ -5,14 +5,17 @@ import { ZodError } from 'zod';
 
 import { bootKernel, buildKernelConfig, loadConfigFile, PostgresDatabase } from '@triageai/kernel';
 import type { Kernel, KernelLogger, RouteRequest } from '@triageai/kernel';
+import { aiPipelineModule } from '@triageai/module-ai-pipeline';
 import { chatModule } from '@triageai/module-chat';
 import { echoModule } from '@triageai/module-echo';
+import { supportModule } from '@triageai/module-support';
 
 import { registerHealthRoutes } from './modules/health/routes.js';
 import { registerCandidateRoutes } from './system/candidates.js';
 import { registerHardwareRoute } from './system/hardware.js';
 import { registerMetricsRoute } from './system/metrics.js';
 import { registerRunRoutes } from './system/runs.js';
+import { createCapabilities } from './platform/capabilities.js';
 import { AppError } from './platform/errors.js';
 import { logger } from './platform/logger.js';
 import { config } from './platform/config.js';
@@ -22,6 +25,10 @@ export interface BuildAppOptions {
   quiet?: boolean;
   /** Test seam: boot routes only, without a kernel/database (Phase 0 behavior). */
   skipBoot?: boolean;
+  /** Test seam: explicit config file path instead of the cwd probe. */
+  configPath?: string;
+  /** Test seam: inject capability adapters instead of calling ai-service. */
+  capabilities?: import('@triageai/kernel').Capabilities;
 }
 
 declare module 'fastify' {
@@ -80,11 +87,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       ? { info: () => undefined, warn: () => undefined, error: () => undefined }
       : (logger as unknown as KernelLogger);
     const database = new PostgresDatabase(config.databaseUrl);
+    const kernelConfig = buildKernelConfig(loadConfigFile(options.configPath), process.env);
     const kernel = await bootKernel({
-      config: buildKernelConfig(loadConfigFile(), process.env),
+      config: kernelConfig,
       database,
       logger: kernelLogger,
-      modules: { echo: echoModule, chat: chatModule },
+      capabilities: options.capabilities ?? createCapabilities(kernelConfig, config.aiServiceUrl),
+      modules: {
+        echo: echoModule,
+        chat: chatModule,
+        support: supportModule,
+        'ai-pipeline': aiPipelineModule,
+      },
     });
     app.decorate('kernel', kernel);
 

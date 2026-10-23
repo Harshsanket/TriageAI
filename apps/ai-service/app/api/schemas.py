@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HealthResponse(BaseModel):
@@ -19,13 +19,15 @@ class CategoryScore(BaseModel):
 
 
 class ClassifyResponse(BaseModel):
-    """Contract consumed by apps/api — keep in sync with docs/ARCHITECTURE.md §7."""
+    """Contract consumed by apps/api — camelCase on the wire (Zod is the source of truth)."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     category: str
     confidence: float = Field(ge=0.0, le=1.0)
     margin: float = Field(ge=0.0, le=1.0)
     method: Literal["zero-shot", "trained"]
-    model_version: str
+    model_version: str = Field(alias="modelVersion")
     scores: list[CategoryScore]
 
 
@@ -34,8 +36,10 @@ class EmbedRequest(BaseModel):
 
 
 class EmbedResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     vectors: list[list[float]]
-    model_version: str
+    model_version: str = Field(alias="modelVersion")
 
 
 class ErrorBody(BaseModel):
