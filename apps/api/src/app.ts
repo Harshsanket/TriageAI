@@ -9,6 +9,10 @@ import { chatModule } from '@triageai/module-chat';
 import { echoModule } from '@triageai/module-echo';
 
 import { registerHealthRoutes } from './modules/health/routes.js';
+import { registerCandidateRoutes } from './system/candidates.js';
+import { registerHardwareRoute } from './system/hardware.js';
+import { registerMetricsRoute } from './system/metrics.js';
+import { registerRunRoutes } from './system/runs.js';
 import { AppError } from './platform/errors.js';
 import { logger } from './platform/logger.js';
 import { config } from './platform/config.js';
@@ -85,6 +89,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.decorate('kernel', kernel);
 
     registerSystemRoutes(app, kernel);
+    registerRunRoutes(app, kernel);
+    registerMetricsRoute(app, kernel);
+    registerCandidateRoutes(app, kernel);
+    registerHardwareRoute(app, kernel);
     for (const route of kernel.routes()) {
       app.route({
         method: route.method,

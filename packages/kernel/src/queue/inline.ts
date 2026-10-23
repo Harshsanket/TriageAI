@@ -82,6 +82,11 @@ export class InlineQueue implements Queue {
     this.timers.clear();
   }
 
+  async close(): Promise<void> {
+    this.handlers.clear();
+    await this.drain();
+  }
+
   private dispatch(job: Job, delayMs: number): void {
     const existing = this.timers.get(job.id);
     if (existing) clearTimeout(existing);

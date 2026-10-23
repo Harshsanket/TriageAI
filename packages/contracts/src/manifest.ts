@@ -69,10 +69,19 @@ export const StageStatusSchema = z.enum([
   'FAILED',
   'SKIPPED',
   'CANCELLED',
+  'TIMED_OUT',
 ]);
 export type StageStatus = z.infer<typeof StageStatusSchema>;
 
-export const RunStatusSchema = z.enum(['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED']);
+export const RunStatusSchema = z.enum([
+  'PENDING',
+  'RUNNING',
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELLED_PENDING',
+  'CANCELLED',
+  'AWAITING',
+]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 export const StageRunDtoSchema = z.object({

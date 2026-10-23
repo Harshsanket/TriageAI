@@ -91,6 +91,12 @@ export class PgQueue implements Queue {
     await Promise.allSettled(pending);
   }
 
+  async close(): Promise<void> {
+    for (const { timer } of this.subscriptions.values()) clearInterval(timer);
+    await this.drain();
+    this.subscriptions.clear();
+  }
+
   async deadLetter(queue?: string): Promise<DeadLetterEntry[]> {
     const rows = await this.database.query<{
       queue: string;

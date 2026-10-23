@@ -26,6 +26,8 @@ export interface Queue {
   deadLetter(queue?: string): Promise<DeadLetterEntry[]>;
   /** Wait for in-flight handlers to settle (graceful shutdown). */
   drain(): Promise<void>;
+  /** Stop polling/claiming and settle in-flight work. Safe to call twice. */
+  close(): Promise<void>;
 }
 
 /** Default retry backoff: first retry 100ms, then 1s steps. */

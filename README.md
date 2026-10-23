@@ -12,9 +12,15 @@ TriageAI is designed to combine classification, retrieval, generation, validatio
 
 ## Development Status
 
-**Phase 0 and Phase 1 complete:** Kernel, application hosts, Docker setup, and module system. The `core` Compose profile starts the API, web app, and PostgreSQL. The `echo` module demonstrates configurable modules and queue-backed workflows.
+**Phase 0, 1 and 2 complete:**
 
-**Next:** Phase 2 — workflow inspection, observability, and performance testing.
+- **Kernel + module system** — config-driven enable/disable, capability seams, Docker profiles, and the `echo` reference module running queue-backed workflows on PostgreSQL.
+- **Workflow engine (Phase 2)** — safe `when` guards, per-stage retries/backoff, per-attempt timeouts (`AbortSignal`), cancellation, and fallback policies (`retry_alternative_retrieval`, `halt_run`, `AWAITING` outcomes).
+- **Inspector + feedback** — run list/detail at `/runs` with stage timelines, retries, and append-only decision records; corrections saved to `candidate_examples` with provenance.
+- **Observability** — `/metrics` (runs, stages, queue, dead letters, decisions, process), hw-monitor at `/system`, and the optional `observ` profile (Prometheus + Grafana).
+- **Performance** — k6 ingest/drain suite with a recorded baseline (0% errors, p95 ≈ 8 ms ingest, ~12.5 runs/s processing on the local Docker stack).
+
+**Next:** Phase 3 — support vertical slice without an LLM (tickets → similarity classification → routing → human review).
 
 Support automation, RAG, and assistant capabilities are planned for later phases and are not yet complete.
 
@@ -65,17 +71,19 @@ pnpm dev
 
 The local development setup is intended to expose the API on port `3000`, the AI service on `8000`, and the web app on `5173`. Available services depend on the enabled configuration.
 
+Phase-2 surfaces: workflow inspector at `/runs`, hardware monitor at `/system`, Prometheus metrics at `/metrics`, and the optional observability stack via `docker compose --profile observ up -d` (Prometheus `:9090`, Grafana `:3310`).
+
 ## Scripts
 
-| Command | Purpose |
-| --- | --- |
-| `pnpm dev` | Run development hosts with reload |
-| `pnpm test` | Run TypeScript and Python tests |
-| `pnpm typecheck` | Check TypeScript types |
-| `pnpm lint` | Run ESLint |
-| `pnpm format` | Run Prettier |
-| `pnpm db:generate` | Generate Drizzle migrations |
-| `pnpm db:migrate` | Apply database migrations |
+| Command            | Purpose                           |
+| ------------------ | --------------------------------- |
+| `pnpm dev`         | Run development hosts with reload |
+| `pnpm test`        | Run TypeScript and Python tests   |
+| `pnpm typecheck`   | Check TypeScript types            |
+| `pnpm lint`        | Run ESLint                        |
+| `pnpm format`      | Run Prettier                      |
+| `pnpm db:generate` | Generate Drizzle migrations       |
+| `pnpm db:migrate`  | Apply database migrations         |
 
 ## About
 
@@ -86,16 +94,16 @@ Developed and maintained by **Harsh Sanket**.
 
 ## Tech Stack
 
-| Category | Technologies |
-| --- | --- |
-| Languages | TypeScript, Python |
-| Frontend | React 19, Vite |
-| Backend | Node.js, Fastify, FastAPI, Zod |
-| Database | PostgreSQL, pgvector, Drizzle ORM |
-| AI & ML | all-MiniLM-L6-v2, SmolLM2-360M-Instruct, LM Studio |
-| Testing | Vitest, pytest, Playwright |
-| Infrastructure | Docker, Docker Compose |
-| Development Tools | pnpm, uv, ESLint, Prettier |
+| Category          | Technologies                                       |
+| ----------------- | -------------------------------------------------- |
+| Languages         | TypeScript, Python                                 |
+| Frontend          | React 19, Vite                                     |
+| Backend           | Node.js, Fastify, FastAPI, Zod                     |
+| Database          | PostgreSQL, pgvector, Drizzle ORM                  |
+| AI & ML           | all-MiniLM-L6-v2, SmolLM2-360M-Instruct, LM Studio |
+| Testing           | Vitest, pytest, Playwright, k6                     |
+| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana |
+| Development Tools | pnpm, uv, ESLint, Prettier                         |
 
 ## Sponsor
 

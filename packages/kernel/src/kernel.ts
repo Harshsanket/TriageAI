@@ -266,6 +266,8 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       return { dropped };
     },
     shutdown: async () => {
+      // Stop the queue first: no new work may start while modules tear down.
+      await queue.close();
       for (const item of [...ordered].reverse()) {
         try {
           if (item.module.lifecycle.onStop) await item.module.lifecycle.onStop();

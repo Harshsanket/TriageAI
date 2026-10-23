@@ -1,8 +1,23 @@
 import { Suspense } from 'react';
+import type { ReactElement } from 'react';
 
 import { navEntries, useSystemManifest } from './host/manifest';
 import { navigate, useRoute } from './host/router';
 import { moduleRegistry } from './modules/registry';
+import RunDetailPage from './system/RunDetailPage';
+import SystemPage from './system/SystemPage';
+import RunsPage from './system/RunsPage';
+
+/** Host-owned pages (kernel/ops surface, not module-gated). */
+const hostPages: Array<{ label: string; path: string; render: (route: string) => ReactElement }> = [
+  { label: 'Runs', path: '/runs', render: (route) => renderRuns(route) },
+  { label: 'System', path: '/system', render: () => <SystemPage /> },
+];
+
+function renderRuns(route: string): ReactElement {
+  const detail = /^\/runs\/([^/]+)$/.exec(route);
+  return detail ? <RunDetailPage runId={detail[1] as string} /> : <RunsPage />;
+}
 
 export function App() {
   const manifestState = useSystemManifest();
@@ -21,9 +36,13 @@ export function App() {
   }
 
   const nav = navEntries(manifestState.manifest);
+  const hostNav = hostPages.map(({ label, path }) => ({ label, path, order: 900 }));
   const active =
     nav.find((entry) => entry.path === route) ??
     nav.find((entry) => route.startsWith(`${entry.path}/`));
+  const hostPage = hostPages.find(
+    (entry) => route === entry.path || route.startsWith(`${entry.path}/`),
+  );
   const Module = active ? moduleRegistry[active.path.replace('/', '')] : undefined;
 
   return (
@@ -42,10 +61,22 @@ export function App() {
             {entry.label}
           </button>
         ))}
+        {hostNav.map((entry) => (
+          <button
+            key={entry.path}
+            type="button"
+            onClick={() => navigate(entry.path)}
+            style={{ marginInlineStart: 8, opacity: 0.85 }}
+          >
+            {entry.label}
+          </button>
+        ))}
       </header>
       <main style={{ padding: '1rem' }}>
         <Suspense fallback={<p>Loading module…</p>}>
-          {Module ? (
+          {hostPage ? (
+            hostPage.render(route)
+          ) : Module ? (
             <Module />
           ) : (
             <section>

@@ -97,6 +97,8 @@ services:
     image: prom/prometheus:v3.7.2
     container_name: triageai-prometheus
     profiles: [observ]
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - '9090:9090'
 
@@ -106,6 +108,8 @@ services:
     profiles: [observ]
     depends_on:
       - prometheus
+    volumes:
+      - ./docker/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
     ports:
       - '3310:3000'
 

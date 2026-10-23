@@ -58,9 +58,13 @@ export interface StageHandlerContext {
   stageId: string;
   /** Stage config constants from the workflow definition. */
   config: Record<string, unknown>;
+  /** Resolved stage input (from the `input` refs mapping). */
+  input: Record<string, unknown>;
   /** Typed dataflow store: `data['input']` plus prior stage outputs by stage id. */
   data: Record<string, Record<string, unknown> | undefined>;
   database: Database;
+  /** Aborted on timeout or run cancellation — adapters must honour it. */
+  signal: AbortSignal;
 }
 
 export interface StageHandlerDef {
@@ -138,8 +142,18 @@ export interface WorkflowDef {
     /** Dataflow mapping: dotted paths like `$.text` resolve from run input, `$.stages.<id>.output.<f>` from prior stages. */
     input?: Record<string, unknown>;
     config?: Record<string, unknown>;
+    /** Skip-condition (grammar: docs/contracts/workflow-contract.md §3). */
+    when?: string;
+    /** Per-stage retries (total attempts = attempts). */
+    retry?: { attempts: number; backoffMs?: number[] };
+    /** Per-attempt timeout; aborts the handler signal. */
+    timeoutMs?: number;
+    /** Failure behavior: halt the run (default) or hand over to the fallback policy. */
+    onError?: 'halt' | 'fallback';
   }>;
   fallbackPolicyId?: string;
+  /** Workflow-level config constants (validated by the owning module). */
+  config?: Record<string, unknown>;
 }
 
 export interface Migration {

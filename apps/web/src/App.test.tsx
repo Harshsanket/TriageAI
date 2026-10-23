@@ -73,3 +73,72 @@ describe('App module host', () => {
     expect(window.location.pathname).toBe('/echo');
   });
 });
+
+describe('run inspector (host page)', () => {
+  it('lists runs with status and navigates to the detail view', async () => {
+    window.history.pushState({}, '', '/runs');
+    const run = {
+      id: 'run-1',
+      workflowId: 'echo.run',
+      workflowVersion: '0.1.0',
+      trigger: 'endpoint',
+      status: 'SUCCEEDED',
+      input: { text: 'hi' },
+      output: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+    };
+    const detail = {
+      run,
+      stages: [
+        {
+          id: 's1',
+          runId: 'run-1',
+          stageId: 'upper',
+          kind: 'echo.upper',
+          status: 'SUCCEEDED',
+          attempts: 1,
+          output: { upper: 'HI' },
+          error: null,
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        },
+      ],
+      decisions: [
+        {
+          id: 'd1',
+          runId: 'run-1',
+          stageRunId: 's1',
+          workflowId: 'echo.run',
+          moduleId: 'echo',
+          moduleVersion: '0.1.0',
+          evidence: { kind: 'deterministic' },
+          deterministic: { text: 'hi' },
+          timings: { durationMs: 2 },
+          error: null,
+          createdAt: new Date().toISOString(),
+          fallback: null,
+          outcome: { status: 'SUCCEEDED' },
+        },
+      ],
+    };
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.startsWith('/api/v1/system/runs/run-1')) {
+        return new Response(JSON.stringify(detail), { status: 200 });
+      }
+      if (url.startsWith('/api/v1/system/runs')) {
+        return new Response(JSON.stringify([run]), { status: 200 });
+      }
+      return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), modules: [] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Runs' })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'run-1' }));
+    expect(await screen.findByText(/Run run-1/)).toBeInTheDocument();
+    expect((await screen.findAllByText('evidence')).length).toBeGreaterThan(0);
+  });
+});
