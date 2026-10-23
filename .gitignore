@@ -41,3 +41,9 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Local-only project docs (kept out of git by project policy)
+docs/
+
+# Local tooling state
+.freebuff/

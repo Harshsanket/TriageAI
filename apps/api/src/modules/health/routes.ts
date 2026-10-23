@@ -9,8 +9,17 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
     return HealthResponse.parse({ status: 'ok', service: 'api', version: API_VERSION });
   });
 
-  app.get('/readyz', async () => {
-    // Phase 1 will add DB/Redis readiness probes here.
+  app.get('/readyz', async (_request, reply) => {
+    // Kernel migrations applied == core tables + queue exist.
+    const kernel = app.kernel;
+    if (kernel) {
+      const rows = await kernel.database
+        .query(`SELECT 1 AS ok FROM kernel_migrations LIMIT 1`)
+        .catch(() => []);
+      if (rows.length === 0) {
+        return reply.status(503).send({ status: 'starting', detail: 'kernel migrations pending' });
+      }
+    }
     return { status: 'ready' };
   });
 }

@@ -1,0 +1,12 @@
+{
+  "profile": "core",
+  "queue": {
+    "adapter": "pg-queue",
+    "pollIntervalMs": 250
+  },
+  "modules": {
+    "echo": { "enabled": true },
+    "chat": { "enabled": false }
+  },
+  "capabilities": {}
+}

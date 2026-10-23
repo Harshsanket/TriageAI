@@ -1,0 +1,27 @@
+{
+  "name": "@triageai/kernel",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./queue-tests": "./src/queue/contract.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@triageai/contracts": "workspace:*",
+    "postgres": "^3.4.9",
+    "ulid": "^3.0.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

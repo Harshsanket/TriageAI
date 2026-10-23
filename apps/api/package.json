@@ -15,6 +15,10 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@triageai/contracts": "workspace:*",
+    "@triageai/kernel": "workspace:*",
+    "@triageai/module-chat": "workspace:*",
+    "@triageai/module-echo": "workspace:*",
     "@triageai/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.6.1",

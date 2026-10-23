@@ -1,7 +1,10 @@
+name: triageai
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: triageai-postgres
+    profiles: [core, queue, ai, llm, observ]
     environment:
       POSTGRES_USER: triageai
       POSTGRES_PASSWORD: triageai
@@ -19,6 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: triageai-redis
+    profiles: [queue]
     ports:
       - '6379:6379'
     healthcheck:
@@ -27,5 +31,85 @@ services:
       timeout: 3s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    image: triageai/api:dev
+    container_name: triageai-api
+    profiles: [core, queue, ai, llm]
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://triageai:triageai@postgres:5432/triageai
+      AI_SERVICE_URL: http://ai-service:8000
+      TRIAGEAI_CONFIG: /app/triage.config.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "fetch(\"http://localhost:3000/readyz\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    image: triageai/web:dev
+    container_name: triageai-web
+    profiles: [core, queue, ai, llm]
+    depends_on:
+      - api
+    ports:
+      - '5173:80'
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: docker/ai-service.Dockerfile
+    image: triageai/ai-service:dev
+    container_name: triageai-ai-service
+    profiles: [ai, llm]
+    ports:
+      - '8000:8000'
+    volumes:
+      - triageai-hf-cache:/models
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: triageai-ollama
+    profiles: [llm]
+    ports:
+      - '11434:11434'
+    volumes:
+      - triageai-ollama:/root/.ollama
+
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    container_name: triageai-prometheus
+    profiles: [observ]
+    ports:
+      - '9090:9090'
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: triageai-grafana
+    profiles: [observ]
+    depends_on:
+      - prometheus
+    ports:
+      - '3310:3000'
+
 volumes:
   triageai-pgdata:
+  triageai-hf-cache:
+  triageai-ollama:

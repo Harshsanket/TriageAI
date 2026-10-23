@@ -8,11 +8,11 @@
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" dev",
     "build": "pnpm --filter \"./apps/*\" build",
-    "test": "pnpm --filter \"./apps/*\" test && pnpm test:python",
-    "test:ts": "pnpm --filter \"./apps/*\" test",
+    "test": "pnpm test:ts && pnpm test:python",
+    "test:ts": "pnpm --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./modules/*\" test",
     "test:python": "uv --directory apps/ai-service run pytest",
     "lint": "eslint .",
-    "typecheck": "pnpm --filter \"./apps/*\" typecheck",
+    "typecheck": "pnpm --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./modules/*\" typecheck",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

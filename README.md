@@ -99,15 +99,38 @@ Smoke checks:
 | `pnpm db:generate` | Generate a SQL migration from Drizzle schema changes |
 | `pnpm db:migrate`  | Apply pending migrations (needs Compose running)     |
 
+## Tech Stack
+
+| Category | Technologies |
+| --- | --- |
+| Languages | TypeScript, JavaScript, Python |
+| Frontend | React 19, Vite |
+| Backend | Node.js, Fastify, FastAPI, Zod |
+| Database | PostgreSQL, pgvector, Drizzle ORM |
+| Queues | PostgreSQL, Redis, BullMQ |
+| AI & ML | sentence-transformers, Ollama, LM Studio, MLX |
+| AI Models | all-MiniLM-L6-v2, SmolLM2-360M-Instruct |
+| AI Development Assistant | GLM 5.3 |
+| Testing | Vitest, pytest, React Testing Library, Playwright, k6 |
+| Infrastructure | Docker, Docker Compose, GitHub Actions |
+| Development Tools | pnpm, uv, ESLint, Prettier |
+
 ## About
 
-- **Languages:** TypeScript (kernel, hosts, modules — `packages/`, `apps/`, `modules/`) and Python (local AI inference service — `apps/ai-service`).
-- **Tools & frameworks:** pnpm workspaces monorepo · Node.js 22 · Fastify + Zod · React 19 (Vite) · FastAPI + uv · PostgreSQL (+ pgvector) & Redis · Docker Compose (profile-based: core/queue/ai/llm/observ) · Vitest, pytest, RTL · ESLint + Prettier · GitHub Actions CI · local-only models via Ollama / LM Studio / MLX.
-- **Developed proudly in 🇮🇳 Mumbai by Harsh Sanket.**
-- **Thanks to GLM 5.3** for pairing on the architecture, the kernel, and every phase of the build.
+**TriageAI** is an open-source project focused on building modular, self-hosted AI automation systems. It prioritizes extensibility, local inference, and transparent decision-making.
 
-_a **Harsh Sanket** production_
+Developed and maintained by **Harsh Sanket** in Mumbai, India, with development assistance from **GLM 5.3**.
+
+## Sponsor
+
+This project is proudly sponsored by **[kumarsidd](https://github.com/kumarsidd)**.
 
 ## License
 
 Released under the GNU General Public License v3.0 — see [`LICENSE`](./LICENSE).
+
+---
+
+*Proudly made in Mumbai by Harsh Sanket.*
+
+*A **Harsh Sanket** production.*

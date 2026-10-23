@@ -9,6 +9,22 @@ jobs:
   typescript:
     name: TypeScript (lint, typecheck, test)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: triageai
+          POSTGRES_PASSWORD: triageai
+          POSTGRES_DB: triageai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triageai -d triageai"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://triageai:triageai@localhost:5432/triageai
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -35,3 +51,30 @@ jobs:
           python-version: '3.13'
       - run: uv sync --extra dev
       - run: uv run pytest
+
+  docker-smoke:
+    name: Docker Compose (build + boot + curl smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose --profile core build
+      - name: Boot core profile
+        run: docker compose --profile core up -d
+      - name: 'Smoke: readyz, manifest, echo workflow e2e'
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/readyz || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          test "$code" = "200" || { docker compose logs api; exit 1; }
+          curl -sf http://localhost:3000/api/v1/system/manifest | grep -q '"id":"echo"'
+          curl -fs -X POST http://localhost:3000/api/v1/echo/run \
+            -H 'content-type: application/json' -d '{"text":"ci smoke"}' > /tmp/run.json
+          RUN_ID=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("/tmp/run.json","utf8")).runId)')
+          sleep 3
+          curl -sf "http://localhost:3000/api/v1/echo/runs?limit=5" | grep -q "\"id\":\"$RUN_ID\",\"status\":\"SUCCEEDED\"" || false
+          curl -sf -o /dev/null -w "\nweb=%{http_code}\n" http://localhost:5173/
+      - name: Tear down
+        if: always()
+        run: docker compose --profile core down -v

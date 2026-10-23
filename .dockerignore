@@ -1,0 +1,17 @@
+# Keep Docker build context small (api/web/ai-service images copy from the
+# workspace root; see AGENTS*.md patterns and docs/ARCHITECTURE.md §8).
+.git
+.github
+node_modules
+**/node_modules
+**/dist
+**.DS_Store
+**/.env
+**/.env.*
+!.env.example
+coverage
+.turbo
+*.log
+docs
+scripts
+qbittorrent
