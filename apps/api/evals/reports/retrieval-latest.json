@@ -1,0 +1,85 @@
+{
+  "generatedAt": "2026-10-23T10:52:40.596Z",
+  "collection": "eval_kb_docs",
+  "queries": 12,
+  "topK": 3,
+  "recallAt3": 1,
+  "mrr": 1,
+  "gates": {
+    "recallAt3": 0.8
+  },
+  "results": [
+    {
+      "query": "how long do refunds take",
+      "expected": "refunds",
+      "retrieved": ["refunds", "shipping", "billing"],
+      "rank": 1
+    },
+    {
+      "query": "can I get a pro rata refund on an annual plan",
+      "expected": "refunds",
+      "retrieved": ["refunds", "security", "accounts"],
+      "rank": 1
+    },
+    {
+      "query": "where is my delivery tracking number",
+      "expected": "shipping",
+      "retrieved": ["shipping", "billing", "refunds"],
+      "rank": 1
+    },
+    {
+      "query": "how long does shipping take",
+      "expected": "shipping",
+      "retrieved": ["shipping", "refunds", "billing"],
+      "rank": 1
+    },
+    {
+      "query": "how do I transfer workspace ownership",
+      "expected": "accounts",
+      "retrieved": ["accounts", "security", "refunds"],
+      "rank": 1
+    },
+    {
+      "query": "delete my account and data",
+      "expected": "accounts",
+      "retrieved": ["accounts", "security", "refunds"],
+      "rank": 1
+    },
+    {
+      "query": "I think my account was compromised",
+      "expected": "security",
+      "retrieved": ["security", "accounts", "refunds"],
+      "rank": 1
+    },
+    {
+      "query": "are API keys safe in public repositories",
+      "expected": "security",
+      "retrieved": ["security", "api", "accounts"],
+      "rank": 1
+    },
+    {
+      "query": "does the API support pagination and webhooks",
+      "expected": "api",
+      "retrieved": ["api", "security", "billing"],
+      "rank": 1
+    },
+    {
+      "query": "what is the API rate limit",
+      "expected": "api",
+      "retrieved": ["api", "security", "shipping"],
+      "rank": 1
+    },
+    {
+      "query": "where can I download VAT invoices",
+      "expected": "billing",
+      "retrieved": ["billing", "refunds", "security"],
+      "rank": 1
+    },
+    {
+      "query": "how do I change the billing email",
+      "expected": "billing",
+      "retrieved": ["billing", "refunds", "security"],
+      "rank": 1
+    }
+  ]
+}

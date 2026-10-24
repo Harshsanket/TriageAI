@@ -70,27 +70,24 @@ function createKernelContext(
       }
       engine.register(def, moduleId, module.version);
     },
-    startWorkflow: (workflowId, input, opts) => {
-      const started = () =>
-        engine.start(workflowId, input, opts).then((candidate) => {
-          if (!candidate.deduped) {
-            void queue
-              .enqueue(
-                'workflow.run',
-                { runId: candidate.runId },
-                { idempotencyKey: `run:${candidate.runId}` },
-              )
-              .catch((err) => {
-                logger.error(
-                  { err: (err as Error).message, runId: candidate.runId },
-                  'failed to enqueue run',
-                );
-                throw err;
-              });
-          }
-          return candidate;
-        });
-      return started();
+    startWorkflow: async (workflowId, input, opts) => {
+      const candidate = await engine.start(workflowId, input, opts);
+      if (!candidate.deduped) {
+        try {
+          await queue.enqueue(
+            'workflow.run',
+            { runId: candidate.runId },
+            { idempotencyKey: `run:${candidate.runId}` },
+          );
+        } catch (err) {
+          logger.error(
+            { err: (err as Error).message, runId: candidate.runId },
+            'failed to enqueue run',
+          );
+          throw err;
+        }
+      }
+      return candidate;
     },
     registerWorker: (queueName, handler, opts) => {
       queue.subscribe(queueName, async (payload) => handler(payload), opts);
@@ -148,6 +145,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       ) {
         continue; // always present on KernelContext
       }
+      if (dep.optional) continue;
       if (
         !(dep.capability in capabilities) ||
         !capabilities[dep.capability as keyof Capabilities]
@@ -166,7 +164,28 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   const queue: Queue =
     config.queue.adapter === 'inline' ? new InlineQueue(logger) : new PgQueue(database, logger);
 
-  const engine = new WorkflowEngine(database, logger);
+  const enqueueRun = async (runId: string): Promise<void> => {
+    await queue.enqueue('workflow.run', { runId }, { idempotencyKey: `run:${runId}` });
+  };
+  const engineRef: { current?: WorkflowEngine } = {};
+  const stageQueue: QueueCapability = {
+    start() {
+      throw new Error('a stage can only dispatch follow-up workflows, not register definitions');
+    },
+    async startWorkflow(workflowId, input, opts) {
+      const current = engineRef.current;
+      if (!current) throw new Error('workflow engine is not initialized yet');
+      const candidate = await current.start(workflowId, input, opts);
+      if (!candidate.deduped) await enqueueRun(candidate.runId);
+      return candidate;
+    },
+    registerWorker(queueName, handler, opts) {
+      queue.subscribe(queueName, async (payload) => handler(payload), opts);
+    },
+    drain: () => queue.drain(),
+  };
+  const engine = new WorkflowEngine(database, logger, events, stageQueue);
+  engineRef.current = engine;
   const routes: KernelRouteDef[] = [];
 
   for (const resolved of ordered) {
@@ -212,7 +231,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       module.register(context);
       if (module.lifecycle.onEnable) await module.lifecycle.onEnable();
       if (module.lifecycle.onStart) await module.lifecycle.onStart();
-      events.publish('kernel.module.started', { id: module.id, version: module.version });
+      await events.publish('kernel.module.started', { id: module.id, version: module.version });
     } catch (err) {
       throw bootValidationError(`Module "${module.id}" failed during start`, [
         (err as Error).message,

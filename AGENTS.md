@@ -52,7 +52,7 @@ docker compose --profile observ up -d # prometheus + grafana
 docker compose --profile core build   # api/web images
 ```
 
-DB-backed suites (pg-queue contract tests, kernel boot integration, api tests) need `DATABASE_URL` — local default `postgres://triageai:triageai@localhost:5432/triageai` (dev: `docker compose up -d` postgres first; CI: service container). Set `SKIP_DB_TESTS=1` to skip DB suites.
+DB-backed suites (pg-queue contract tests, kernel boot integration, api tests) need `DATABASE_URL` — local default `postgres://triageai:triageai@localhost:5432/triageai` (dev: `docker compose up -d` postgres first; CI: service container). Set `SKIP_DB_TESTS=1` to skip DB suites. **Stop `pnpm dev` first** (or point `DATABASE_URL` at a dedicated test database): the running API shares Postgres and the pg-queue worker, so it consumes workflow jobs created by the tests and they fail intermittently; the Phase-5 suite also clears `kb_docs`.
 
 ## Testing expectations (before you say "done")
 

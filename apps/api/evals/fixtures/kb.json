@@ -1,0 +1,48 @@
+{
+  "documents": [
+    {
+      "id": "refunds",
+      "title": "Refund policy",
+      "body": "Refunds are processed within five business days after approval. Annual plans can be refunded pro rata within thirty days. Contact billing@example.com with your invoice number."
+    },
+    {
+      "id": "shipping",
+      "title": "Shipping and delivery",
+      "body": "Physical add-ons ship within two business days. Tracking numbers are emailed on dispatch. Delivery takes three to seven business days depending on the region."
+    },
+    {
+      "id": "accounts",
+      "title": "Account management",
+      "body": "Owners can transfer workspace ownership, invite teammates by email, and enable two-factor authentication. Deleting an account removes all workspace data after a fourteen day grace period."
+    },
+    {
+      "id": "security",
+      "title": "Security and incident reporting",
+      "body": "Report suspected account compromise immediately to security@example.com. We revoke active sessions and require a password reset. Never share API keys in public repositories."
+    },
+    {
+      "id": "api",
+      "title": "Public API",
+      "body": "The REST API supports cursor pagination, idempotency keys, and webhooks. Rate limits are one hundred requests per minute per token. Authentication uses bearer tokens."
+    },
+    {
+      "id": "billing",
+      "title": "Billing and invoices",
+      "body": "Invoices are issued on the first of each month. Update the billing email in settings. VAT invoices can be downloaded from the billing portal at any time."
+    }
+  ],
+  "queries": [
+    { "query": "how long do refunds take", "expectedDocument": "refunds" },
+    { "query": "can I get a pro rata refund on an annual plan", "expectedDocument": "refunds" },
+    { "query": "where is my delivery tracking number", "expectedDocument": "shipping" },
+    { "query": "how long does shipping take", "expectedDocument": "shipping" },
+    { "query": "how do I transfer workspace ownership", "expectedDocument": "accounts" },
+    { "query": "delete my account and data", "expectedDocument": "accounts" },
+    { "query": "I think my account was compromised", "expectedDocument": "security" },
+    { "query": "are API keys safe in public repositories", "expectedDocument": "security" },
+    { "query": "does the API support pagination and webhooks", "expectedDocument": "api" },
+    { "query": "what is the API rate limit", "expectedDocument": "api" },
+    { "query": "where can I download VAT invoices", "expectedDocument": "billing" },
+    { "query": "how do I change the billing email", "expectedDocument": "billing" }
+  ]
+}

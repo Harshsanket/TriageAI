@@ -36,7 +36,6 @@ export const PROFILE_PRESETS: Record<string, Record<string, boolean>> = {
   },
   assistant: {
     chat: true,
-    memory: true,
     kb: true,
     'ai-pipeline': true,
   },

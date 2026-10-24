@@ -9,6 +9,7 @@
 export interface EvalContext {
   data: Record<string, Record<string, unknown> | undefined>;
   config: Record<string, unknown>;
+  runId?: string;
 }
 
 const REF = String.raw`\$\{([^}]+)\}`;
@@ -36,6 +37,7 @@ export function resolveRef(ref: string, ctx: EvalContext): unknown {
     const base = ctx.data[stageId];
     return getPath(base, outputMarker === 'output' ? rest : parts.slice(2));
   }
+  if (parts[0] === 'run' && parts[1] === 'id') return ctx.runId;
   if (parts[0] === 'run' && parts[1] === 'input') return getPath(ctx.data.input, parts.slice(2));
   if (parts[0] === 'input') return getPath(ctx.data.input, parts.slice(1));
   if (parts[0] === 'config') return getPath(ctx.config, parts.slice(1));

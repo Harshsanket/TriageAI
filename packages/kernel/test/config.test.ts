@@ -17,7 +17,7 @@ describe('config', () => {
     });
     const cfg = buildKernelConfig(file, {});
     expect(cfg.modules.chat?.enabled).toBe(true);
-    expect(cfg.modules.memory?.enabled).toBe(true);
+    expect(cfg.modules.kb?.enabled).toBe(true);
     expect(cfg.modules.support).toBeUndefined();
   });
 

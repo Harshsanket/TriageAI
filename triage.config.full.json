@@ -1,0 +1,66 @@
+{
+  "profile": "support",
+  "queue": {
+    "adapter": "pg-queue",
+    "pollIntervalMs": 250
+  },
+  "modules": {
+    "support": {
+      "enabled": true,
+      "options": {
+        "defaultCollection": "kb_docs"
+      }
+    },
+    "chat": {
+      "enabled": true,
+      "options": {
+        "collection": "kb_docs"
+      }
+    },
+    "kb": {
+      "enabled": true,
+      "options": {
+        "collection": "kb_docs"
+      }
+    },
+    "doc-assistant": {
+      "enabled": true,
+      "options": {
+        "collection": "project_docs"
+      }
+    },
+    "ai-pipeline": {
+      "enabled": true
+    },
+    "echo": {
+      "enabled": false
+    }
+  },
+  "capabilities": {
+    "embedder": {
+      "adapter": "ai-service"
+    },
+    "classifier": {
+      "adapter": "ai-service"
+    },
+    "vectorStore": {
+      "adapter": "pgvector"
+    },
+    "retriever": {
+      "adapter": "pgvector",
+      "threshold": 0.35,
+      "margin": 0.05,
+      "collections": {
+        "project_docs": {
+          "threshold": 0.35,
+          "margin": 0.01
+        }
+      }
+    },
+    "generator": {
+      "adapter": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "model": "qwen2.5:1.5b"
+    }
+  }
+}

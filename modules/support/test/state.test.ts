@@ -13,8 +13,9 @@ describe('ticket state machine', () => {
   it('matches the expected transition matrix exactly', () => {
     const expected: Record<TicketStatus, TicketStatus[]> = {
       NEW: ['CLASSIFIED', 'ROUTED', 'HUMAN_REVIEW', 'CANCELLED'],
-      CLASSIFIED: ['ROUTED', 'HUMAN_REVIEW', 'CANCELLED'],
-      ROUTED: ['HUMAN_REVIEW', 'RESOLVED', 'CANCELLED'],
+      CLASSIFIED: ['ROUTED', 'AWAITING_CUSTOMER', 'HUMAN_REVIEW', 'CANCELLED'],
+      ROUTED: ['AWAITING_CUSTOMER', 'HUMAN_REVIEW', 'RESOLVED', 'CANCELLED'],
+      AWAITING_CUSTOMER: ['RESOLVED', 'HUMAN_REVIEW', 'CANCELLED'],
       HUMAN_REVIEW: ['RESOLVED', 'CANCELLED'],
       RESOLVED: [],
       CANCELLED: [],

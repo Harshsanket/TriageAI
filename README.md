@@ -1,18 +1,21 @@
 # TriageAI
 
+> **Beta (`v0.1.0-beta.1`)** — Phases 0–5 are complete: kernel, workflow engine, support triage, RAG assistant, and validated support auto-reply. Expect rough edges; APIs and configs may change before `v1.0`.
+
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
-TriageAI is designed to combine classification, retrieval, generation, validation, and human review into composable workflows. Capabilities can be replaced independently, with inspectable execution records and local AI inference.
+TriageAI combines classification, retrieval, generation, validation, and human review into composable workflows. Capabilities are replaceable independently, every decision is inspectable, and inference stays local.
 
 ## Configurations
 
-- **`support`** — Customer-support automation with ticket classification, routing, RAG-based resolution, validation, human review, and integrations.
-- **`assistant`** — Personal assistant with chat, memory, and knowledge-base retrieval.
+- **`support`** — Ticket classification, routing, KB-grounded auto-reply with validation/fallbacks, human review, and customer confirmation.
+- **`assistant`** — KB-grounded chat and a doc-assistant that answers from this repository's `docs/**` with file-path citations.
+- **`full`** — Support + chat + KB + doc-assistant in one process (the easiest way to see everything).
 - **`core`** — Minimal kernel and application hosts for custom workflows.
 
 ## Development Status
 
-**Phase 0, 1, 2 and 3 complete:**
+**Phase 0, 1, 2, 3, 4 and 5 complete:**
 
 - **Kernel + module system** — config-driven enable/disable, capability seams, Docker profiles, and the `echo` reference module running queue-backed workflows on PostgreSQL.
 - **Workflow engine (Phase 2)** — safe `when` guards, per-stage retries/backoff, per-attempt timeouts (`AbortSignal`), cancellation, and fallback policies (`retry_alternative_retrieval`, `halt_run`, `AWAITING` outcomes).
@@ -20,10 +23,12 @@ TriageAI is designed to combine classification, retrieval, generation, validatio
 - **Observability** — `/metrics` (runs, stages, queue, dead letters, decisions, process), hw-monitor at `/system`, and the optional `observ` profile (Prometheus + Grafana).
 - **Performance** — k6 ingest/drain suite with a recorded baseline (0% errors, p95 ≈ 8 ms ingest, ~12.5 runs/s processing on the local Docker stack).
 - **Support slice (Phase 3, no LLM)** — tickets → MiniLM embedding-similarity classification (τ/δ thresholds, per-category) → deterministic versioned routing → agent review queue with a typed ticket state machine. Safety-critical categories always escalate; an eval harness gates macro-F1, p95 latency, and **zero false auto-routing**.
+- **Knowledge base + grounded assistant (Phase 4)** — pgvector-backed KB with approval gating and idempotent ingestion; retrieval with a τ/δ sufficiency gate; **local-only generation** (Ollama / LM Studio / OpenAI-compatible); grounded answers are cited, with missing citations attached deterministically and ungrounded answers refused; assistant chat with persisted conversations; doc-assistant answering from `docs/**` with file-path citations. Retrieval eval gates recall@3 ≥ 0.8 (currently 1.0, MRR 1.0); verified with a real local model (`qwen2.5:1.5b`, CPU).
+- **Validation + support auto-reply (Phase 5)** — a composable deterministic `Validator` (format, grounding, opt-in citation, injection, PII, forbidden-topic) guards every generated answer; fallbacks record policy/action/reasons and pending outcomes; routed tickets can receive a grounded reply and move to `AWAITING_CUSTOMER`, with customer confirmation, per-category versioned auto-reply policy, and hash-based repeat detection. Injection fixtures in tickets and KB text fail closed (no reply sent).
 
-**Next:** Phase 4 — knowledge base, retrieval, grounded generation, and the `assistant` profile.
+**Next:** Phase 6 — feedback → datasets, model registry, and an eval/rollback harness.
 
-Support automation, RAG, and assistant capabilities are planned for later phases and are not yet complete.
+Later phases (training, integrations, hardening) are planned but not yet complete.
 
 ## Repository Layout
 
@@ -62,17 +67,55 @@ cp apps/api/.env.example apps/api/.env
 cp apps/ai-service/.env.example apps/ai-service/.env
 ```
 
-Start the database, apply migrations, and run the development hosts:
+Start Postgres (the kernel applies migrations on boot) and run the development hosts:
 
 ```bash
-docker compose up -d
-pnpm --filter @triageai/api db:migrate
+docker compose up -d postgres
 pnpm dev
 ```
 
-The local development setup is intended to expose the API on port `3000`, the AI service on `8000`, and the web app on `5173`. Available services depend on the enabled configuration.
+Local dev exposes the API on `:3000`, the web app on `:5173`, and (when running) the AI service on `:8000`. Available UI modules depend on the config file; see below.
+
+### Run everything locally (full profile)
+
+```bash
+# 1. Postgres + Ollama
+docker compose up -d postgres
+docker compose --profile llm up -d ollama
+docker exec triageai-ollama ollama pull qwen2.5:1.5b
+
+# 2. AI service (embeddings + classification) on the host
+uv --directory apps/ai-service run uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# 3. API + web with every module enabled
+TRIAGEAI_CONFIG=triage.config.full.json pnpm dev
+```
+
+Open:
+
+- `http://localhost:5173/chat` — grounded chat over the KB
+- `http://localhost:5173/support` — tickets + auto-reply + confirmation
+- `http://localhost:5173/kb` — add/approve knowledge-base documents
+- `http://localhost:5173/doc-assistant` — ask about this repo's docs
+- `http://localhost:5173/runs` — inspector with stage timelines and decision records
+
+The chat is **grounded**: it answers from approved KB documents and refuses when retrieval is insufficient ("I could not verify this from the knowledge base."). Add docs in `/kb` for new topics. If a question refuses, check `/runs` for the retrieval gate and validation checks.
 
 Phase-2 surfaces: workflow inspector at `/runs`, hardware monitor at `/system`, Prometheus metrics at `/metrics`, and the optional observability stack via `docker compose --profile observ up -d` (Prometheus `:9090`, Grafana `:3310`).
+
+Assistant profile (KB + retrieval + local generation): first download a model into the local runtime, then start the assistant stack:
+
+```bash
+docker compose --profile llm up -d
+docker exec triageai-ollama ollama pull qwen2.5:1.5b
+TRIAGEAI_CONFIG=/app/triage.config.assistant.json docker compose --profile core up --build
+```
+
+Open `/kb` to add and approve documents, then `/chat` to ask grounded questions (answers cite their sources). `TRIAGEAI_CONFIG=/app/triage.config.assistant.json` points the API at the assistant module set; without it the default core profile runs.
+
+Run everything together (support + chat + KB + doc-assistant) with `TRIAGEAI_CONFIG=/app/triage.config.full.json`; the chat is grounded, so questions without an approved KB source are refused by design.
+
+Generator address: configs point at `http://localhost:11434` for host-run dev. The API container defaults to `http://ollama:11434`; set `TRIAGEAI_GENERATOR_BASE_URL` to override (e.g. `http://host.docker.internal:11434` for an Ollama on the host, or any remote runtime).
 
 Support profile (classification + routing, **no LLM**): start the AI service and point the API at the support config:
 
@@ -84,6 +127,16 @@ TRIAGEAI_CONFIG=/app/triage.config.support.json AI_SERVICE_URL=http://host.docke
 ```
 
 Then open `/support` in the web app and create a ticket — it is classified, routed, and (for security/unknown cases) escalated to human review.
+
+Support auto-reply profile (classification + routing + KB + local generation): same AI service and model, but retrieval and a local generator are enabled so routed tickets can receive a grounded answer:
+
+```bash
+docker compose --profile llm up -d
+docker exec triageai-ollama ollama pull qwen2.5:1.5b
+TRIAGEAI_CONFIG=/app/triage.config.support-autoreply.json docker compose --profile core up --build
+```
+
+Auto-reply is per-category and versioned (`GET/PUT /api/v1/support/auto-reply-policies`): disable it for a category and the **next** ticket escalates without a deploy. Replies move the ticket to `AWAITING_CUSTOMER`; `POST /api/v1/support/tickets/:id/confirmation` with `{ "solved": true | false }` resolves or escalates, and identical failed answers are never re-sent. `POST /api/v1/support/tickets/:id/auto-reply` re-dispatches a run for an agent; the same hash guard applies.
 
 ## Scripts
 
@@ -106,16 +159,16 @@ Developed and maintained by **Harsh Sanket**.
 
 ## Tech Stack
 
-| Category          | Technologies                                       |
-| ----------------- | -------------------------------------------------- |
-| Languages         | TypeScript, Python                                 |
-| Frontend          | React 19, Vite                                     |
-| Backend           | Node.js, Fastify, FastAPI, Zod                     |
-| Database          | PostgreSQL, pgvector, Drizzle ORM                  |
-| AI & ML           | all-MiniLM-L6-v2, SmolLM2-360M-Instruct, LM Studio |
-| Testing           | Vitest, pytest, Playwright, k6                     |
-| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana |
-| Development Tools | pnpm, uv, ESLint, Prettier                         |
+| Category          | Technologies                                              |
+| ----------------- | --------------------------------------------------------- |
+| Languages         | TypeScript, Python                                        |
+| Frontend          | React 19, Vite                                            |
+| Backend           | Node.js, Fastify, FastAPI, Zod                            |
+| Database          | PostgreSQL, pgvector, thin SQL adapter (Drizzle optional) |
+| AI & ML           | all-MiniLM-L6-v2, Qwen2.5-1.5B via Ollama, LM Studio      |
+| Testing           | Vitest, pytest, Playwright, k6                            |
+| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana        |
+| Development Tools | pnpm, uv, ESLint, Prettier                                |
 
 ## Sponsor
 

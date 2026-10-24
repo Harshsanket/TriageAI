@@ -50,3 +50,6 @@ docs/
 
 # Timestamped eval artifacts (latest.json is committed)
 apps/ai-service/eval/reports/classification-*.json
+
+# Locally vendored agent skills (never committed)
+.opencode/skills/

@@ -9,6 +9,7 @@ const ctx = {
     empty: {},
   },
   config: { threshold: 2 },
+  runId: 'run-1',
 };
 
 describe('grammar: refs', () => {
@@ -17,6 +18,7 @@ describe('grammar: refs', () => {
     expect(resolveRef('${input.count}', ctx)).toBe(3);
     expect(resolveRef('${stages.upper.output.upper}', ctx)).toBe('SHIP IT');
     expect(resolveRef('${config.threshold}', ctx)).toBe(2);
+    expect(resolveRef('${run.id}', ctx)).toBe('run-1');
     expect(resolveRef('${missing.deep.path}', ctx)).toBeUndefined();
   });
 

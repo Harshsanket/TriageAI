@@ -9,20 +9,20 @@ import { z } from 'zod';
 import type { KernelLogger } from './types.js';
 
 export interface EventBus {
-  publish(event: string, payload: unknown): void;
-  subscribe(event: string, handler: (payload: unknown) => void): void;
+  publish(event: string, payload: unknown): Promise<void>;
+  subscribe(event: string, handler: (payload: unknown) => void | Promise<void>): void;
 }
 
 interface Subscriber {
   event: string;
-  handler: (payload: unknown) => void;
+  handler: (payload: unknown) => void | Promise<void>;
 }
 
 export function createEventBus(logger: KernelLogger): EventBus {
   const subscribers: Subscriber[] = [];
 
   return {
-    publish(event, payload) {
+    async publish(event, payload) {
       if (!/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+/.test(event)) {
         // publish-side naming contract: module.entity.verb
         logger.error({ event }, 'event name must be module.entity.verb');
@@ -31,7 +31,7 @@ export function createEventBus(logger: KernelLogger): EventBus {
       for (const sub of subscribers) {
         if (sub.event !== event) continue;
         try {
-          sub.handler(payload);
+          await sub.handler(payload);
         } catch (err) {
           logger.error({ event, err: (err as Error).message }, 'event subscriber failed');
         }

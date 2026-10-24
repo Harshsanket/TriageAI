@@ -205,12 +205,21 @@ importers:
       '@triageai/module-chat':
         specifier: workspace:*
         version: link:../../modules/chat
+      '@triageai/module-doc-assistant':
+        specifier: workspace:*
+        version: link:../../modules/doc-assistant
       '@triageai/module-echo':
         specifier: workspace:*
         version: link:../../modules/echo
+      '@triageai/module-kb':
+        specifier: workspace:*
+        version: link:../../modules/kb
       '@triageai/module-support':
         specifier: workspace:*
         version: link:../../modules/support
+      '@triageai/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
       '@triageai/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -309,6 +318,9 @@ importers:
       '@triageai/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@triageai/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -328,6 +340,28 @@ importers:
       '@triageai/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  modules/doc-assistant:
+    dependencies:
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      '@triageai/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -360,6 +394,31 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  modules/kb:
+    dependencies:
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      '@triageai/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
 
   modules/support:
     dependencies:
@@ -416,6 +475,18 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
+
+  packages/rag:
     devDependencies:
       '@types/node':
         specifier: ^22.18.6

@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 
+import { buildRagPrompt, finalizeAnswer, runValidation } from '@triageai/rag';
 import type { TriageModule } from '@triageai/kernel';
 
 const configSchema = z.object({}).strict();
@@ -118,10 +119,16 @@ const MIGRATIONS = [
 export const aiPipelineModule: TriageModule = {
   id: 'ai-pipeline',
   version: '0.1.0',
-  capabilities: ['embedder', 'classifier'],
+  capabilities: ['embedder', 'classifier', 'validator'],
   dependsOn: {
     modules: [],
-    capabilities: [{ capability: 'embedder' }, { capability: 'classifier' }],
+    capabilities: [
+      { capability: 'embedder', optional: true },
+      { capability: 'classifier', optional: true },
+      { capability: 'retriever', optional: true },
+      { capability: 'generator', optional: true },
+      { capability: 'validator', optional: true },
+    ],
   },
   configSchema,
   migrations: MIGRATIONS,
@@ -256,6 +263,180 @@ export const aiPipelineModule: TriageModule = {
             category,
             escalate,
           },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('ai.retrieve', {
+      execute: async (stage) => {
+        const retriever = ctx.capabilities.retriever;
+        if (!retriever) throw new Error('retriever capability is not configured');
+        const input = stage.input as {
+          query?: string;
+          collection?: string;
+          filter?: Record<string, unknown>;
+          limit?: number;
+        };
+        if (!input.query) throw new Error('ai.retrieve requires a query');
+        // `retry_alternative_retrieval` re-runs with a broader candidate set
+        // (the approved-only filter is never relaxed).
+        const alternate = stage.config._alternate === true;
+        const baseLimit = input.limit ?? 4;
+        const limit = alternate ? Math.min(baseLimit * 2, 10) : baseLimit;
+        const result = await retriever.search(input.collection ?? 'kb_docs', input.query, {
+          limit,
+          filter: input.filter ?? { approved: true },
+        });
+        // Never feed clearly-irrelevant chunks to a small generator: they make
+        // it refuse or hallucinate. Keep at least the best chunk for context.
+        const relevant = result.chunks.filter((chunk) => chunk.score >= result.gate.threshold);
+        const selected = relevant.length > 0 ? relevant : result.chunks.slice(0, 1);
+        return {
+          output: {
+            chunks: selected.map((chunk) => ({
+              id: chunk.id,
+              ref:
+                (chunk.metadata.path as string | undefined) ??
+                (chunk.metadata.title as string | undefined) ??
+                chunk.documentId,
+              text: chunk.text,
+              score: Number(chunk.score.toFixed(4)),
+              documentId: chunk.documentId,
+            })),
+            gate: result.gate,
+            sufficient: result.gate.sufficient,
+          },
+          evidence: {
+            kind: 'deterministic',
+            thresholds: { score: result.gate.threshold, margin: result.gate.marginThreshold },
+            topScore: Number(result.gate.topScore.toFixed(4)),
+            margin: Number(result.gate.margin.toFixed(4)),
+            selectedChunks: selected.length,
+            retrievedChunks: result.chunks.length,
+            reasons: result.gate.sufficient ? ['sufficient'] : ['insufficient_retrieval'],
+          },
+          deterministic: {
+            collection: input.collection ?? 'kb_docs',
+            limit,
+            strategy: alternate ? 'alternate' : 'primary',
+            filter: input.filter ?? { approved: true },
+            gate: result.gate,
+          },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('ai.generate', {
+      execute: async (stage) => {
+        const generator = ctx.capabilities.generator;
+        if (!generator) throw new Error('generator capability is not configured');
+        const input = stage.input as {
+          question?: string;
+          chunks?: Array<{ ref?: string; text?: string; score?: number }>;
+          style?: 'assistant' | 'docs';
+          maxTokens?: number;
+        };
+        if (!input.question) throw new Error('ai.generate requires a question');
+        const chunks = (input.chunks ?? [])
+          .filter((chunk) => chunk.ref && chunk.text)
+          .map((chunk) => ({
+            ref: chunk.ref as string,
+            text: chunk.text as string,
+            score: chunk.score,
+          }));
+        const prompt = buildRagPrompt({ question: input.question, chunks, style: input.style });
+        const started = Date.now();
+        const result = await generator.generate(prompt, {
+          maxTokens: input.maxTokens ?? 384,
+          signal: stage.signal,
+        });
+        return {
+          output: {
+            answer: result.text.trim(),
+            modelVersion: result.modelVersion,
+            citations: chunks.map((chunk) => chunk.ref),
+            generationMs: Date.now() - started,
+          },
+          evidence: {
+            kind: 'model_generated',
+            modelVersion: result.modelVersion,
+            citations: chunks.map((chunk) => chunk.ref),
+          },
+          deterministic: {
+            promptChars: prompt.length,
+            sourceRefs: chunks.map((chunk) => chunk.ref),
+            usage: result.usage ?? null,
+          },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('ai.validate', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          text?: string;
+          answer?: string;
+          question?: string;
+          sources?: Array<{ ref?: string; text?: string }>;
+          policy?: Record<string, unknown>;
+        };
+        const text = input.text ?? input.answer ?? '';
+        const sources = (input.sources ?? [])
+          .filter((source) => source.ref && source.text)
+          .map((source) => ({ ref: source.ref as string, text: source.text as string }));
+        const policy = input.policy ?? {};
+        const validator = ctx.capabilities.validator;
+        const report = validator
+          ? await validator.validate(
+              { text, sources, question: input.question, citations: sources.map((s) => s.ref) },
+              policy,
+            )
+          : runValidation({ text, sources, question: input.question }, policy);
+        return {
+          output: {
+            passed: report.passed,
+            checks: report.checks,
+            text,
+            sources,
+          },
+          evidence: {
+            kind: 'deterministic',
+            checks: report.checks,
+            failedChecks: report.checks
+              .filter((check) => !check.passed)
+              .map((check) => check.checkId),
+          },
+          deterministic: { policy, passed: report.passed },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('ai.finalize_answer', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          answer?: string;
+          sources?: Array<{ ref?: string; text?: string }>;
+        };
+        const sources = (input.sources ?? [])
+          .filter((source) => source.ref && source.text)
+          .map((source) => ({ ref: source.ref as string, text: source.text as string }));
+        const finalized = finalizeAnswer({ answer: input.answer ?? '', sources });
+        return {
+          output: finalized,
+          evidence: {
+            kind: 'deterministic',
+            grounding: {
+              method: 'token_coverage',
+              grounded: finalized.grounding.grounded,
+              cited: finalized.grounding.cited,
+              coverage: Number(finalized.grounding.coverage.toFixed(4)),
+              threshold: finalized.grounding.threshold,
+            },
+            citationSource: finalized.citationSource,
+            refused: finalized.refused,
+            reason: finalized.reason ?? null,
+          },
+          deterministic: { sources: sources.map((source) => source.ref) },
         };
       },
     });

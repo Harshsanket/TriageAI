@@ -7,4 +7,6 @@ export const moduleRegistry: Record<string, ComponentType> = {
   echo: lazy(() => import('./echo/EchoApp')),
   chat: lazy(() => import('./chat/ChatApp')),
   support: lazy(() => import('./support/SupportApp')),
+  kb: lazy(() => import('./kb/KbApp')),
+  'doc-assistant': lazy(() => import('./doc-assistant/DocAssistantApp')),
 };

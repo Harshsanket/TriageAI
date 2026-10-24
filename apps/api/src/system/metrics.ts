@@ -13,6 +13,15 @@ const line = (name: string, labels: Record<string, string>, value: number): stri
     .join(',')}} ${value}`;
 
 export function registerMetricsRoute(app: FastifyInstance, kernel: Kernel): void {
+  const safeQuery = async <T extends Record<string, unknown>>(text: string): Promise<Array<T>> => {
+    try {
+      return await kernel.database.query<T>(text);
+    } catch {
+      // Module tables may be absent in profiles where the module is disabled.
+      return [];
+    }
+  };
+
   app.get('/metrics', async (_request, reply) => {
     const database = kernel.database;
 
@@ -31,6 +40,22 @@ export function registerMetricsRoute(app: FastifyInstance, kernel: Kernel): void
     const decisions = (await database.query(
       `SELECT COUNT(*)::int AS count FROM decision_records`,
     )) as Array<{ count: number }>;
+    const stageLatency = await safeQuery<{ kind: string; count: number; sum_ms: number }>(
+      `SELECT COALESCE(adapter_versions->>'handlerKind', 'unknown') AS kind,
+              COUNT(*)::int AS count,
+              COALESCE(SUM((timings->>'durationMs')::numeric), 0)::int AS sum_ms
+       FROM decision_records
+       WHERE timings ? 'durationMs'
+       GROUP BY 1`,
+    );
+    const retries = await safeQuery<{ retried: number; total: number }>(
+      `SELECT COUNT(*) FILTER (WHERE attempts > 1)::int AS retried,
+              COUNT(*)::int AS total
+       FROM stage_runs`,
+    );
+    const autoReplies = await safeQuery<{ state: string; count: number }>(
+      `SELECT state, COUNT(*)::int AS count FROM support_auto_replies GROUP BY state`,
+    );
 
     const lines: string[] = [
       '# HELP triageai_runs_total Workflow runs by terminal/current status.',
@@ -50,6 +75,21 @@ export function registerMetricsRoute(app: FastifyInstance, kernel: Kernel): void
       '# HELP triageai_decisions_total Append-only decision records.',
       '# TYPE triageai_decisions_total gauge',
       line('triageai_decisions_total', {}, decisions[0]?.count ?? 0),
+      '# HELP triageai_stage_duration_ms Stage decision latency (count + sum).',
+      '# TYPE triageai_stage_duration_ms gauge',
+      ...stageLatency.flatMap((row) => [
+        line('triageai_stage_duration_ms_count', { kind: row.kind }, row.count),
+        line('triageai_stage_duration_ms_sum', { kind: row.kind }, row.sum_ms),
+      ]),
+      '# HELP triageai_stage_retries Stage runs that needed more than one attempt.',
+      '# TYPE triageai_stage_retries gauge',
+      line('triageai_stage_retries_total', {}, retries[0]?.retried ?? 0),
+      line('triageai_stage_runs_attempted_total', {}, retries[0]?.total ?? 0),
+      '# HELP triageai_auto_replies_total Auto-reply attempts by state.',
+      '# TYPE triageai_auto_replies_total gauge',
+      ...autoReplies.map((row) =>
+        line('triageai_auto_replies_total', { state: row.state }, row.count),
+      ),
       '# HELP process_resident_memory_bytes Node process RSS.',
       '# TYPE process_resident_memory_bytes gauge',
       `process_resident_memory_bytes ${process.memoryUsage().rss}`,

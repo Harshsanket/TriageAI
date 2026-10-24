@@ -7,7 +7,9 @@ import { bootKernel, buildKernelConfig, loadConfigFile, PostgresDatabase } from 
 import type { Kernel, KernelLogger, RouteRequest } from '@triageai/kernel';
 import { aiPipelineModule } from '@triageai/module-ai-pipeline';
 import { chatModule } from '@triageai/module-chat';
+import { docAssistantModule } from '@triageai/module-doc-assistant';
 import { echoModule } from '@triageai/module-echo';
+import { kbModule } from '@triageai/module-kb';
 import { supportModule } from '@triageai/module-support';
 
 import { registerHealthRoutes } from './modules/health/routes.js';
@@ -92,12 +94,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       config: kernelConfig,
       database,
       logger: kernelLogger,
-      capabilities: options.capabilities ?? createCapabilities(kernelConfig, config.aiServiceUrl),
+      capabilities:
+        options.capabilities ?? createCapabilities(kernelConfig, config.aiServiceUrl, database),
       modules: {
         echo: echoModule,
         chat: chatModule,
         support: supportModule,
         'ai-pipeline': aiPipelineModule,
+        kb: kbModule,
+        'doc-assistant': docAssistantModule,
       },
     });
     app.decorate('kernel', kernel);

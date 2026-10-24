@@ -16,6 +16,7 @@ export type CapabilityId =
   | 'eventBus'
   | 'embedder'
   | 'classifier'
+  | 'vectorStore'
   | 'retriever'
   | 'generator'
   | 'validator'
@@ -31,6 +32,8 @@ export interface ModuleDependency {
 export interface CapabilityDependency {
   capability: CapabilityId | (string & {});
   minSchema?: string;
+  /** Optional deps are skipped by boot validation (the consuming stage validates at runtime). */
+  optional?: boolean;
 }
 
 export interface Migration {
@@ -63,6 +66,8 @@ export interface StageHandlerContext {
   /** Typed dataflow store: `data['input']` plus prior stage outputs by stage id. */
   data: Record<string, Record<string, unknown> | undefined>;
   database: Database;
+  /** Queue access so a stage can dispatch a follow-up workflow (idempotently). */
+  queue: QueueCapability;
   /** Aborted on timeout or run cancellation — adapters must honour it. */
   signal: AbortSignal;
 }
@@ -75,6 +80,8 @@ export interface StageHandlerDef {
     evidence?: Record<string, unknown>;
     /** Deterministic inputs captured for the decision record (ADR-0005). */
     deterministic?: Record<string, unknown> | null;
+    /** Policy outcome when a successful stage decided *not* to proceed (Phase 5). */
+    fallback?: Record<string, unknown> | null;
   }>;
 }
 
@@ -99,10 +106,103 @@ export interface ClassificationResult {
   scores: Array<{ category: string; score: number }>;
 }
 
-/** Resolvable capability adapters (Phase 3: embedder + classifier). */
+export interface VectorChunk {
+  id: string;
+  collection: string;
+  documentId: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface VectorMatch {
+  id: string;
+  documentId: string;
+  text: string;
+  score: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface VectorStore {
+  upsert(chunks: Array<VectorChunk & { embedding: number[] }>): Promise<void>;
+  search(
+    collection: string,
+    embedding: number[],
+    opts?: { limit?: number; filter?: Record<string, unknown> },
+  ): Promise<VectorMatch[]>;
+  deleteByDocument(collection: string, documentId: string): Promise<void>;
+}
+
+export interface RetrievalGate {
+  sufficient: boolean;
+  topScore: number;
+  margin: number;
+  threshold: number;
+  marginThreshold: number;
+}
+
+export interface RetrievalResult {
+  chunks: VectorMatch[];
+  gate: RetrievalGate;
+}
+
+export interface Retriever {
+  search(
+    collection: string,
+    query: string,
+    opts?: { limit?: number; filter?: Record<string, unknown> },
+  ): Promise<RetrievalResult>;
+}
+
+export interface GenerationResult {
+  text: string;
+  modelVersion: string;
+  usage?: { promptTokens?: number; completionTokens?: number; durationMs?: number };
+}
+
+export interface Generator {
+  generate(
+    prompt: string,
+    opts?: { maxTokens?: number; temperature?: number; signal?: AbortSignal },
+  ): Promise<GenerationResult>;
+}
+
+export interface ValidationSource {
+  ref: string;
+  text: string;
+}
+
+export interface ValidatorInput {
+  text: string;
+  sources?: ValidationSource[];
+  question?: string;
+  citations?: string[];
+}
+
+export interface ValidationCheckResult {
+  checkId: string;
+  passed: boolean;
+  reasons: string[];
+}
+
+export interface ValidationReport {
+  passed: boolean;
+  checks: ValidationCheckResult[];
+  redactions?: Record<string, number>;
+}
+
+/** Deterministic validation seam (Phase 5): modules add/remove/replace checks. */
+export interface Validator {
+  validate(input: ValidatorInput, policy?: Record<string, unknown>): Promise<ValidationReport>;
+}
+
+/** Resolvable capability adapters (Phase 4/5: embedder, classifier, vector store, retriever, generator, validator). */
 export interface Capabilities {
   embedder?: { embed(texts: string[]): Promise<EmbedResult> };
   classifier?: { classify(text: string): Promise<ClassificationResult> };
+  vectorStore?: VectorStore;
+  retriever?: Retriever;
+  generator?: Generator;
+  validator?: Validator;
 }
 
 /**

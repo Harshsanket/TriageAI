@@ -28,7 +28,10 @@
     "ulid": "^3.0.1",
     "zod": "^3.25.76",
     "@triageai/module-ai-pipeline": "workspace:*",
-    "@triageai/module-support": "workspace:*"
+    "@triageai/module-support": "workspace:*",
+    "@triageai/module-kb": "workspace:*",
+    "@triageai/module-doc-assistant": "workspace:*",
+    "@triageai/rag": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",

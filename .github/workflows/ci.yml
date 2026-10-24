@@ -101,6 +101,56 @@ jobs:
           name: classification-eval-reports
           path: apps/ai-service/eval/reports/
 
+  retrieval-eval:
+    name: Retrieval eval (recall@3 / MRR)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: triageai
+          POSTGRES_PASSWORD: triageai
+          POSTGRES_DB: triageai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triageai -d triageai"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://triageai:triageai@localhost:5432/triageai
+      AI_SERVICE_URL: http://127.0.0.1:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - run: pnpm install --frozen-lockfile
+      - name: Install ai-service deps + start it
+        working-directory: apps/ai-service
+        run: |
+          uv sync --extra dev
+          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/ai-service.log 2>&1 &
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/readyz || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          test "$code" = "200" || { cat /tmp/ai-service.log; exit 1; }
+      - name: Run retrieval eval (recall@3 gate 0.8)
+        run: pnpm --filter @triageai/api exec tsx evals/retrieval.eval.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrieval-eval-report
+          path: apps/api/evals/reports/
+
   docker-smoke:
     name: Docker Compose (build + boot + curl smoke)
     runs-on: ubuntu-latest

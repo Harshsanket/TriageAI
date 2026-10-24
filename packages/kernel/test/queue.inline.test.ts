@@ -12,13 +12,17 @@ const noopLogger: KernelLogger = {
 };
 
 describe('eventBus', () => {
-  it('delivers to matching subscribers and forbids bad names', () => {
+  it('delivers to matching subscribers and forbids bad names', async () => {
     const bus = createEventBus(noopLogger);
     const seen: string[] = [];
-    bus.subscribe('demo.thing.updated', (p) => seen.push(String((p as { x: string }).x)));
-    bus.subscribe('other.thing.updated', () => seen.push('wrong'));
-    bus.publish('demo.thing.updated', { x: 'yes' });
-    bus.publish('not-a-valid:name', {});
+    bus.subscribe('demo.thing.updated', (p) => {
+      seen.push(String((p as { x: string }).x));
+    });
+    bus.subscribe('other.thing.updated', () => {
+      seen.push('wrong');
+    });
+    await bus.publish('demo.thing.updated', { x: 'yes' });
+    await bus.publish('not-a-valid:name', {});
     expect(seen).toEqual(['yes']);
   });
 });

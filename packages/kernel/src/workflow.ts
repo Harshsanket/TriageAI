@@ -8,9 +8,11 @@ import { ulid } from 'ulid';
 
 import { evaluateWhen, resolveStageInput, validateWhen } from './grammar.js';
 import type { EvalContext } from './grammar.js';
+import type { EventBus } from './eventbus.js';
 import type {
   Database,
   KernelLogger,
+  QueueCapability,
   StageHandlerContext,
   StageHandlerDef,
   WorkflowDef,
@@ -51,6 +53,24 @@ export class StageTimeoutError extends Error {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const UNAVAILABLE_QUEUE: QueueCapability = {
+  start() {
+    throw new Error('queue is not available in this context');
+  },
+  async startWorkflow() {
+    throw new Error('queue is not available in this context');
+  },
+  registerWorker() {
+    throw new Error('queue is not available in this context');
+  },
+  async drain() {},
+};
+
+/** Map a policy id to the terminal action the engine takes after a failure. */
+function fallbackAction(policy: string): 'fail' | 'awaiting' {
+  return policy === 'halt_run' || policy === 'retry_alternative_retrieval' ? 'fail' : 'awaiting';
+}
+
 export class WorkflowEngine {
   private workflows = new Map<string, RegisteredWorkflow>();
   private handlers = new Map<string, StageHandlerDef>();
@@ -60,6 +80,8 @@ export class WorkflowEngine {
   constructor(
     private database: Database,
     private logger: KernelLogger,
+    private events?: EventBus,
+    private queueCapability?: QueueCapability,
   ) {}
 
   register(def: WorkflowDef, moduleId: string, moduleVersion: string): void {
@@ -195,13 +217,20 @@ export class WorkflowEngine {
     if (FINAL_RUN_STATES.has(run.status)) return; // idempotent re-delivery
 
     if (run.status === 'CANCELLED_PENDING') {
-      await this.finishRun(runId, 'CANCELLED', null);
+      await this.finishRun(runId, 'CANCELLED', null, undefined, run.input, run.workflow_id);
       return;
     }
 
     const workflow = this.workflows.get(run.workflow_id);
     if (!workflow) {
-      await this.finishRun(runId, 'FAILED', 'workflow not registered');
+      await this.finishRun(
+        runId,
+        'FAILED',
+        'workflow not registered',
+        undefined,
+        run.input,
+        run.workflow_id,
+      );
       return;
     }
 
@@ -218,14 +247,14 @@ export class WorkflowEngine {
             ? (run.input as Record<string, unknown>)
             : (JSON.parse(String(run.input)) as Record<string, unknown>),
     };
-    const evalCtx: EvalContext = { data, config: workflow.def.config ?? {} };
+    const evalCtx: EvalContext = { data, config: workflow.def.config ?? {}, runId };
 
     for (let index = 0; index < workflow.def.stages.length; index++) {
       const stage = workflow.def.stages[index] as WorkflowDef['stages'][number];
 
       if (await this.isCancelled(runId)) {
         await this.cascadeCancel(runId, workflow.def.stages.slice(index));
-        await this.finishRun(runId, 'CANCELLED', null);
+        await this.finishRun(runId, 'CANCELLED', null, undefined, run.input, run.workflow_id);
         return;
       }
 
@@ -266,11 +295,18 @@ export class WorkflowEngine {
       });
       if (outcome.kind === 'cancelled') {
         await this.cascadeCancel(runId, workflow.def.stages.slice(index + 1));
-        await this.finishRun(runId, 'CANCELLED', null);
+        await this.finishRun(runId, 'CANCELLED', null, undefined, run.input, run.workflow_id);
         return;
       }
       if (outcome.kind === 'awaiting') {
-        await this.finishRun(runId, 'AWAITING', null);
+        await this.finishRun(
+          runId,
+          'AWAITING',
+          outcome.error ?? null,
+          undefined,
+          run.input,
+          run.workflow_id,
+        );
         this.logger.warn(
           { runId, policy: workflow.def.fallbackPolicyId },
           'run awaiting fallback outcome',
@@ -278,7 +314,7 @@ export class WorkflowEngine {
         return;
       }
       if (outcome.kind === 'failed') {
-        await this.finishRun(runId, 'FAILED', outcome.error);
+        await this.finishRun(runId, 'FAILED', outcome.error, undefined, run.input, run.workflow_id);
         this.logger.error({ runId, err: outcome.error }, 'run failed');
         return;
       }
@@ -287,7 +323,7 @@ export class WorkflowEngine {
 
     const outputs: Record<string, Record<string, unknown> | undefined> = {};
     for (const stage of workflow.def.stages) outputs[stage.id] = data[stage.id];
-    await this.finishRun(runId, 'SUCCEEDED', null, outputs);
+    await this.finishRun(runId, 'SUCCEEDED', null, outputs, run.input, run.workflow_id);
     this.logger.info({ runId, workflow: workflow.def.id }, 'run succeeded');
   }
 
@@ -303,7 +339,7 @@ export class WorkflowEngine {
     | { kind: 'succeeded'; output: Record<string, unknown> }
     | { kind: 'failed'; error: string }
     | { kind: 'cancelled' }
-    | { kind: 'awaiting' }
+    | { kind: 'awaiting'; error?: string }
   > {
     const { runId, workflow, stage, resolvedInput, data } = args;
     const handler = this.handlers.get(stage.kind);
@@ -334,6 +370,7 @@ export class WorkflowEngine {
           input: resolvedInput,
           data,
           database: this.database,
+          queue: this.queueCapability ?? UNAVAILABLE_QUEUE,
           signal: controller.signal,
         };
         const configWithAlternative = usesAlternative
@@ -394,6 +431,7 @@ export class WorkflowEngine {
             durationMs: finishedAt.getTime() - startedAt.getTime(),
             attempts: attemptsUsed,
           },
+          fallback: result.fallback ?? null,
           outcome: { status: 'SUCCEEDED', output },
         });
         return { kind: 'succeeded', output };
@@ -466,7 +504,13 @@ export class WorkflowEngine {
           stageRunId,
           workflow,
           stage,
-          evidence: { stage: stage.id, failed: true },
+          evidence: {
+            stage: stage.id,
+            failed: true,
+            reason: message,
+            attempt,
+            policyRequested: fallbackRequested ? policy : null,
+          },
           deterministic: null,
           timings: {
             startedAt: startedAt.toISOString(),
@@ -474,7 +518,16 @@ export class WorkflowEngine {
             attempts: attempt,
           },
           error: { message, status },
-          fallback: fallbackRequested ? { policyApplied: policy, status } : null,
+          fallback: fallbackRequested
+            ? {
+                policyApplied: policy,
+                action: fallbackAction(policy as string),
+                stageId: stage.id,
+                status,
+                reasons: [message],
+                attempts: attempt,
+              }
+            : null,
           outcome: { status },
         });
 
@@ -484,7 +537,7 @@ export class WorkflowEngine {
         if (policy === 'halt_run' || policy === 'retry_alternative_retrieval') {
           return { kind: 'failed', error: `${message} (fallback: ${policy})` };
         }
-        return { kind: 'awaiting' };
+        return { kind: 'awaiting', error: `${message} (fallback: ${policy})` };
       } finally {
         if (timer) clearTimeout(timer);
         this.running.delete(runId);
@@ -584,6 +637,8 @@ export class WorkflowEngine {
     status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'AWAITING',
     error: string | null,
     output?: Record<string, unknown>,
+    input?: unknown,
+    workflowId?: string,
   ): Promise<void> {
     await this.database.query(
       `UPDATE workflow_runs
@@ -593,5 +648,16 @@ export class WorkflowEngine {
     );
     this.cancelled.delete(runId);
     this.running.delete(runId);
+    // Best-effort in-process signal; subscribers must be idempotent (queue
+    // re-delivery can repeat this for a given run).
+    if (this.events) {
+      await this.events.publish('workflow.run.finished', {
+        runId,
+        workflowId: workflowId ?? null,
+        status,
+        error,
+        input: input ?? null,
+      });
+    }
   }
 }

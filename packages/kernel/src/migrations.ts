@@ -167,7 +167,30 @@ CREATE TABLE IF NOT EXISTS queue_deadletters (
 );
 `;
 
+/**
+ * Vector chunks live in kernel infrastructure (pgvector) so any module's
+ * retrieval path shares one storage contract (ADR-0013). The column is a
+ * dimension-less `vector`: embeddings stay config-bound, and exact scans are
+ * fine at Phase-4 scale (no dimension-specific index required).
+ */
+const VECTOR_TABLES = `
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS vector_chunks (
+  collection TEXT NOT NULL,
+  id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  embedding vector NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (collection, id)
+);
+CREATE INDEX IF NOT EXISTS vector_chunks_document ON vector_chunks (collection, document_id);
+`;
+
 export const CORE_MIGRATIONS: Migration[] = [
   { id: '0001-core-tables', sql: CORE_TABLES },
   { id: '0002-queue-tables', sql: QUEUE_TABLES },
+  { id: '0003-vector-store', sql: VECTOR_TABLES },
 ];

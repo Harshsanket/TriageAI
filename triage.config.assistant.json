@@ -1,0 +1,51 @@
+{
+  "profile": "assistant",
+  "queue": {
+    "adapter": "pg-queue",
+    "pollIntervalMs": 250
+  },
+  "modules": {
+    "chat": {
+      "enabled": true
+    },
+    "kb": {
+      "enabled": true
+    },
+    "ai-pipeline": {
+      "enabled": true
+    },
+    "doc-assistant": {
+      "enabled": true
+    },
+    "support": {
+      "enabled": false
+    },
+    "echo": {
+      "enabled": false
+    }
+  },
+  "capabilities": {
+    "embedder": {
+      "adapter": "ai-service"
+    },
+    "vectorStore": {
+      "adapter": "pgvector"
+    },
+    "retriever": {
+      "adapter": "pgvector",
+      "threshold": 0.35,
+      "margin": 0.05,
+      "collections": {
+        "project_docs": {
+          "threshold": 0.35,
+          "margin": 0.01
+        }
+      }
+    },
+    "generator": {
+      "adapter": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "model": "qwen2.5:1.5b"
+    }
+  }
+}

@@ -3,17 +3,31 @@
  * queue. Classification/routing are performed by ai-pipeline stage handlers;
  * this module applies their outputs to its own tables (no cross-module DB).
  */
+import { createHash } from 'node:crypto';
+
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
+import {
+  AutoReplyPolicyDtoSchema,
+  AutoReplyPolicyUpdateSchema,
+  TicketConfirmationRequestSchema,
+  TicketConfirmationResponseSchema,
+} from '@triageai/contracts';
+import { AppError } from '@triageai/kernel';
 import type { TriageModule } from '@triageai/kernel';
 
-import { assertTransition, TICKET_STATUSES, type TicketStatus } from './state.js';
+import { assertTransition, canTransition, TICKET_STATUSES, type TicketStatus } from './state.js';
 
 export { TICKET_STATUSES, TICKET_TRANSITIONS, assertTransition, canTransition } from './state.js';
 export type { TicketStatus } from './state.js';
 
-const configSchema = z.object({}).strict();
+const configSchema = z
+  .object({
+    defaultMaxAnswerChars: z.number().int().positive().max(20_000).default(1200),
+    defaultCollection: z.string().default('kb_docs'),
+  })
+  .strict();
 
 const MIGRATIONS = [
   {
@@ -59,6 +73,57 @@ const MIGRATIONS = [
     dropSql:
       'DROP TABLE IF EXISTS support_ticket_events; DROP TABLE IF EXISTS support_ticket_messages; DROP TABLE IF EXISTS support_tickets;',
   },
+  {
+    id: '0002-support-auto-reply',
+    sql: `
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS auto_reply JSONB;
+
+      CREATE TABLE IF NOT EXISTS support_auto_reply_policies (
+        category TEXT NOT NULL,
+        version INT NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        fallback_policy TEXT NOT NULL DEFAULT 'escalate_human'
+          CHECK (fallback_policy IN ('request_clarification','return_uncertain','escalate_human','halt_run','retry_alternative_retrieval')),
+        collection TEXT NOT NULL DEFAULT 'kb_docs',
+        max_answer_chars INT NOT NULL DEFAULT 1200,
+        note TEXT,
+        updated_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (category, version)
+      );
+
+      CREATE TABLE IF NOT EXISTS support_auto_replies (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+        run_id TEXT,
+        answer TEXT NOT NULL,
+        answer_hash TEXT NOT NULL,
+        citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+        state TEXT NOT NULL CHECK (state IN ('sent','confirmed','failed','escalated')),
+        reason TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS support_auto_replies_ticket
+        ON support_auto_replies (ticket_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS support_auto_replies_failed_hash
+        ON support_auto_replies (ticket_id, state, answer_hash);
+
+      INSERT INTO support_auto_reply_policies
+        (category, version, enabled, fallback_policy, note)
+      VALUES
+        ('known_troubleshooting', 1, true, 'request_clarification', 'phase-5 seed'),
+        ('billing', 1, true, 'escalate_human', 'phase-5 seed'),
+        ('account', 1, true, 'escalate_human', 'phase-5 seed'),
+        ('feature_question', 1, true, 'request_clarification', 'phase-5 seed'),
+        ('general_question', 1, true, 'request_clarification', 'phase-5 seed'),
+        ('security', 1, false, 'escalate_human', 'safety-critical: never auto-reply'),
+        ('bug_report', 1, false, 'escalate_human', 'manual triage first'),
+        ('refund_dispute', 1, false, 'escalate_human', 'manual triage first')
+      ON CONFLICT (category, version) DO NOTHING;
+    `,
+    dropSql:
+      'DROP TABLE IF EXISTS support_auto_replies; DROP TABLE IF EXISTS support_auto_reply_policies;',
+  },
 ];
 
 interface TicketRow {
@@ -75,8 +140,35 @@ interface TicketRow {
   team: string | null;
   classification: Record<string, unknown> | null;
   routing: Record<string, unknown> | null;
+  auto_reply: Record<string, unknown> | null;
   created_at: Date | string;
   updated_at: Date | string;
+}
+
+interface PolicyRow {
+  [key: string]: unknown;
+  category: string;
+  version: number;
+  enabled: boolean;
+  fallback_policy: string;
+  collection: string;
+  max_answer_chars: number;
+  note: string | null;
+  updated_by: string | null;
+  created_at: Date | string;
+}
+
+interface AutoReplyRow {
+  [key: string]: unknown;
+  id: string;
+  ticket_id: string;
+  run_id: string | null;
+  answer: string;
+  answer_hash: string;
+  citations: string[] | null;
+  state: string;
+  reason: string | null;
+  created_at: Date | string;
 }
 
 const ticketDto = (row: TicketRow) => ({
@@ -92,27 +184,46 @@ const ticketDto = (row: TicketRow) => ({
   team: row.team,
   classification: row.classification,
   routing: row.routing,
+  autoReply: row.auto_reply ?? null,
   createdAt: new Date(row.created_at).toISOString(),
   updatedAt: new Date(row.updated_at).toISOString(),
 });
 
 export const supportModule: TriageModule = {
   id: 'support',
-  version: '0.1.0',
-  capabilities: ['queue', 'eventBus', 'storage'],
-  dependsOn: { modules: [{ id: 'ai-pipeline', version: '^0.1.0' }], capabilities: [] },
+  version: '0.2.0',
+  capabilities: ['queue', 'eventBus', 'storage', 'retriever', 'generator', 'validator'],
+  dependsOn: {
+    modules: [{ id: 'ai-pipeline', version: '^0.1.0' }],
+    capabilities: [
+      { capability: 'retriever', optional: true },
+      { capability: 'generator', optional: true },
+      { capability: 'validator', optional: true },
+    ],
+  },
   configSchema,
   migrations: MIGRATIONS,
-  tables: ['support_tickets', 'support_ticket_messages', 'support_ticket_events'],
+  tables: [
+    'support_tickets',
+    'support_ticket_messages',
+    'support_ticket_events',
+    'support_auto_reply_policies',
+    'support_auto_replies',
+  ],
   manifest: {
     routes: [{ path: '/support', title: 'Support' }],
     nav: [{ label: 'Support', order: 5, path: '/support' }],
     background: [{ query: 'GET /api/v1/support/queue', intervalMs: 15000 }],
   },
   lifecycle: {
-    health: async () => ({ status: 'healthy', detail: 'tickets + human review queue' }),
+    health: async () => ({
+      status: 'healthy',
+      detail: 'tickets + auto-reply + human review queue',
+    }),
   },
   register(ctx) {
+    const options = configSchema.parse(ctx.moduleOptions ?? {});
+
     ctx.registerStageHandler('support.ticket.load', {
       execute: async (stage) => {
         const input = stage.input as { ticketId?: string };
@@ -130,6 +241,10 @@ export const supportModule: TriageModule = {
             body: ticket.body,
             requester: ticket.requester,
             status: ticket.status,
+            category: ticket.category,
+            team: ticket.team,
+            priority: ticket.priority,
+            autoReply: ticket.auto_reply,
           },
           evidence: { kind: 'deterministic', ticketId: ticket.id },
           deterministic: { ticketId: ticket.id, status: ticket.status },
@@ -225,6 +340,456 @@ export const supportModule: TriageModule = {
       },
     });
 
+    const hashAnswer = (answer: string): string =>
+      createHash('sha256').update(answer.trim()).digest('hex');
+
+    const loadTicketRow = async (id: string): Promise<TicketRow | undefined> => {
+      const rows = await ctx.database.query<TicketRow>(
+        `SELECT * FROM support_tickets WHERE id = $1`,
+        [id],
+      );
+      return rows[0];
+    };
+
+    const escalateAutoReply = async (args: {
+      ticketId: string;
+      runId?: string | null;
+      reasons: string[];
+      checks?: unknown;
+    }): Promise<{ escalated: boolean; status: string; reasons: string[] }> => {
+      const ticket = await loadTicketRow(args.ticketId);
+      if (!ticket) throw new Error(`ticket ${args.ticketId} not found`);
+      if (ticket.status === 'HUMAN_REVIEW') {
+        return { escalated: false, status: ticket.status, reasons: args.reasons };
+      }
+      if (!canTransition(ticket.status as TicketStatus, 'HUMAN_REVIEW')) {
+        return { escalated: false, status: ticket.status, reasons: args.reasons };
+      }
+      await ctx.database.query(
+        `UPDATE support_tickets SET status = 'HUMAN_REVIEW', auto_reply = $2, updated_at = now()
+         WHERE id = $1`,
+        [
+          args.ticketId,
+          {
+            state: 'escalated',
+            runId: args.runId ?? null,
+            reasons: args.reasons,
+          },
+        ],
+      );
+      await ctx.database.query(
+        `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+         VALUES ($1, $2, 'auto_reply_escalated', $3, 'system')`,
+        [
+          ulid(),
+          args.ticketId,
+          {
+            reasons: args.reasons,
+            runId: args.runId ?? null,
+            checks: args.checks ?? null,
+          },
+        ],
+      );
+      await ctx.database.query(
+        `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
+         VALUES ($1, $2, 'system', 'system', $3, $4)`,
+        [
+          ulid(),
+          args.ticketId,
+          `Auto-reply escalated to human review (${args.reasons.join(', ') || 'policy'}).`,
+          {
+            kind: 'auto_reply_escalation',
+            customerVisible: false,
+            reasons: args.reasons,
+            runId: args.runId ?? null,
+          },
+        ],
+      );
+      return { escalated: true, status: 'HUMAN_REVIEW', reasons: args.reasons };
+    };
+
+    ctx.registerStageHandler('support.reply_policy', {
+      execute: async (stage) => {
+        const input = stage.input as { category?: string | null; ticketId?: string };
+        const category = input.category ?? null;
+        const retriever = ctx.capabilities.retriever;
+        const generator = ctx.capabilities.generator;
+        const missingCapabilities = !retriever || !generator;
+
+        if (!category) {
+          return {
+            output: {
+              category: null,
+              enabled: false,
+              reason: 'category_missing',
+              fallbackPolicy: 'escalate_human',
+              collection: options.defaultCollection,
+              policyVersion: null,
+              validationPolicy: { maxChars: options.defaultMaxAnswerChars },
+            },
+            evidence: { kind: 'deterministic', reason: 'category_missing' },
+            deterministic: { enabled: false, reason: 'category_missing' },
+          };
+        }
+
+        const rows = await ctx.database.query<PolicyRow>(
+          `SELECT * FROM support_auto_reply_policies
+           WHERE category = $1 ORDER BY version DESC LIMIT 1`,
+          [category],
+        );
+        const policy = rows[0];
+        const reason = !policy ? 'no_policy' : missingCapabilities ? 'capabilities_missing' : null;
+        const enabled = Boolean(policy?.enabled) && !missingCapabilities;
+        const fallbackPolicy = policy?.fallback_policy ?? 'escalate_human';
+        const collection = policy?.collection ?? options.defaultCollection;
+        const maxChars = policy?.max_answer_chars ?? options.defaultMaxAnswerChars;
+
+        return {
+          output: {
+            category,
+            enabled,
+            reason,
+            fallbackPolicy,
+            collection,
+            policyVersion: policy?.version ?? null,
+            validationPolicy: { maxChars, groundingThreshold: 0.6 },
+          },
+          evidence: {
+            kind: 'deterministic',
+            category,
+            policyVersion: policy?.version ?? null,
+            enabled,
+            reason,
+          },
+          deterministic: {
+            policyRow: policy ?? null,
+            capabilities: { retriever: Boolean(retriever), generator: Boolean(generator) },
+          },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.reply_decision', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          ticketId?: string;
+          enabled?: boolean;
+          fallbackPolicy?: string;
+          sufficient?: boolean;
+          generated?: unknown;
+          passed?: boolean;
+          checks?: Array<{ checkId: string; passed: boolean; reasons: string[] }>;
+          answer?: string;
+        };
+        const reasons: string[] = [];
+        let action: 'none' | 'reply' | 'clarify' | 'escalate' = 'none';
+
+        if (!input.enabled) {
+          reasons.push('auto_reply_disabled');
+        } else if (!input.sufficient) {
+          action = 'escalate';
+          reasons.push('insufficient_retrieval');
+        } else if (!input.generated) {
+          action = 'escalate';
+          reasons.push('generation_failed');
+        } else if (!input.passed) {
+          const failed = (input.checks ?? [])
+            .filter((check) => !check.passed)
+            .flatMap((check) =>
+              check.reasons.length > 0 ? check.reasons : [`${check.checkId}_failed`],
+            );
+          reasons.push(...(failed.length > 0 ? failed : ['validation_failed']));
+          action = input.fallbackPolicy === 'request_clarification' ? 'clarify' : 'escalate';
+        } else {
+          action = 'reply';
+        }
+
+        const answer = input.answer?.trim() ?? '';
+        const answerHash = answer ? hashAnswer(answer) : null;
+
+        if (action === 'reply' && input.ticketId && answerHash) {
+          const repeated = await ctx.database.query<{ id: string }>(
+            `SELECT id FROM support_auto_replies
+             WHERE ticket_id = $1 AND state = 'failed' AND answer_hash = $2 LIMIT 1`,
+            [input.ticketId, answerHash],
+          );
+          if (repeated[0]) {
+            action = 'escalate';
+            reasons.push('repeat_answer');
+          }
+        }
+
+        return {
+          output: { action, reasons, answerHash },
+          evidence: { kind: 'deterministic', action, reasons },
+          deterministic: {
+            enabled: Boolean(input.enabled),
+            sufficient: Boolean(input.sufficient),
+            generated: Boolean(input.generated),
+            validationPassed: input.passed ?? null,
+          },
+          fallback:
+            action === 'reply' || action === 'none'
+              ? null
+              : {
+                  policyApplied: input.fallbackPolicy ?? 'escalate_human',
+                  action,
+                  reasons,
+                },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.auto_reply_deliver', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          ticketId?: string;
+          answer?: string;
+          citations?: string[];
+          policyVersion?: number | null;
+          answerHash?: string;
+        };
+        if (!input.ticketId || !input.answer) {
+          throw new Error('support.auto_reply_deliver requires ticketId + answer');
+        }
+        const existing = await ctx.database.query<AutoReplyRow>(
+          `SELECT * FROM support_auto_replies WHERE run_id = $1 AND ticket_id = $2 LIMIT 1`,
+          [stage.runId, input.ticketId],
+        );
+        if (existing[0]) {
+          return {
+            output: {
+              delivered: true,
+              autoReplyId: existing[0].id,
+              answerHash: existing[0].answer_hash,
+              status: 'AWAITING_CUSTOMER',
+              deduped: true,
+            },
+            evidence: { kind: 'deterministic', autoReplyId: existing[0].id, deduped: true },
+            deterministic: { deduped: true },
+          };
+        }
+        const ticket = await loadTicketRow(input.ticketId);
+        if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
+        assertTransition(ticket.status, 'AWAITING_CUSTOMER');
+
+        const answerHash = input.answerHash ?? hashAnswer(input.answer);
+        const autoReplyId = ulid();
+        await ctx.database.query(
+          `INSERT INTO support_auto_replies
+             (id, ticket_id, run_id, answer, answer_hash, citations, state)
+           VALUES ($1, $2, $3, $4, $5, $6, 'sent')`,
+          [
+            autoReplyId,
+            input.ticketId,
+            stage.runId,
+            input.answer,
+            answerHash,
+            input.citations ?? [],
+          ],
+        );
+        const messageId = ulid();
+        await ctx.database.query(
+          `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
+           VALUES ($1, $2, 'system', 'system', $3, $4)`,
+          [
+            messageId,
+            input.ticketId,
+            input.answer,
+            {
+              kind: 'auto_reply',
+              autoReplyId,
+              runId: stage.runId,
+              citations: input.citations ?? [],
+              answerHash,
+              customerVisible: true,
+            },
+          ],
+        );
+        await ctx.database.query(
+          `UPDATE support_tickets SET status = 'AWAITING_CUSTOMER', auto_reply = $2, updated_at = now()
+           WHERE id = $1`,
+          [
+            input.ticketId,
+            {
+              state: 'awaiting_customer',
+              autoReplyId,
+              runId: stage.runId,
+              answerHash,
+              policyVersion: input.policyVersion ?? null,
+            },
+          ],
+        );
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'auto_reply_sent', $3, 'system')`,
+          [
+            ulid(),
+            input.ticketId,
+            {
+              autoReplyId,
+              runId: stage.runId,
+              citations: input.citations ?? [],
+              policyVersion: input.policyVersion ?? null,
+            },
+          ],
+        );
+
+        return {
+          output: {
+            delivered: true,
+            autoReplyId,
+            messageId,
+            answerHash,
+            status: 'AWAITING_CUSTOMER',
+          },
+          evidence: {
+            kind: 'model_generated',
+            autoReplyId,
+            messageId,
+            citations: input.citations ?? [],
+          },
+          deterministic: {
+            from: ticket.status,
+            to: 'AWAITING_CUSTOMER',
+            answerHash,
+            policyVersion: input.policyVersion ?? null,
+          },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.auto_reply_clarify', {
+      execute: async (stage) => {
+        const input = stage.input as { ticketId?: string; reasons?: string[] };
+        if (!input.ticketId) throw new Error('support.auto_reply_clarify requires ticketId');
+        const existing = await ctx.database.query<{ id: string }>(
+          `SELECT id FROM support_ticket_events
+           WHERE ticket_id = $1 AND type = 'auto_reply_clarification'
+             AND payload->>'runId' = $2 LIMIT 1`,
+          [input.ticketId, stage.runId],
+        );
+        if (existing[0]) {
+          return {
+            output: { clarified: true, status: 'AWAITING_CUSTOMER', deduped: true },
+            evidence: { kind: 'deterministic', deduped: true },
+            deterministic: { deduped: true },
+          };
+        }
+        const ticket = await loadTicketRow(input.ticketId);
+        if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
+        assertTransition(ticket.status, 'AWAITING_CUSTOMER');
+
+        const body =
+          'Could you share a bit more detail (product, steps, and what you expected) so I can answer precisely?';
+        const messageId = ulid();
+        await ctx.database.query(
+          `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
+           VALUES ($1, $2, 'system', 'system', $3, $4)`,
+          [
+            messageId,
+            input.ticketId,
+            body,
+            {
+              kind: 'auto_reply_clarification',
+              customerVisible: true,
+              reasons: input.reasons ?? [],
+              runId: stage.runId,
+            },
+          ],
+        );
+        await ctx.database.query(
+          `UPDATE support_tickets SET status = 'AWAITING_CUSTOMER', auto_reply = $2, updated_at = now()
+           WHERE id = $1`,
+          [
+            input.ticketId,
+            {
+              state: 'awaiting_customer',
+              kind: 'clarification',
+              reasons: input.reasons ?? [],
+              runId: stage.runId,
+            },
+          ],
+        );
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'auto_reply_clarification', $3, 'system')`,
+          [ulid(), input.ticketId, { reasons: input.reasons ?? [], runId: stage.runId }],
+        );
+
+        return {
+          output: { clarified: true, messageId, status: 'AWAITING_CUSTOMER' },
+          evidence: { kind: 'deterministic', messageId, reasons: input.reasons ?? [] },
+          deterministic: { from: ticket.status, to: 'AWAITING_CUSTOMER' },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.auto_reply_escalate', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          ticketId?: string;
+          reasons?: string[];
+          checks?: unknown;
+        };
+        if (!input.ticketId) throw new Error('support.auto_reply_escalate requires ticketId');
+        const result = await escalateAutoReply({
+          ticketId: input.ticketId,
+          runId: stage.runId,
+          reasons: input.reasons ?? ['escalated'],
+          checks: input.checks,
+        });
+        return {
+          output: result,
+          evidence: { kind: 'deterministic', reasons: result.reasons },
+          deterministic: { escalated: result.escalated, status: result.status },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.dispatch_auto_reply', {
+      execute: async (stage) => {
+        const input = stage.input as { ticketId?: string };
+        if (!input.ticketId) throw new Error('support.dispatch_auto_reply requires ticketId');
+        const started = await stage.queue.startWorkflow(
+          'support.auto_reply',
+          { ticketId: input.ticketId },
+          { idempotencyKey: `auto_reply:${input.ticketId}`, trigger: 'endpoint' },
+        );
+        return {
+          output: { runId: started.runId, deduped: started.deduped },
+          evidence: { kind: 'deterministic', runId: started.runId },
+          deterministic: { deduped: started.deduped },
+        };
+      },
+    });
+
+    ctx.events.subscribe('workflow.run.finished', async (payload) => {
+      const event = payload as {
+        runId?: string;
+        workflowId?: string;
+        status?: string;
+        error?: string | null;
+        input?: { ticketId?: string };
+      };
+      if (event.workflowId !== 'support.auto_reply') return;
+      if (event.status !== 'FAILED' && event.status !== 'AWAITING') return;
+      const ticketId = event.input?.ticketId;
+      if (!ticketId) return;
+      try {
+        await escalateAutoReply({
+          ticketId,
+          runId: event.runId ?? null,
+          reasons: [event.error ?? event.status ?? 'run_failed'],
+        });
+      } catch (err) {
+        ctx.logger.error(
+          { ticketId, err: (err as Error).message },
+          'failed to escalate auto-reply run',
+        );
+      }
+    });
+
     ctx.queue.start({
       id: 'support.triage',
       module: 'support',
@@ -268,6 +833,122 @@ export const supportModule: TriageModule = {
             ruleIds: '${stages.route.output.ruleIds}',
             rulesVersion: '${stages.route.output.rulesVersion}',
             routeReasons: '${stages.route.output.reasons}',
+          },
+        },
+        {
+          id: 'dispatch',
+          kind: 'support.dispatch_auto_reply',
+          when: "${stages.apply.output.status} == 'ROUTED'",
+          input: { ticketId: '${stages.load.output.ticketId}' },
+        },
+      ],
+    });
+
+    ctx.queue.start({
+      id: 'support.auto_reply',
+      module: 'support',
+      version: '0.2.0',
+      trigger: { type: 'endpoint' },
+      fallbackPolicyId: 'escalate_human',
+      stages: [
+        {
+          id: 'load',
+          kind: 'support.ticket.load',
+          input: { ticketId: '$.ticketId' },
+        },
+        {
+          id: 'policy',
+          kind: 'support.reply_policy',
+          input: {
+            ticketId: '${stages.load.output.ticketId}',
+            category: '${stages.load.output.category}',
+          },
+        },
+        {
+          id: 'retrieve',
+          kind: 'ai.retrieve',
+          when: '${stages.policy.output.enabled}',
+          input: {
+            query: '${stages.load.output.body}',
+            collection: '${stages.policy.output.collection}',
+            filter: { approved: true },
+          },
+        },
+        {
+          id: 'generate',
+          kind: 'ai.generate',
+          when: '${stages.retrieve.output.sufficient}',
+          input: {
+            question: '${stages.load.output.body}',
+            chunks: '${stages.retrieve.output.chunks}',
+            style: 'assistant',
+          },
+          retry: { attempts: 2, backoffMs: [100] },
+          onError: 'fallback',
+        },
+        {
+          id: 'validate',
+          kind: 'ai.validate',
+          when: '${stages.generate.output.answer}',
+          input: {
+            answer: '${stages.generate.output.answer}',
+            question: '${stages.load.output.body}',
+            sources: '${stages.retrieve.output.chunks}',
+            policy: '${stages.policy.output.validationPolicy}',
+          },
+        },
+        {
+          id: 'finalize',
+          kind: 'ai.finalize_answer',
+          when: '${stages.validate.output.passed}',
+          input: {
+            answer: '${stages.generate.output.answer}',
+            sources: '${stages.retrieve.output.chunks}',
+          },
+        },
+        {
+          id: 'decision',
+          kind: 'support.reply_decision',
+          input: {
+            ticketId: '${stages.load.output.ticketId}',
+            enabled: '${stages.policy.output.enabled}',
+            fallbackPolicy: '${stages.policy.output.fallbackPolicy}',
+            sufficient: '${stages.retrieve.output.sufficient}',
+            generated: '${stages.generate.output.answer}',
+            passed: '${stages.validate.output.passed}',
+            checks: '${stages.validate.output.checks}',
+            answer: '${stages.finalize.output.answer}',
+          },
+        },
+        {
+          id: 'deliver',
+          kind: 'support.auto_reply_deliver',
+          when: "${stages.decision.output.action} == 'reply'",
+          input: {
+            ticketId: '${stages.load.output.ticketId}',
+            answer: '${stages.finalize.output.answer}',
+            citations: '${stages.finalize.output.citations}',
+            answerHash: '${stages.decision.output.answerHash}',
+            policyVersion: '${stages.policy.output.policyVersion}',
+          },
+        },
+        {
+          id: 'clarify',
+          kind: 'support.auto_reply_clarify',
+          when: "${stages.decision.output.action} == 'clarify'",
+          input: {
+            ticketId: '${stages.load.output.ticketId}',
+            reasons: '${stages.decision.output.reasons}',
+          },
+        },
+        {
+          id: 'escalate',
+          kind: 'support.auto_reply_escalate',
+          when: "${stages.decision.output.action} == 'escalate'",
+          input: {
+            ticketId: '${stages.load.output.ticketId}',
+            reasons: '${stages.decision.output.reasons}',
+            checks: '${stages.validate.output.checks}',
           },
         },
       ],
@@ -465,6 +1146,187 @@ export const supportModule: TriageModule = {
           })
           .parse(request.body ?? {});
         return transitionTicket(id, 'RESOLVED', body.actor, body.note);
+      },
+    });
+
+    const policyDto = (row: PolicyRow) =>
+      AutoReplyPolicyDtoSchema.parse({
+        category: row.category,
+        version: row.version,
+        enabled: row.enabled,
+        fallbackPolicy: row.fallback_policy,
+        collection: row.collection,
+        maxAnswerChars: row.max_answer_chars,
+        note: row.note,
+        updatedBy: row.updated_by,
+        createdAt: new Date(row.created_at).toISOString(),
+      });
+
+    ctx.registerRoute({
+      method: 'GET',
+      url: '/api/v1/support/auto-reply-policies',
+      handler: async () => {
+        const rows = await ctx.database.query<PolicyRow>(
+          `SELECT DISTINCT ON (category) *
+           FROM support_auto_reply_policies
+           ORDER BY category, version DESC`,
+        );
+        return rows.map(policyDto);
+      },
+    });
+
+    ctx.registerRoute({
+      method: 'PUT',
+      url: '/api/v1/support/auto-reply-policies/:category',
+      handler: async (request) => {
+        const { category } = request.params;
+        const body = AutoReplyPolicyUpdateSchema.parse(request.body);
+        const row = await ctx.database.transaction(async (tx) => {
+          await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+            `support-auto-reply-policy:${category}`,
+          ]);
+          const current = await tx.query<PolicyRow>(
+            `SELECT * FROM support_auto_reply_policies
+             WHERE category = $1 ORDER BY version DESC LIMIT 1`,
+            [category],
+          );
+          const latest = current[0];
+          const version = (latest?.version ?? 0) + 1;
+          const inserted = await tx.query<PolicyRow>(
+            `INSERT INTO support_auto_reply_policies
+               (category, version, enabled, fallback_policy, collection, max_answer_chars, note, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING *`,
+            [
+              category,
+              version,
+              body.enabled,
+              body.fallbackPolicy ?? latest?.fallback_policy ?? 'escalate_human',
+              body.collection ?? latest?.collection ?? options.defaultCollection,
+              body.maxAnswerChars ?? latest?.max_answer_chars ?? options.defaultMaxAnswerChars,
+              body.note ?? latest?.note ?? null,
+              body.updatedBy,
+            ],
+          );
+          return inserted[0] as PolicyRow;
+        });
+        return policyDto(row);
+      },
+    });
+
+    ctx.registerRoute({
+      method: 'POST',
+      url: '/api/v1/support/tickets/:id/confirmation',
+      handler: async (request) => {
+        const { id } = request.params;
+        const body = TicketConfirmationRequestSchema.parse(request.body);
+        const ticket = await loadTicketRow(id);
+        if (!ticket) throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+        if (ticket.status !== 'AWAITING_CUSTOMER') {
+          throw new AppError(
+            'CONFLICT',
+            `ticket ${id} is ${ticket.status}; only AWAITING_CUSTOMER accepts confirmation`,
+          );
+        }
+        const latest = await ctx.database.query<AutoReplyRow>(
+          `SELECT * FROM support_auto_replies
+           WHERE ticket_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [id],
+        );
+        const autoReply = latest[0];
+        if (body.note) {
+          await ctx.database.query(
+            `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body)
+             VALUES ($1, $2, 'customer', 'customer', $3)`,
+            [ulid(), id, body.note],
+          );
+        }
+
+        if (body.solved) {
+          if (autoReply) {
+            await ctx.database.query(
+              `UPDATE support_auto_replies SET state = 'confirmed' WHERE id = $1`,
+              [autoReply.id],
+            );
+          }
+          await transitionTicket(id, 'RESOLVED', 'customer');
+          await ctx.database.query(
+            `UPDATE support_tickets SET auto_reply = $2, updated_at = now() WHERE id = $1`,
+            [id, { state: 'confirmed', autoReplyId: autoReply?.id ?? null }],
+          );
+          await ctx.database.query(
+            `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+             VALUES ($1, $2, 'customer_confirmed', $3, 'customer')`,
+            [ulid(), id, { autoReplyId: autoReply?.id ?? null }],
+          );
+          return TicketConfirmationResponseSchema.parse({
+            ticketId: id,
+            status: 'RESOLVED',
+            autoReplyId: autoReply?.id ?? null,
+          });
+        }
+
+        if (autoReply) {
+          await ctx.database.query(
+            `UPDATE support_auto_replies SET state = 'failed', reason = 'customer_still_needs_help' WHERE id = $1`,
+            [autoReply.id],
+          );
+        }
+        await transitionTicket(id, 'HUMAN_REVIEW', 'customer');
+        await ctx.database.query(
+          `UPDATE support_tickets SET auto_reply = $2, updated_at = now() WHERE id = $1`,
+          [
+            id,
+            {
+              state: 'failed',
+              autoReplyId: autoReply?.id ?? null,
+              answerHash: autoReply?.answer_hash ?? null,
+              reason: 'customer_still_needs_help',
+            },
+          ],
+        );
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'customer_still_needs_help', $3, 'customer')`,
+          [
+            ulid(),
+            id,
+            {
+              autoReplyId: autoReply?.id ?? null,
+              answerHash: autoReply?.answer_hash ?? null,
+              note: body.note ?? null,
+            },
+          ],
+        );
+        return TicketConfirmationResponseSchema.parse({
+          ticketId: id,
+          status: 'HUMAN_REVIEW',
+          autoReplyId: autoReply?.id ?? null,
+        });
+      },
+    });
+
+    ctx.registerRoute({
+      method: 'POST',
+      url: '/api/v1/support/tickets/:id/auto-reply',
+      handler: async (request) => {
+        const { id } = request.params;
+        const ticket = await loadTicketRow(id);
+        if (!ticket) throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+        if (!['ROUTED', 'AWAITING_CUSTOMER', 'HUMAN_REVIEW'].includes(ticket.status)) {
+          throw new AppError(
+            'CONFLICT',
+            `ticket ${id} is ${ticket.status}; automatic replies are not allowed here`,
+          );
+        }
+        // Manual re-dispatch deliberately omits the per-ticket idempotency key so
+        // repeat detection (answer hash) can protect the customer.
+        const started = await ctx.queue.startWorkflow(
+          'support.auto_reply',
+          { ticketId: id },
+          { trigger: 'manual' },
+        );
+        return { ticketId: id, runId: started.runId, deduped: started.deduped };
       },
     });
   },
