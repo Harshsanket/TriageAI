@@ -2,6 +2,7 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import * as ai from './ai.js';
+import * as feedback from './feedback.js';
 import * as dto from './manifest.js';
 import * as support from './support.js';
 
@@ -29,5 +30,17 @@ export function exportJsonSchemas(): Record<string, unknown> {
     AutoReplyPolicyUpdate: zodToJsonSchema(support.AutoReplyPolicyUpdateSchema),
     TicketConfirmationRequest: zodToJsonSchema(support.TicketConfirmationRequestSchema),
     TicketConfirmationResponse: zodToJsonSchema(support.TicketConfirmationResponseSchema),
+    CandidateDto: zodToJsonSchema(feedback.CandidateDtoSchema),
+    CandidateReviewRequest: zodToJsonSchema(feedback.CandidateReviewRequestSchema),
+    CorrectionRequest: zodToJsonSchema(feedback.CorrectionRequestSchema),
+    DatasetDto: zodToJsonSchema(feedback.DatasetDtoSchema),
+    DatasetBuildRequest: zodToJsonSchema(feedback.DatasetBuildRequestSchema),
+    DatasetExportDto: zodToJsonSchema(feedback.DatasetExportDtoSchema),
+    ModelAssetDto: zodToJsonSchema(feedback.ModelAssetDtoSchema),
+    RegisterModelRequest: zodToJsonSchema(feedback.RegisterModelRequestSchema),
+    PromoteModelRequest: zodToJsonSchema(feedback.PromoteModelRequestSchema),
+    RollbackModelRequest: zodToJsonSchema(feedback.RollbackModelRequestSchema),
+    EvalReportInput: zodToJsonSchema(feedback.EvalReportInputSchema),
+    EvalReportDto: zodToJsonSchema(feedback.EvalReportDtoSchema),
   };
 }

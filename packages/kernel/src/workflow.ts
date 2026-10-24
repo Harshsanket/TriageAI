@@ -433,6 +433,7 @@ export class WorkflowEngine {
           },
           fallback: result.fallback ?? null,
           outcome: { status: 'SUCCEEDED', output },
+          adapterVersions: result.adapterVersions,
         });
         return { kind: 'succeeded', output };
       } catch (err) {
@@ -587,6 +588,7 @@ export class WorkflowEngine {
     outcome?: Record<string, unknown>;
     error?: Record<string, unknown>;
     fallback?: Record<string, unknown> | null;
+    adapterVersions?: Record<string, unknown>;
   }): Promise<void> {
     await this.database.query(
       `INSERT INTO decision_records
@@ -607,7 +609,7 @@ export class WorkflowEngine {
         args.outcome ?? null,
         args.error ?? null,
         args.fallback ?? null,
-        { handlerKind: args.stage.kind },
+        { handlerKind: args.stage.kind, ...(args.adapterVersions ?? {}) },
       ],
     );
   }

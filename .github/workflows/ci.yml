@@ -151,6 +151,59 @@ jobs:
           name: retrieval-eval-report
           path: apps/api/evals/reports/
 
+  generation-eval:
+    name: Generation/validation eval (gates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run generation eval (grounding, refusal, citation, validation gates)
+        run: pnpm --filter @triageai/api exec tsx evals/generation.eval.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generation-eval-report
+          path: apps/api/evals/reports/generation-latest.json
+
+  merged-eval:
+    name: Merged eval report (single format)
+    runs-on: ubuntu-latest
+    needs: [classification-eval, retrieval-eval, generation-eval]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          name: classification-eval-reports
+          path: apps/ai-service/eval/reports
+      - uses: actions/download-artifact@v4
+        with:
+          name: retrieval-eval-report
+          path: apps/api/evals/reports
+      - uses: actions/download-artifact@v4
+        with:
+          name: generation-eval-report
+          path: apps/api/evals/reports
+      - run: pnpm install --frozen-lockfile
+      - name: Merge suites into the registry report format
+        run: pnpm --filter @triageai/api exec tsx evals/merge.eval.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: merged-eval-report
+          path: |
+            apps/api/evals/reports/merged-latest.json
+            apps/api/evals/reports/merged-latest.md
+
   docker-smoke:
     name: Docker Compose (build + boot + curl smoke)
     runs-on: ubuntu-latest

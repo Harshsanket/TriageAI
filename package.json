@@ -14,7 +14,11 @@
     "lint": "eslint .",
     "typecheck": "pnpm --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./modules/*\" typecheck",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "eval:classification": "uv --directory apps/ai-service run python -m eval.run_eval",
+    "eval:retrieval": "pnpm --filter @triageai/api exec tsx evals/retrieval.eval.ts",
+    "eval:generation": "pnpm --filter @triageai/api exec tsx evals/generation.eval.ts",
+    "eval:merge": "pnpm --filter @triageai/api exec tsx evals/merge.eval.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

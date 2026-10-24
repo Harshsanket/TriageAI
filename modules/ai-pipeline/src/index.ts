@@ -119,7 +119,7 @@ const MIGRATIONS = [
 export const aiPipelineModule: TriageModule = {
   id: 'ai-pipeline',
   version: '0.1.0',
-  capabilities: ['embedder', 'classifier', 'validator'],
+  capabilities: ['embedder', 'classifier', 'validator', 'modelRegistry'],
   dependsOn: {
     modules: [],
     capabilities: [
@@ -128,6 +128,7 @@ export const aiPipelineModule: TriageModule = {
       { capability: 'retriever', optional: true },
       { capability: 'generator', optional: true },
       { capability: 'validator', optional: true },
+      { capability: 'modelRegistry', optional: true },
     ],
   },
   configSchema,
@@ -150,6 +151,7 @@ export const aiPipelineModule: TriageModule = {
         if (!text) throw new Error('classify stage received empty text');
 
         const result = await classifier.classify(text);
+        const activeModel = await ctx.capabilities.modelRegistry?.active('classifier');
         const rows = await ctx.database.query<CategoryRow>(
           `SELECT id, label, threshold, margin, safety_critical, enabled FROM ai_categories`,
         );
@@ -206,6 +208,16 @@ export const aiPipelineModule: TriageModule = {
             rawCategory: result.category,
             rawConfidence: result.confidence,
             rawMargin: result.margin,
+          },
+          adapterVersions: {
+            classifier: activeModel?.name ?? result.modelVersion,
+            classifierModelVersion: result.modelVersion,
+            ...(activeModel
+              ? {
+                  classifierAssetId: activeModel.id,
+                  classifierEvalReportId: activeModel.evalReportId,
+                }
+              : {}),
           },
         };
       },
@@ -283,6 +295,7 @@ export const aiPipelineModule: TriageModule = {
         const alternate = stage.config._alternate === true;
         const baseLimit = input.limit ?? 4;
         const limit = alternate ? Math.min(baseLimit * 2, 10) : baseLimit;
+        const activeModel = await ctx.capabilities.modelRegistry?.active('retriever');
         const result = await retriever.search(input.collection ?? 'kb_docs', input.query, {
           limit,
           filter: input.filter ?? { approved: true },
@@ -322,6 +335,10 @@ export const aiPipelineModule: TriageModule = {
             filter: input.filter ?? { approved: true },
             gate: result.gate,
           },
+          adapterVersions: {
+            retriever: activeModel?.name ?? 'pgvector',
+            ...(activeModel ? { retrieverAssetId: activeModel.id } : {}),
+          },
         };
       },
     });
@@ -344,6 +361,7 @@ export const aiPipelineModule: TriageModule = {
             text: chunk.text as string,
             score: chunk.score,
           }));
+        const activeModel = await ctx.capabilities.modelRegistry?.active('generator');
         const prompt = buildRagPrompt({ question: input.question, chunks, style: input.style });
         const started = Date.now();
         const result = await generator.generate(prompt, {
@@ -366,6 +384,16 @@ export const aiPipelineModule: TriageModule = {
             promptChars: prompt.length,
             sourceRefs: chunks.map((chunk) => chunk.ref),
             usage: result.usage ?? null,
+          },
+          adapterVersions: {
+            generator: activeModel?.name ?? result.modelVersion,
+            generatorModelVersion: result.modelVersion,
+            ...(activeModel
+              ? {
+                  generatorAssetId: activeModel.id,
+                  generatorEvalReportId: activeModel.evalReportId,
+                }
+              : {}),
           },
         };
       },

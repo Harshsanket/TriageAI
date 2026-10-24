@@ -1259,6 +1259,26 @@ export const supportModule: TriageModule = {
              VALUES ($1, $2, 'customer_confirmed', $3, 'customer')`,
             [ulid(), id, { autoReplyId: autoReply?.id ?? null }],
           );
+          // A verified resolution is feedback, never training data: it enters
+          // the candidate pool as `proposed` and must be reviewed (FR-6.2).
+          if (autoReply) {
+            await ctx.database.query(
+              `INSERT INTO candidate_examples (id, source, source_run_id, input, gold, provenance, status, actor)
+               VALUES ($1, 'confirmed_resolution', $2, $3, $4, $5, 'proposed', 'customer')`,
+              [
+                ulid(),
+                autoReply.run_id,
+                { ticketId: id, subject: ticket.subject, body: ticket.body },
+                { category: ticket.category, answer: autoReply.answer },
+                {
+                  ticketId: id,
+                  autoReplyId: autoReply.id,
+                  method: 'confirmed_resolution',
+                  actor: 'customer',
+                },
+              ],
+            );
+          }
           return TicketConfirmationResponseSchema.parse({
             ticketId: id,
             status: 'RESOLVED',

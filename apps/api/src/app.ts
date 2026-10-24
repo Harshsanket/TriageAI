@@ -13,11 +13,15 @@ import { kbModule } from '@triageai/module-kb';
 import { supportModule } from '@triageai/module-support';
 
 import { registerHealthRoutes } from './modules/health/routes.js';
+import { registerAuditRoutes } from './system/audit.js';
 import { registerCandidateRoutes } from './system/candidates.js';
+import { registerDatasetRoutes } from './system/datasets.js';
 import { registerHardwareRoute } from './system/hardware.js';
+import { registerModelRoutes } from './system/models.js';
 import { registerMetricsRoute } from './system/metrics.js';
 import { registerRunRoutes } from './system/runs.js';
 import { createCapabilities } from './platform/capabilities.js';
+import { DbModelRegistry } from './platform/modelRegistry.js';
 import { AppError } from './platform/errors.js';
 import { logger } from './platform/logger.js';
 import { config } from './platform/config.js';
@@ -90,12 +94,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       : (logger as unknown as KernelLogger);
     const database = new PostgresDatabase(config.databaseUrl);
     const kernelConfig = buildKernelConfig(loadConfigFile(options.configPath), process.env);
+    const modelRegistry = new DbModelRegistry(database);
+    const capabilities =
+      options.capabilities ??
+      createCapabilities(kernelConfig, config.aiServiceUrl, database, modelRegistry);
+    capabilities.modelRegistry ??= modelRegistry;
+    const activeRegistry =
+      capabilities.modelRegistry instanceof DbModelRegistry
+        ? capabilities.modelRegistry
+        : modelRegistry;
     const kernel = await bootKernel({
       config: kernelConfig,
       database,
       logger: kernelLogger,
-      capabilities:
-        options.capabilities ?? createCapabilities(kernelConfig, config.aiServiceUrl, database),
+      capabilities,
       modules: {
         echo: echoModule,
         chat: chatModule,
@@ -110,7 +122,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     registerSystemRoutes(app, kernel);
     registerRunRoutes(app, kernel);
     registerMetricsRoute(app, kernel);
+    registerAuditRoutes(app, kernel);
     registerCandidateRoutes(app, kernel);
+    registerDatasetRoutes(app, kernel);
+    registerModelRoutes(app, kernel, activeRegistry);
     registerHardwareRoute(app, kernel);
     for (const route of kernel.routes()) {
       app.route({

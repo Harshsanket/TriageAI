@@ -241,6 +241,23 @@ describeIfDb('support auto-reply (phase 5)', () => {
     const final = await getTicket(app, ticketId);
     expect(final.ticket.status).toBe('RESOLVED');
     expect(final.events.map((event) => event.type)).toContain('customer_confirmed');
+
+    // The confirmed resolution enters the candidate pool as proposed feedback,
+    // never directly as training data (FR-6.2).
+    const candidates = await database.query<{
+      status: string;
+      provenance: Record<string, unknown>;
+    }>(
+      `SELECT status, provenance FROM candidate_examples
+       WHERE source = 'confirmed_resolution' AND input->>'ticketId' = $1`,
+      [ticketId],
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.status).toBe('proposed');
+    expect(candidates[0]?.provenance).toMatchObject({
+      method: 'confirmed_resolution',
+      actor: 'customer',
+    });
   });
 
   it('escalates without an LLM call when retrieval is insufficient', async () => {

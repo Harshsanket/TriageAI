@@ -21,7 +21,8 @@ export type CapabilityId =
   | 'generator'
   | 'validator'
   | 'memory'
-  | 'outputChannel';
+  | 'outputChannel'
+  | 'modelRegistry';
 
 export interface ModuleDependency {
   id: string;
@@ -82,6 +83,11 @@ export interface StageHandlerDef {
     deterministic?: Record<string, unknown> | null;
     /** Policy outcome when a successful stage decided *not* to proceed (Phase 5). */
     fallback?: Record<string, unknown> | null;
+    /**
+     * Adapter/model identities resolved at execution time (Phase 6 registry).
+     * Merged over the engine's `{ handlerKind }` in `decision_records.adapter_versions`.
+     */
+    adapterVersions?: Record<string, unknown>;
   }>;
 }
 
@@ -195,6 +201,27 @@ export interface Validator {
   validate(input: ValidatorInput, policy?: Record<string, unknown>): Promise<ValidationReport>;
 }
 
+/**
+ * Model registry seam (Phase 6): the runtime asks which asset is active for a
+ * component instead of hard-coding a model name. The first implementation is
+ * the host's Postgres-backed registry; a remote registry can replace it.
+ */
+export interface ActiveModelAsset {
+  id: string;
+  component: 'embedder' | 'classifier' | 'generator' | 'retriever' | (string & {});
+  name: string;
+  artifactRef: string | null;
+  config: Record<string, unknown>;
+  evalReportId: string | null;
+  promotedAt: string | null;
+}
+
+export interface ModelRegistry {
+  active(component: string): Promise<ActiveModelAsset | null>;
+  /** Drop any cached pointer after a promotion/rollback writes a new active row. */
+  invalidate?(): void;
+}
+
 /** Resolvable capability adapters (Phase 4/5: embedder, classifier, vector store, retriever, generator, validator). */
 export interface Capabilities {
   embedder?: { embed(texts: string[]): Promise<EmbedResult> };
@@ -203,6 +230,7 @@ export interface Capabilities {
   retriever?: Retriever;
   generator?: Generator;
   validator?: Validator;
+  modelRegistry?: ModelRegistry;
 }
 
 /**

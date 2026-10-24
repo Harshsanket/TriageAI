@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { navEntries, useSystemManifest } from './host/manifest';
 import { navigate, useRoute } from './host/router';
 import { moduleRegistry } from './modules/registry';
+import FeedbackPage from './system/FeedbackPage';
 import RunDetailPage from './system/RunDetailPage';
 import SystemPage from './system/SystemPage';
 import RunsPage from './system/RunsPage';
@@ -11,6 +12,7 @@ import RunsPage from './system/RunsPage';
 /** Host-owned pages (kernel/ops surface, not module-gated). */
 const hostPages: Array<{ label: string; path: string; render: (route: string) => ReactElement }> = [
   { label: 'Runs', path: '/runs', render: (route) => renderRuns(route) },
+  { label: 'Feedback', path: '/feedback', render: () => <FeedbackPage /> },
   { label: 'System', path: '/system', render: () => <SystemPage /> },
 ];
 

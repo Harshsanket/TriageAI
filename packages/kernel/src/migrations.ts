@@ -189,8 +189,24 @@ CREATE TABLE IF NOT EXISTS vector_chunks (
 CREATE INDEX IF NOT EXISTS vector_chunks_document ON vector_chunks (collection, document_id);
 `;
 
+/**
+ * Phase 6 feedback/eval additions. Existing tables were created in 0001, so
+ * this migration only widens them; applied databases keep their checksummed
+ * history (migrations are immutable).
+ */
+const FEEDBACK_COLUMNS = `
+ALTER TABLE eval_reports ADD COLUMN IF NOT EXISTS generated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE eval_reports ADD COLUMN IF NOT EXISTS passes BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE eval_reports ADD COLUMN IF NOT EXISTS notes TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS datasets_purpose_sha ON datasets (purpose, sha256);
+CREATE INDEX IF NOT EXISTS model_assets_component_status ON model_assets (component, status);
+CREATE UNIQUE INDEX IF NOT EXISTS model_assets_one_active
+  ON model_assets (component) WHERE status = 'active';
+`;
+
 export const CORE_MIGRATIONS: Migration[] = [
   { id: '0001-core-tables', sql: CORE_TABLES },
   { id: '0002-queue-tables', sql: QUEUE_TABLES },
   { id: '0003-vector-store', sql: VECTOR_TABLES },
+  { id: '0004-feedback-columns', sql: FEEDBACK_COLUMNS },
 ];

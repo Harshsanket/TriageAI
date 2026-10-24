@@ -117,6 +117,36 @@ describeIfDb('workflow engine (phase 2)', () => {
     });
   });
 
+  it('2.1 merges stage-reported adapter versions into decision records', async () => {
+    await withEngine(async (engine, database) => {
+      engine.registerStageHandler('t.versioned', {
+        execute: async () => ({
+          output: { ok: true },
+          adapterVersions: { classifier: 'baseline-classifier', classifierAssetId: 'asset_1' },
+        }),
+      });
+      engine.register(
+        def('test.adapter-versions', [{ id: 'a', kind: 't.versioned' }]),
+        'test',
+        '0.1.0',
+      );
+      await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.adapter-versions'`);
+
+      const { runId } = await engine.start('test.adapter-versions', {});
+      await engine.processRun(runId);
+
+      const rows = await database.query<{ adapter_versions: Record<string, unknown> }>(
+        `SELECT adapter_versions FROM decision_records WHERE run_id = $1`,
+        [runId],
+      );
+      expect(rows[0]?.adapter_versions).toMatchObject({
+        handlerKind: 't.versioned',
+        classifier: 'baseline-classifier',
+        classifierAssetId: 'asset_1',
+      });
+    });
+  });
+
   it('2.2 retries a failing stage and records the attempt count', async () => {
     await withEngine(async (engine, database) => {
       let calls = 0;

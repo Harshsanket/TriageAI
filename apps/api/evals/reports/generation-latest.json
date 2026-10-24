@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-10-24T18:15:48.490Z",
+  "suite": "generation",
+  "status": "passed",
+  "cases": 6,
+  "metrics": {
+    "groundedness": 1,
+    "refusalCorrectness": 1,
+    "citationCoverage": 1,
+    "validationPassRate": 1
+  },
+  "gates": {
+    "groundedness": 0.8,
+    "refusalCorrectness": 0.8,
+    "citationCoverage": 0.8,
+    "validationPassRate": 1
+  },
+  "results": [
+    {
+      "id": "grounded-with-citation",
+      "grounded": true,
+      "coverage": 1,
+      "refused": false,
+      "citations": ["kb/refunds"],
+      "validationPassed": true,
+      "failedChecks": []
+    },
+    {
+      "id": "grounded-without-citation-is-attached",
+      "grounded": true,
+      "coverage": 1,
+      "refused": false,
+      "citations": ["kb/refunds"],
+      "validationPassed": true,
+      "failedChecks": []
+    },
+    {
+      "id": "ungrounded-refused",
+      "grounded": false,
+      "coverage": 0,
+      "refused": true,
+      "citations": [],
+      "validationPassed": false,
+      "failedChecks": ["grounding"]
+    },
+    {
+      "id": "empty-answer-refused",
+      "grounded": false,
+      "coverage": 0,
+      "refused": true,
+      "citations": [],
+      "validationPassed": false,
+      "failedChecks": ["grounding"]
+    },
+    {
+      "id": "output-injection-fails-validation",
+      "grounded": true,
+      "coverage": 1,
+      "refused": false,
+      "citations": ["kb/refunds"],
+      "validationPassed": false,
+      "failedChecks": ["injection"]
+    },
+    {
+      "id": "introduced-pii-fails-validation",
+      "grounded": true,
+      "coverage": 0.6364,
+      "refused": false,
+      "citations": ["kb/support"],
+      "validationPassed": false,
+      "failedChecks": ["pii"]
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import type {
   EmbedResult,
   Generator,
   KernelConfig,
+  ModelRegistry,
   RetrievalResult,
   Retriever,
   ValidationReport,
@@ -285,8 +286,12 @@ export function createCapabilities(
   config: KernelConfig,
   fallbackBaseUrl: string,
   database: Database,
+  modelRegistry?: ModelRegistry,
 ): Capabilities {
-  const capabilities: Capabilities = { validator: new DeterministicValidator() };
+  const capabilities: Capabilities = {
+    validator: new DeterministicValidator(),
+    ...(modelRegistry ? { modelRegistry } : {}),
+  };
   const cfg = config.capabilities;
   const aiBase = (adapterConfig: Record<string, unknown> | undefined): string =>
     (adapterConfig?.baseUrl as string | undefined) ?? fallbackBaseUrl;

@@ -11,7 +11,10 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "eval:retrieval": "tsx evals/retrieval.eval.ts",
+    "eval:generation": "tsx evals/generation.eval.ts",
+    "eval:merge": "tsx evals/merge.eval.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
