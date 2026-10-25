@@ -193,13 +193,6 @@ Developed and maintained by **Harsh Sanket**.
 | Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana        |
 | Development Tools | pnpm, uv, ESLint, Prettier                                |
 
-## Sponsor
-
-My open-source work on GitHub is currently supported by [**kumarsidd**](https://github.com/kumarsidd).
-
-
-All my work is independently developed, and sponsorship does not influence my work, technical decisions, or project direction.
-
 ## License
 
 Released under the GNU General Public License v3.0 — see [`LICENSE`](./LICENSE).
