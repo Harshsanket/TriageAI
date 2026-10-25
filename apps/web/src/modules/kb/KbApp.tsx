@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { apiFetch } from '../../host/api';
 
 interface DocumentRow {
   id: string;
@@ -23,7 +24,7 @@ export default function KbApp() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/v1/kb/documents');
+    const res = await apiFetch('/api/v1/kb/documents');
     if (res.ok) setDocuments((await res.json()) as DocumentRow[]);
   }, []);
 
@@ -34,7 +35,7 @@ export default function KbApp() {
   const create = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
-    const res = await fetch('/api/v1/kb/documents', {
+    const res = await apiFetch('/api/v1/kb/documents', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title, body, source: 'ui' }),
@@ -48,14 +49,14 @@ export default function KbApp() {
   };
 
   const approve = async (id: string) => {
-    const res = await fetch(`/api/v1/kb/documents/${id}/approve`, { method: 'POST' });
+    const res = await apiFetch(`/api/v1/kb/documents/${id}/approve`, { method: 'POST' });
     if (!res.ok) setError(`approve failed (${res.status})`);
     await load();
   };
 
   const search = async (event: React.FormEvent) => {
     event.preventDefault();
-    const res = await fetch('/api/v1/kb/search', {
+    const res = await apiFetch('/api/v1/kb/search', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query }),

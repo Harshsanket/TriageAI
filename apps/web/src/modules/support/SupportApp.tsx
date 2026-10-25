@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { apiFetch } from '../../host/api';
 
 interface Ticket {
   id: string;
@@ -66,7 +67,7 @@ export default function SupportApp() {
   const [teamId, setTeamId] = useState('');
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/v1/support/tickets?limit=50');
+    const res = await apiFetch('/api/v1/support/tickets?limit=50');
     if (!res.ok) return;
     setTickets((await res.json()) as Ticket[]);
   }, []);
@@ -79,7 +80,7 @@ export default function SupportApp() {
 
   useEffect(() => {
     void (async () => {
-      const res = await fetch('/api/v1/support/triage-policy');
+      const res = await apiFetch('/api/v1/support/triage-policy');
       if (!res.ok) return;
       const body = (await res.json()) as Partial<TriagePolicy>;
       if (Array.isArray(body.priorities) && Array.isArray(body.teamIds)) {
@@ -93,7 +94,7 @@ export default function SupportApp() {
   }, []);
 
   const openTicket = async (id: string) => {
-    const res = await fetch(`/api/v1/support/tickets/${id}`);
+    const res = await apiFetch(`/api/v1/support/tickets/${id}`);
     if (!res.ok) return;
     const detail = (await res.json()) as TicketDetail;
     setSelected(detail);
@@ -111,7 +112,7 @@ export default function SupportApp() {
   const saveTriage = async () => {
     if (!selected || !priorityCode || !teamId) return;
     setError(null);
-    const res = await fetch(`/api/v1/support/tickets/${selected.ticket.id}/triage`, {
+    const res = await apiFetch(`/api/v1/support/tickets/${selected.ticket.id}/triage`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -133,7 +134,7 @@ export default function SupportApp() {
   const createTicket = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
-    const res = await fetch('/api/v1/support/tickets', {
+    const res = await apiFetch('/api/v1/support/tickets', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ subject, body, requester: 'ui-user' }),
@@ -149,7 +150,7 @@ export default function SupportApp() {
 
   const resolveTicket = async () => {
     if (!selected) return;
-    const res = await fetch(`/api/v1/support/tickets/${selected.ticket.id}/resolve`, {
+    const res = await apiFetch(`/api/v1/support/tickets/${selected.ticket.id}/resolve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ actor: 'ui-agent', note: 'Resolved from the agent queue' }),

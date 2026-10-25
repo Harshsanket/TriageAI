@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch } from '../../host/api';
 
 interface Message {
   id: string;
@@ -16,7 +17,7 @@ export default function ChatApp() {
   const busy = useRef(false);
 
   const load = useCallback(async (id: string) => {
-    const res = await fetch(`/api/v1/chat/conversations/${id}`);
+    const res = await apiFetch(`/api/v1/chat/conversations/${id}`);
     if (!res.ok) return;
     const body = (await res.json()) as { messages: Message[] };
     setMessages(body.messages);
@@ -36,7 +37,7 @@ export default function ChatApp() {
     setError(null);
     busy.current = true;
     try {
-      const res = await fetch('/api/v1/chat/messages', {
+      const res = await apiFetch('/api/v1/chat/messages', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ conversationId: conversationId ?? undefined, text }),

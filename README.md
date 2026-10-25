@@ -1,6 +1,6 @@
 # TriageAI
 
-> **Beta (`v0.4.0-beta.1`)** — Phases 0–8 are complete: kernel, workflow engine, support triage, RAG assistant, validated support auto-reply, the feedback → dataset → eval → model-registry loop, conditional linear-probe training with advanced priority/team triage, and approved/audited GitHub + Slack integrations with a measured stress suite. Expect rough edges; APIs and configs may change before `v1.0`.
+> **v1.0.0** — self-hosted modular AI automation platform: kernel + workflow engine, support triage, RAG assistant, validated auto-reply, feedback/eval/model-registry loop, training + advanced triage, GitHub/Slack integrations, identity/RBAC, retention, and operations tooling.
 
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
@@ -13,26 +13,6 @@ TriageAI combines classification, retrieval, generation, validation, and human r
 - **`full`** — Support + chat + KB + doc-assistant in one process (the easiest way to see everything).
 - **`core`** — Minimal kernel and application hosts for custom workflows.
 - **`integrations`** — Support plus optional GitHub/Slack outward actions (`triage.config.integrations.json`); enable/disable and credentials stay config/env-only.
-
-## Development Status
-
-**Phases 0–8 complete:**
-
-- **Kernel + module system** — config-driven enable/disable, capability seams, Docker profiles, and the `echo` reference module running queue-backed workflows on PostgreSQL.
-- **Workflow engine (Phase 2)** — safe `when` guards, per-stage retries/backoff, per-attempt timeouts (`AbortSignal`), cancellation, and fallback policies (`retry_alternative_retrieval`, `halt_run`, `AWAITING` outcomes).
-- **Inspector + feedback** — run list/detail at `/runs` with stage timelines, retries, and append-only decision records; corrections saved to `candidate_examples` with provenance.
-- **Observability** — `/metrics` (runs, stages, queue, dead letters, decisions, process), hw-monitor at `/system`, and the optional `observ` profile (Prometheus + Grafana).
-- **Performance** — k6 ingest/drain suite with a recorded baseline (0% errors, p95 ≈ 8 ms ingest, ~12.5 runs/s processing on the local Docker stack).
-- **Support slice (Phase 3, no LLM)** — tickets → MiniLM embedding-similarity classification (τ/δ thresholds, per-category) → deterministic versioned routing → agent review queue with a typed ticket state machine. Safety-critical categories always escalate; an eval harness gates macro-F1, p95 latency, and **zero false auto-routing**.
-- **Knowledge base + grounded assistant (Phase 4)** — pgvector-backed KB with approval gating and idempotent ingestion; retrieval with a τ/δ sufficiency gate; **local-only generation** (Ollama / LM Studio / OpenAI-compatible); grounded answers are cited, with missing citations attached deterministically and ungrounded answers refused; assistant chat with persisted conversations; doc-assistant answering from `docs/**` with file-path citations. Retrieval eval gates recall@3 ≥ 0.8 (currently 1.0, MRR 1.0); verified with a real local model (`qwen2.5:1.5b`, CPU).
-- **Validation + support auto-reply (Phase 5)** — a composable deterministic `Validator` (format, grounding, opt-in citation, injection, PII, forbidden-topic) guards every generated answer; fallbacks record policy/action/reasons and pending outcomes; routed tickets can receive a grounded reply and move to `AWAITING_CUSTOMER`, with customer confirmation, per-category versioned auto-reply policy, and hash-based repeat detection. Injection fixtures in tickets and KB text fail closed (no reply sent).
-- **Feedback loop + registry (Phase 6)** — review queue at `/feedback` approves/rejects corrections with provenance and audit rows; approved examples build deterministic, leakage-guarded `train/val/test` datasets (sha256, export for training); classifier + retrieval + generation evals merge into one report format; model promotion requires a passing report and no baseline regression (false auto-routing always blocks), rollback is audited, and the active pointer appears in every run's `adapter_versions`.
-- **Training + advanced triage (Phase 7)** — CPU linear-probe trainer on frozen embeddings (dataset-id input, baseline comparison, merged eval report, optional register/promote) and a second serving backend selected by the active registry pointer, so promotion/rollback changes the next run without a restart. Support triage now derives P0–P3 priority from configurable impact/severity/availability signals plus team mappings, sends unmapped/ambiguous cases to human review (never fabricated ids), and records agent overrides as reviewable candidates. The shipped default remains the frozen similarity baseline until an approved corpus proves a margin. Optional `train` compose profile; trainer/serving boundary is tested.
-- **Integrations + stress (Phase 8)** — a kernel `OutputChannel` seam (retries, rate limits, credential rotation, delivery idempotency, contract suite) with two provider modules. GitHub creates issues **exactly once** (marker-based duplicate recovery even after a lost response), supports per-category approval gates, audited action rows, signed webhooks, and bidirectional ticket↔issue status sync. Slack routes by category/priority, sends critical tickets immediately, batches the rest by window, suppresses duplicates, and offers the same approval gate. Tickets are read from events, never another module's tables. Approval UI lives at `/integrations/github` and `/integrations/slack`; measured Phase-8 results are in `docs/perf/phase8-budget.md`.
-
-**Next:** Phase 9 — hardening, security depth, retention, and packaging.
-
-Later work (auth/RBAC matrix, retention jobs, backup/restore, multi-tenant prep, attachments) is planned but not yet complete.
 
 ## Repository Layout
 
@@ -84,6 +64,8 @@ pnpm dev
 ```
 
 Local dev exposes the API on `:3000`, the web app on `:5173`, and (when running) the AI service on `:8000`. Available UI modules depend on the config file; see below.
+
+**Auth:** development/test defaults to `AUTH_MODE=disabled` (single-operator convenience). To exercise identity, set `AUTH_MODE=required` and `AUTH_JWT_SECRET` (32+ chars) for the API; the web host then shows a login screen and `POST /api/v1/auth/register` creates the first admin (registration closes afterwards; admins add users via `POST /api/v1/auth/users`). Never run `AUTH_MODE=disabled` on a reachable host.
 
 ### Run everything locally (full profile)
 

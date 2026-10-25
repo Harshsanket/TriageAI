@@ -1472,7 +1472,7 @@ export const supportModule: TriageModule = {
             note: z.string().max(5000).optional(),
           })
           .parse(request.body);
-        return transitionTicket(id, body.to, body.actor, body.note);
+        return transitionTicket(id, body.to, request.actor ?? body.actor, body.note);
       },
     });
 
@@ -1487,7 +1487,7 @@ export const supportModule: TriageModule = {
             note: z.string().max(5000).optional(),
           })
           .parse(request.body ?? {});
-        return transitionTicket(id, 'RESOLVED', body.actor, body.note);
+        return transitionTicket(id, 'RESOLVED', request.actor ?? body.actor, body.note);
       },
     });
 
@@ -1507,7 +1507,8 @@ export const supportModule: TriageModule = {
       url: '/api/v1/support/tickets/:id/triage',
       handler: async (request) => {
         const { id } = request.params;
-        const body = TicketTriageOverrideRequestSchema.parse(request.body);
+        const parsedBody = TicketTriageOverrideRequestSchema.parse(request.body);
+        const body = { ...parsedBody, actor: request.actor ?? parsedBody.actor };
         const configuredTeams = new Set(
           policyTeamIds(options.triage.teamMappings as TeamMapping[]),
         );
@@ -1795,6 +1796,18 @@ export const supportModule: TriageModule = {
           { trigger: 'manual' },
         );
         return { ticketId: id, runId: started.runId, deduped: started.deduped };
+      },
+    });
+
+    ctx.registerRetentionTask({
+      id: 'support.messages',
+      apply: async ({ database, cutoffs }) => {
+        if (!cutoffs.messages) return 0;
+        const rows = await database.query(
+          `DELETE FROM support_ticket_messages WHERE created_at < $1 RETURNING id`,
+          [cutoffs.messages],
+        );
+        return rows.length;
       },
     });
   },

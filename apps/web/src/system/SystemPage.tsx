@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiFetch } from '../host/api';
 
 interface HwSnapshot {
   capturedAt: string;
@@ -23,7 +24,7 @@ export default function SystemPage() {
     let disposed = false;
     const load = async () => {
       try {
-        const res = await fetch('/api/v1/system/hw');
+        const res = await apiFetch('/api/v1/system/hw');
         if (!res.ok) throw new Error(`hw metrics failed (${res.status})`);
         const data = (await res.json()) as HwSnapshot;
         if (!disposed) setHw(data);

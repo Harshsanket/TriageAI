@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { apiFetch } from '../../host/api';
 
 interface AskResult {
   answer: string;
@@ -17,7 +18,7 @@ export default function DocAssistantApp() {
   const ask = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
-    const res = await fetch('/api/v1/doc-assistant/ask', {
+    const res = await apiFetch('/api/v1/doc-assistant/ask', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ question }),
@@ -29,7 +30,7 @@ export default function DocAssistantApp() {
   const reingest = async () => {
     setError(null);
     setStatus('Ingesting docs…');
-    const res = await fetch('/api/v1/doc-assistant/reingest', { method: 'POST' });
+    const res = await apiFetch('/api/v1/doc-assistant/reingest', { method: 'POST' });
     if (!res.ok) {
       setStatus(null);
       setError(`reingest failed (${res.status})`);

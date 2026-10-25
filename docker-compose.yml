@@ -43,6 +43,9 @@ services:
       PORT: 3000
       DATABASE_URL: postgres://triageai:triageai@postgres:5432/triageai
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
+      AUTH_MODE: ${AUTH_MODE:-disabled}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
       TRIAGEAI_GENERATOR_BASE_URL: ${TRIAGEAI_GENERATOR_BASE_URL:-http://ollama:11434}
       TRIAGEAI_CONFIG: ${TRIAGEAI_CONFIG:-/app/triage.config.json}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}

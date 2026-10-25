@@ -95,6 +95,7 @@ export function registerCandidateRoutes(app: FastifyInstance, kernel: Kernel): v
 
   app.post('/api/v1/system/candidates', async (request, reply) => {
     const body = CorrectionRequestSchema.parse(request.body);
+    const actor = request.principal?.email ?? body.actor ?? 'ui';
     const id = ulid();
     const rows = (await kernel.database.query<CandidateRow>(
       `INSERT INTO candidate_examples (id, source, source_run_id, input, gold, provenance, status, actor)
@@ -108,10 +109,10 @@ export function registerCandidateRoutes(app: FastifyInstance, kernel: Kernel): v
         {
           stageRunId: body.stageRunId ?? null,
           reason: body.reason ?? null,
-          submittedBy: body.actor ?? 'ui',
+          submittedBy: actor,
           method: body.method,
         },
-        body.actor ?? null,
+        actor,
       ],
     )) as unknown as CandidateRow[];
     return reply.status(201).send(toCandidate(rows[0] as CandidateRow));
@@ -119,7 +120,8 @@ export function registerCandidateRoutes(app: FastifyInstance, kernel: Kernel): v
 
   app.patch('/api/v1/system/candidates/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const body = CandidateReviewRequestSchema.parse(request.body);
+    const parsedBody = CandidateReviewRequestSchema.parse(request.body);
+    const body = { ...parsedBody, actor: request.principal?.email ?? parsedBody.actor };
     const updated = await kernel.database.transaction(async (tx) => {
       const rows = (await tx.query<CandidateRow>(
         `SELECT id, source, source_run_id, input, gold, provenance, status, actor, reviewed_at, created_at

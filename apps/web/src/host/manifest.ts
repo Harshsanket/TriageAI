@@ -3,9 +3,12 @@ import { useEffect, useState } from 'react';
 import type { SystemManifest } from '@triageai/contracts';
 import { SystemManifestSchema } from '@triageai/contracts';
 
+import { apiFetch } from './api';
+
 export type ManifestState =
   | { phase: 'loading' }
   | { phase: 'ready'; manifest: SystemManifest }
+  | { phase: 'unauthenticated' }
   | { phase: 'error'; message: string };
 
 const POLL_INTERVAL_MS = 30_000;
@@ -19,7 +22,11 @@ export function useSystemManifest(): ManifestState {
     let disposed = false;
     const load = async () => {
       try {
-        const res = await fetch('/api/v1/system/manifest');
+        const res = await apiFetch('/api/v1/system/manifest');
+        if (res.status === 401) {
+          if (!disposed) setState({ phase: 'unauthenticated' });
+          return;
+        }
         if (!res.ok) throw new Error(`manifest fetch failed: ${res.status}`);
         const parsed = SystemManifestSchema.parse(await res.json());
         if (!disposed) setState({ phase: 'ready', manifest: parsed });

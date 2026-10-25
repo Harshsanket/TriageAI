@@ -41,11 +41,29 @@ export const PROFILE_PRESETS: Record<string, Record<string, boolean>> = {
   },
 };
 
+const daysSchema = z.number().int().positive().max(3650).nullable().default(null);
+
+const retentionSchema = z.object({
+  enabled: z.boolean().default(false),
+  intervalHours: z
+    .number()
+    .positive()
+    .max(24 * 30)
+    .default(24),
+  runDays: daysSchema,
+  decisionDays: daysSchema,
+  auditDays: daysSchema,
+  candidateDays: daysSchema,
+  messageDays: daysSchema,
+  deadletterDays: daysSchema,
+});
+
 const getSchema = z.object({
   profile: profileNameSchema.default('core'),
   queue: queueAdapterSchema.default({ adapter: 'pg-queue', pollIntervalMs: 250 }),
   modules: z.record(z.string(), moduleConfigSchema).default({}),
   capabilities: z.record(z.string(), capabilitySchema).default({ queue: { adapter: 'pg-queue' } }),
+  retention: retentionSchema.default({}),
 });
 
 export type RawConfigFile = z.input<typeof getSchema>;
@@ -136,5 +154,6 @@ export function buildKernelConfig(
     queue,
     modules,
     capabilities: file.capabilities,
+    retention: file.retention,
   };
 }

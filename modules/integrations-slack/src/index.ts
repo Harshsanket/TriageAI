@@ -592,7 +592,7 @@ export const integrationsSlackModule: TriageModule = {
           request.params.id as string,
           ['pending_approval', 'failed'],
           'approved',
-          body.actor,
+          request.actor ?? body.actor,
           'integration.slack.approved',
           body.note,
         );
@@ -610,7 +610,7 @@ export const integrationsSlackModule: TriageModule = {
           request.params.id as string,
           ['pending_approval', 'approved', 'failed', 'batched'],
           'rejected',
-          body.actor,
+          request.actor ?? body.actor,
           'integration.slack.rejected',
           body.note,
         );
@@ -627,7 +627,7 @@ export const integrationsSlackModule: TriageModule = {
           request.params.id as string,
           ['failed'],
           'approved',
-          body.actor,
+          request.actor ?? body.actor,
           'integration.slack.retried',
           body.note,
         );

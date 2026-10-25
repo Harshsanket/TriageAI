@@ -40,6 +40,38 @@ describe('config', () => {
     const cfg = loadConfigFile('nope/missing.json');
     expect(cfg.profile).toBe('core');
   });
+
+  it('defaults retention windows to disabled/null', () => {
+    const cfg = buildKernelConfig(parseConfigFile({}), {});
+    expect(cfg.retention).toEqual({
+      enabled: false,
+      intervalHours: 24,
+      runDays: null,
+      decisionDays: null,
+      auditDays: null,
+      candidateDays: null,
+      messageDays: null,
+      deadletterDays: null,
+    });
+  });
+
+  it('validates per-profile retention windows', () => {
+    const cfg = buildKernelConfig(
+      parseConfigFile({
+        retention: { enabled: true, runDays: 30, decisionDays: 7, messageDays: 14 },
+      }),
+      {},
+    );
+    expect(cfg.retention).toMatchObject({
+      enabled: true,
+      runDays: 30,
+      decisionDays: 7,
+      messageDays: 14,
+    });
+    expect(() => parseConfigFile({ retention: { runDays: 0 } })).toThrow(
+      /Invalid triage.config.json/,
+    );
+  });
 });
 
 describe('semver subset', () => {

@@ -51,6 +51,8 @@ export interface RouteRequest {
   params: Record<string, string>;
   query: Record<string, string>;
   body: unknown;
+  /** Authenticated actor (host-resolved); modules must prefer it over body input. */
+  actor?: string;
   /** Request headers (lower-cased by the host) for signature/auth checks. */
   headers?: Record<string, string>;
   /** Raw request body when the host captured it (webhook signature checks). */
@@ -312,8 +314,39 @@ export interface KernelContext {
   registerStageHandler(kind: string, def: StageHandlerDef): void;
   /** Register a concrete OutputChannel adapter (one id per module/provider). */
   registerOutputChannel(channel: string, adapter: OutputChannel): void;
+  /**
+   * Optional data-retention task (Phase 9). Modules own their message bodies;
+   * the kernel computes cutoffs and records what was deleted.
+   */
+  registerRetentionTask(task: RetentionTask): void;
   /** Read-only process environment (secrets stay in env, never config/logs). */
   env: Readonly<Record<string, string | undefined>>;
+}
+
+export interface RetentionCutoffs {
+  runs: Date | null;
+  decisions: Date | null;
+  audit: Date | null;
+  candidates: Date | null;
+  messages: Date | null;
+  deadletters: Date | null;
+}
+
+export interface RetentionTask {
+  id: string;
+  apply(context: { database: Database; cutoffs: RetentionCutoffs }): Promise<number>;
+}
+
+export interface RetentionResult {
+  id: string;
+  deleted: number;
+}
+
+export interface RetentionReport {
+  ranAt: string;
+  enabled: boolean;
+  cutoffs: Record<keyof RetentionCutoffs, string | null>;
+  results: RetentionResult[];
 }
 
 export interface QueueStartResult {
@@ -433,11 +466,23 @@ export interface DeadLetterEntry {
   createdAt: string;
 }
 
+export interface RetentionConfig {
+  enabled: boolean;
+  intervalHours: number;
+  runDays: number | null;
+  decisionDays: number | null;
+  auditDays: number | null;
+  candidateDays: number | null;
+  messageDays: number | null;
+  deadletterDays: number | null;
+}
+
 export interface KernelConfig {
   profile: string;
   queue: { adapter: 'pg-queue' | 'inline' | 'bullmq'; pollIntervalMs?: number };
   modules: Record<string, { enabled: boolean; options?: unknown }>;
   capabilities: Record<string, { adapter: string; [key: string]: unknown }>;
+  retention?: RetentionConfig;
 }
 
 export interface KernelOptions {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { RunDto } from '@triageai/contracts';
+import { apiFetch } from '../../host/api';
 
 export default function EchoApp() {
   const [runs, setRuns] = useState<RunDto[]>([]);
@@ -9,7 +10,7 @@ export default function EchoApp() {
   useEffect(() => {
     let disposed = false;
     const load = async () => {
-      const res = await fetch('/api/v1/echo/runs?limit=10');
+      const res = await apiFetch('/api/v1/echo/runs?limit=10');
       if (!res.ok) return;
       const data = (await res.json()) as RunDto[];
       if (!disposed) setRuns(data);
@@ -26,7 +27,7 @@ export default function EchoApp() {
     event.preventDefault();
     setBusy(true);
     try {
-      await fetch('/api/v1/echo/run', {
+      await apiFetch('/api/v1/echo/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text }),

@@ -625,7 +625,7 @@ export const integrationsGitHubModule: TriageModule = {
           request.params.id as string,
           ['pending_approval', 'failed'],
           'approved',
-          body.actor,
+          request.actor ?? body.actor,
           'integration.github.approved',
           body.note,
         );
@@ -643,7 +643,7 @@ export const integrationsGitHubModule: TriageModule = {
           request.params.id as string,
           ['pending_approval', 'approved', 'failed'],
           'rejected',
-          body.actor,
+          request.actor ?? body.actor,
           'integration.github.rejected',
           body.note,
         );
@@ -660,7 +660,7 @@ export const integrationsGitHubModule: TriageModule = {
           request.params.id as string,
           ['failed'],
           'approved',
-          body.actor,
+          request.actor ?? body.actor,
           'integration.github.retried',
           body.note,
         );

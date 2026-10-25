@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import { ZodError } from 'zod';
 
 import { bootKernel, buildKernelConfig, loadConfigFile, PostgresDatabase } from '@triageai/kernel';
@@ -21,12 +22,16 @@ import { registerDatasetRoutes } from './system/datasets.js';
 import { registerHardwareRoute } from './system/hardware.js';
 import { registerModelRoutes } from './system/models.js';
 import { registerMetricsRoute } from './system/metrics.js';
+import { registerRetentionRoutes } from './system/retention.js';
 import { registerRunRoutes } from './system/runs.js';
 import { createCapabilities } from './platform/capabilities.js';
 import { DbModelRegistry } from './platform/modelRegistry.js';
 import { AppError } from './platform/errors.js';
 import { logger } from './platform/logger.js';
 import { config } from './platform/config.js';
+import { createAuthGuard, registerAuthRoutes } from './platform/auth/index.js';
+import { AuthService } from './platform/auth/service.js';
+import { redactValue } from './platform/redact.js';
 
 export interface BuildAppOptions {
   /** Disable pretty logging in tests. */
@@ -37,6 +42,10 @@ export interface BuildAppOptions {
   configPath?: string;
   /** Test seam: inject capability adapters instead of calling ai-service. */
   capabilities?: import('@triageai/kernel').Capabilities;
+  /** Test seam: override the boot-time auth mode. */
+  authMode?: 'disabled' | 'required';
+  /** Test seam: override rate limiting (max 0 disables it). */
+  rateLimit?: { max?: number; timeWindow?: string };
 }
 
 declare module 'fastify' {
@@ -110,6 +119,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       : (logger as unknown as KernelLogger);
     const database = new PostgresDatabase(config.databaseUrl);
     const kernelConfig = buildKernelConfig(loadConfigFile(options.configPath), process.env);
+    const authMode = options.authMode ?? config.authMode;
+    const authService = new AuthService(database, {
+      accessTtlSeconds: config.authAccessTtlSeconds,
+      refreshTtlSeconds: config.authRefreshTtlSeconds,
+      jwtSecret: config.authJwtSecret,
+    });
+
+    const limitMax = options.rateLimit?.max ?? config.rateLimitMax;
+    if (limitMax > 0) {
+      await app.register(rateLimit, {
+        global: true,
+        max: limitMax,
+        timeWindow: options.rateLimit?.timeWindow ?? config.rateLimitWindow,
+      });
+    }
+    registerAuthRoutes(app, authService, { mode: authMode });
+    app.addHook('preHandler', createAuthGuard({ mode: authMode, jwtSecret: config.authJwtSecret }));
     const modelRegistry = new DbModelRegistry(database);
     // Never mutate a caller-provided capability bag: tests reuse one object
     // across app instances, and a leaked registry would point at a closed DB.
@@ -140,6 +166,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
     app.decorate('kernel', kernel);
 
+    let retentionTimer: NodeJS.Timeout | undefined;
+    if (kernel.config.retention?.enabled) {
+      retentionTimer = setInterval(
+        () => {
+          void kernel
+            .runRetention()
+            .catch((err: unknown) =>
+              kernelLogger.error({ err: (err as Error).message }, 'retention pass failed'),
+            );
+        },
+        kernel.config.retention.intervalHours * 60 * 60 * 1000,
+      );
+      retentionTimer.unref();
+    }
+
     registerSystemRoutes(app, kernel);
     registerRunRoutes(app, kernel);
     registerMetricsRoute(app, kernel);
@@ -148,6 +189,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     registerDatasetRoutes(app, kernel);
     registerModelRoutes(app, kernel, activeRegistry);
     registerHardwareRoute(app, kernel);
+    registerRetentionRoutes(app, kernel);
     for (const route of kernel.routes()) {
       app.route({
         method: route.method,
@@ -164,6 +206,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               ]),
             ),
             body: request.body,
+            actor: request.principal?.email,
             headers: Object.fromEntries(
               Object.entries(request.headers).map(([key, value]) => [
                 key,
@@ -176,6 +219,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
 
     app.addHook('onClose', async () => {
+      if (retentionTimer) clearInterval(retentionTimer);
       await kernel.shutdown();
       await database.close();
     });
@@ -188,6 +232,16 @@ function registerSystemRoutes(app: FastifyInstance, kernel: Kernel): void {
   app.get('/api/v1/system/manifest', async () => kernel.manifest());
   app.get('/api/v1/system/modules', async () => kernel.infos());
   app.get('/api/v1/system/modules/health', async () => kernel.health());
+  app.get('/api/v1/system/config', async () =>
+    redactValue({
+      profile: kernel.config.profile,
+      queue: kernel.config.queue,
+      modules: kernel.config.modules,
+      capabilities: kernel.config.capabilities,
+      authMode: config.authMode,
+      rateLimit: { max: config.rateLimitMax, window: config.rateLimitWindow },
+    }),
+  );
   app.post('/api/v1/system/modules/:id/uninstall', async (request) => {
     const { id } = request.params as { id: string };
     return kernel.uninstallModule(id);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { apiFetch } from '../../host/api';
 
 interface Action {
   id: string;
@@ -33,7 +34,7 @@ export function IntegrationsApp({
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/v1/integrations/${provider}/actions`);
+    const res = await apiFetch(`/api/v1/integrations/${provider}/actions`);
     if (!res.ok) return;
     setActions((await res.json()) as Action[]);
   }, [provider]);
@@ -46,7 +47,7 @@ export function IntegrationsApp({
 
   const mutate = async (id: string, operation: 'approve' | 'reject' | 'retry') => {
     setError(null);
-    const res = await fetch(`/api/v1/integrations/${provider}/actions/${id}/${operation}`, {
+    const res = await apiFetch(`/api/v1/integrations/${provider}/actions/${id}/${operation}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ actor: 'ui-admin' }),

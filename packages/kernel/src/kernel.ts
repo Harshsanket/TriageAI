@@ -26,6 +26,10 @@ import type {
   KernelRouteDef,
   QueueCapability,
   ResolvedModule,
+  RetentionConfig,
+  RetentionCutoffs,
+  RetentionReport,
+  RetentionTask,
   StageHandlerDef,
   TriageModule,
   WorkflowDef,
@@ -42,6 +46,8 @@ export interface Kernel {
   infos(): ModuleInfo[];
   health(): Promise<Array<ModuleInfo & { health?: 'healthy' | 'degraded' | 'down' }>>;
   uninstallModule(id: string): Promise<{ dropped: string[] }>;
+  /** Run the configured retention pass (ADR-0021); safe to call repeatedly. */
+  runRetention(now?: Date): Promise<RetentionReport>;
   shutdown(): Promise<void>;
   /** Test/ops access (Phase 1; the inspector operates in Phase 2 via API). */
   readonly workflowEngine: WorkflowEngine;
@@ -61,6 +67,7 @@ function createKernelContext(
   events: EventBus,
   queue: Queue,
   logger: KernelLogger,
+  retentionTasks: RetentionTask[],
 ): KernelContext {
   const queueCapability: QueueCapability = {
     start(def: WorkflowDef) {
@@ -119,6 +126,9 @@ function createKernelContext(
         throw new Error('output channel registry is not available');
       }
       outputChannel.register(channel, adapter);
+    },
+    registerRetentionTask(task) {
+      retentionTasks.push(task);
     },
   };
   return context;
@@ -200,6 +210,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   const engine = new WorkflowEngine(database, logger, events, stageQueue);
   engineRef.current = engine;
   const routes: KernelRouteDef[] = [];
+  const retentionTasks: RetentionTask[] = [];
 
   for (const resolved of ordered) {
     const module = resolved.module;
@@ -239,6 +250,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       events,
       queue,
       logger,
+      retentionTasks,
     );
     try {
       module.register(context);
@@ -314,6 +326,8 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
         }),
       );
     },
+    runRetention: async (now = new Date()) =>
+      runRetentionPass(database, config.retention ?? DEFAULT_RETENTION, retentionTasks, now),
     uninstallModule: async (id: string) => {
       if (startedIds.includes(id)) {
         throw new AppError(
@@ -425,4 +439,98 @@ export function resolveModules(
 
   if (problems.length > 0) return { ordered: [], error: problems };
   return { ordered };
+}
+
+export const DEFAULT_RETENTION: RetentionConfig = {
+  enabled: false,
+  intervalHours: 24,
+  runDays: null,
+  decisionDays: null,
+  auditDays: null,
+  candidateDays: null,
+  messageDays: null,
+  deadletterDays: null,
+};
+
+function cutoffFor(now: Date, days: number | null): Date | null {
+  return days == null ? null : new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+async function runRetentionPass(
+  database: Database,
+  config: RetentionConfig,
+  tasks: RetentionTask[],
+  now: Date,
+): Promise<RetentionReport> {
+  const cutoffs: RetentionCutoffs = {
+    runs: cutoffFor(now, config.runDays),
+    decisions: cutoffFor(now, config.decisionDays),
+    audit: cutoffFor(now, config.auditDays),
+    candidates: cutoffFor(now, config.candidateDays),
+    messages: cutoffFor(now, config.messageDays),
+    deadletters: cutoffFor(now, config.deadletterDays),
+  };
+  const results: Array<{ id: string; deleted: number }> = [];
+
+  const coreDeletes: Array<{ id: string; cutoff: Date | null; sql: string }> = [
+    {
+      id: 'kernel.workflow_runs',
+      cutoff: cutoffs.runs,
+      sql: `DELETE FROM workflow_runs
+            WHERE finished_at IS NOT NULL AND finished_at < $1
+              AND status IN ('SUCCEEDED','FAILED','CANCELLED','AWAITING')
+            RETURNING id`,
+    },
+    {
+      id: 'kernel.decision_records',
+      cutoff: cutoffs.decisions,
+      sql: `DELETE FROM decision_records WHERE created_at < $1 RETURNING id`,
+    },
+    {
+      id: 'kernel.audit_events',
+      cutoff: cutoffs.audit,
+      sql: `DELETE FROM audit_events WHERE created_at < $1 RETURNING id`,
+    },
+    {
+      id: 'kernel.candidate_examples',
+      cutoff: cutoffs.candidates,
+      sql: `DELETE FROM candidate_examples
+            WHERE created_at < $1 AND status IN ('proposed','rejected') RETURNING id`,
+    },
+    {
+      id: 'kernel.queue_deadletters',
+      cutoff: cutoffs.deadletters,
+      sql: `DELETE FROM queue_deadletters WHERE created_at < $1 RETURNING id`,
+    },
+  ];
+
+  for (const item of coreDeletes) {
+    if (!item.cutoff) continue;
+    const rows = await database.query(item.sql, [item.cutoff]);
+    results.push({ id: item.id, deleted: rows.length });
+  }
+  for (const task of tasks) {
+    try {
+      const deleted = await task.apply({ database, cutoffs });
+      results.push({ id: task.id, deleted });
+    } catch (err) {
+      // One module's retention failure must not block the others.
+      results.push({ id: task.id, deleted: 0 });
+      void err;
+    }
+  }
+
+  return {
+    ranAt: now.toISOString(),
+    enabled: config.enabled,
+    cutoffs: {
+      runs: cutoffs.runs?.toISOString() ?? null,
+      decisions: cutoffs.decisions?.toISOString() ?? null,
+      audit: cutoffs.audit?.toISOString() ?? null,
+      candidates: cutoffs.candidates?.toISOString() ?? null,
+      messages: cutoffs.messages?.toISOString() ?? null,
+      deadletters: cutoffs.deadletters?.toISOString() ?? null,
+    },
+    results,
+  };
 }

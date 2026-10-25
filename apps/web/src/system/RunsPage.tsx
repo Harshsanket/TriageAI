@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { RunDto } from '@triageai/contracts';
 
 import { navigate } from '../host/router';
+import { apiFetch } from '../host/api';
 
 const STATUS_COLORS: Record<string, string> = {
   SUCCEEDED: '#1a7f37',
@@ -21,7 +22,7 @@ export default function RunsPage() {
     let disposed = false;
     const load = async () => {
       try {
-        const res = await fetch('/api/v1/system/runs?limit=50');
+        const res = await apiFetch('/api/v1/system/runs?limit=50');
         if (!res.ok) throw new Error(`failed to load runs (${res.status})`);
         const data = (await res.json()) as RunDto[];
         if (!disposed) setRuns(data);

@@ -337,5 +337,17 @@ export const chatModule: TriageModule = {
         return { conversationId, messageId, runId: started.runId };
       },
     });
+
+    ctx.registerRetentionTask({
+      id: 'chat.messages',
+      apply: async ({ database, cutoffs }) => {
+        if (!cutoffs.messages) return 0;
+        const rows = await database.query(
+          `DELETE FROM chat_messages WHERE created_at < $1 RETURNING id`,
+          [cutoffs.messages],
+        );
+        return rows.length;
+      },
+    });
   },
 };

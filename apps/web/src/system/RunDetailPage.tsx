@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { DecisionRecordDto, RunDto, StageRunDto } from '@triageai/contracts';
 
 import { navigate } from '../host/router';
+import { apiFetch } from '../host/api';
 
 interface RunDetail {
   run: RunDto;
@@ -43,7 +44,7 @@ export default function RunDetailPage({ runId }: { runId: string }) {
     let disposed = false;
     const load = async () => {
       try {
-        const res = await fetch(`/api/v1/system/runs/${runId}`);
+        const res = await apiFetch(`/api/v1/system/runs/${runId}`);
         if (!res.ok) throw new Error(`run ${runId} not found (${res.status})`);
         const data = (await res.json()) as RunDetail;
         if (!disposed) setDetail(data);
@@ -64,7 +65,7 @@ export default function RunDetailPage({ runId }: { runId: string }) {
 
   const submitCorrection = async (event: React.FormEvent) => {
     event.preventDefault();
-    const res = await fetch('/api/v1/system/candidates', {
+    const res = await apiFetch('/api/v1/system/candidates', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ runId: run.id, input: run.input, gold, reason }),

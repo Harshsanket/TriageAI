@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { apiFetch } from '../host/api';
 
 interface Candidate {
   id: string;
@@ -53,10 +54,10 @@ export default function FeedbackPage() {
 
   const load = useCallback(async () => {
     const [candidateRes, datasetRes, modelRes, auditRes] = await Promise.all([
-      fetch('/api/v1/system/candidates?limit=50'),
-      fetch('/api/v1/datasets?limit=20'),
-      fetch('/api/v1/models?limit=50'),
-      fetch('/api/v1/system/audit?limit=10'),
+      apiFetch('/api/v1/system/candidates?limit=50'),
+      apiFetch('/api/v1/datasets?limit=20'),
+      apiFetch('/api/v1/models?limit=50'),
+      apiFetch('/api/v1/system/audit?limit=10'),
     ]);
     if (candidateRes.ok) setCandidates((await candidateRes.json()) as Candidate[]);
     if (datasetRes.ok) setDatasets((await datasetRes.json()) as Dataset[]);
@@ -72,7 +73,7 @@ export default function FeedbackPage() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/v1/system/candidates/${id}`, {
+      const res = await apiFetch(`/api/v1/system/candidates/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ status, actor, method }),
@@ -90,7 +91,7 @@ export default function FeedbackPage() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/v1/datasets', {
+      const res = await apiFetch('/api/v1/datasets', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ purpose: 'classifier', createdBy: actor }),
@@ -108,7 +109,7 @@ export default function FeedbackPage() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/v1/models/${id}/promote`, {
+      const res = await apiFetch(`/api/v1/models/${id}/promote`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ actor }),
@@ -126,7 +127,7 @@ export default function FeedbackPage() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/v1/models/${id}/rollback`, {
+      const res = await apiFetch(`/api/v1/models/${id}/rollback`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ actor, reason: 'ui rollback' }),

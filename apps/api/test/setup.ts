@@ -8,3 +8,4 @@ process.env.DATABASE_URL ??= 'postgres://triageai:triageai@localhost:5432/triage
 process.env.REDIS_URL ??= 'redis://localhost:6379';
 process.env.AI_SERVICE_URL ??= 'http://localhost:8000';
 process.env.LOG_LEVEL ??= 'fatal';
+process.env.RATE_LIMIT_DISABLED ??= '1';

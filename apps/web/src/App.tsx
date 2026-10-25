@@ -5,6 +5,7 @@ import { navEntries, useSystemManifest } from './host/manifest';
 import { navigate, useRoute } from './host/router';
 import { moduleRegistry } from './modules/registry';
 import FeedbackPage from './system/FeedbackPage';
+import LoginPage from './system/LoginPage';
 import RunDetailPage from './system/RunDetailPage';
 import SystemPage from './system/SystemPage';
 import RunsPage from './system/RunsPage';
@@ -24,6 +25,10 @@ function renderRuns(route: string): ReactElement {
 export function App() {
   const manifestState = useSystemManifest();
   const route = useRoute();
+
+  if (manifestState.phase === 'unauthenticated') {
+    return <LoginPage />;
+  }
 
   if (manifestState.phase !== 'ready') {
     return (

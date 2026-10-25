@@ -1,6 +1,6 @@
 {
   "name": "triageai",
-  "version": "0.4.0-beta.1",
+  "version": "1.0.0",
   "private": true,
   "packageManager": "pnpm@12.11.2",
   "engines": {
@@ -20,7 +20,8 @@
     "eval:retrieval": "pnpm --filter @triageai/api exec tsx evals/retrieval.eval.ts",
     "eval:generation": "pnpm --filter @triageai/api exec tsx evals/generation.eval.ts",
     "eval:merge": "pnpm --filter @triageai/api exec tsx evals/merge.eval.ts",
-    "eval:fixtures": "pnpm --filter @triageai/api exec tsx evals/exportFixtures.eval.ts"
+    "eval:fixtures": "pnpm --filter @triageai/api exec tsx evals/exportFixtures.eval.ts",
+    "seed:demo": "bash scripts/seed-demo.sh"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

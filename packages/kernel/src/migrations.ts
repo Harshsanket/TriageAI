@@ -204,9 +204,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS model_assets_one_active
   ON model_assets (component) WHERE status = 'active';
 `;
 
+/**
+ * Phase 9 identity tables. Auth is host-owned (ADR-0020), but the tables are
+ * kernel-owned like the rest of the core schema so every host shares one
+ * migration history.
+ */
+const AUTH_TABLES = `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'customer' CHECK (role IN ('customer','agent','admin')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower ON users (lower(email));
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  family_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  replaced_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions (user_id);
+CREATE INDEX IF NOT EXISTS auth_sessions_family ON auth_sessions (family_id);
+`;
+
 export const CORE_MIGRATIONS: Migration[] = [
   { id: '0001-core-tables', sql: CORE_TABLES },
   { id: '0002-queue-tables', sql: QUEUE_TABLES },
   { id: '0003-vector-store', sql: VECTOR_TABLES },
   { id: '0004-feedback-columns', sql: FEEDBACK_COLUMNS },
+  { id: '0005-auth-tables', sql: AUTH_TABLES },
 ];
