@@ -51,6 +51,10 @@ export interface RouteRequest {
   params: Record<string, string>;
   query: Record<string, string>;
   body: unknown;
+  /** Request headers (lower-cased by the host) for signature/auth checks. */
+  headers?: Record<string, string>;
+  /** Raw request body when the host captured it (webhook signature checks). */
+  rawBody?: string;
 }
 
 export type RouteHandler = (request: RouteRequest) => Promise<unknown>;
@@ -159,6 +163,64 @@ export interface Retriever {
   ): Promise<RetrievalResult>;
 }
 
+/**
+ * Outbound delivery seam (Phase 8). Concrete adapters are registered by
+ * integration modules; the kernel only routes by channel id and keeps the
+ * registry free of provider vocabulary (ADR-0018).
+ */
+export interface DeliveryContext {
+  runId: string;
+  workflowId: string;
+  stageId: string;
+  orgId: string | null;
+  /** Idempotency scope for this delivery (retries must not duplicate). */
+  idempotencyKey?: string;
+}
+
+export interface OutboundIntent {
+  channel: string;
+  title?: string;
+  body: string;
+  labels?: string[];
+  /** Adapter-specific hints (e.g. `{ operation: 'close', issueNumber: 12 }`). */
+  metadata?: Record<string, unknown>;
+  idempotencyKey?: string;
+}
+
+export interface DeliveryResult {
+  ref: string;
+  channel: string;
+  deduped?: boolean;
+  detail?: Record<string, unknown>;
+}
+
+export interface OutboundQuery {
+  channel: string;
+  text: string;
+  limit?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface OutboundMatch {
+  ref: string;
+  title?: string;
+  url?: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface OutputChannel {
+  deliver(ctx: DeliveryContext, intent: OutboundIntent): Promise<DeliveryResult>;
+  /** Optional lookup used for duplicate detection / linkbacks. */
+  search?(ctx: DeliveryContext, query: OutboundQuery): Promise<OutboundMatch[]>;
+}
+
+/** Kernel-provided router; modules register one adapter per channel id. */
+export interface OutputChannelRegistry extends OutputChannel {
+  register(channel: string, adapter: OutputChannel): void;
+  has(channel: string): boolean;
+  channels(): string[];
+}
+
 export interface GenerationResult {
   text: string;
   modelVersion: string;
@@ -231,6 +293,8 @@ export interface Capabilities {
   generator?: Generator;
   validator?: Validator;
   modelRegistry?: ModelRegistry;
+  /** Always supplied by the kernel; integration modules register adapters. */
+  outputChannel?: OutputChannelRegistry;
 }
 
 /**
@@ -246,6 +310,10 @@ export interface KernelContext {
   logger: KernelLogger;
   registerRoute(routeDef: KernelRouteDef): void;
   registerStageHandler(kind: string, def: StageHandlerDef): void;
+  /** Register a concrete OutputChannel adapter (one id per module/provider). */
+  registerOutputChannel(channel: string, adapter: OutputChannel): void;
+  /** Read-only process environment (secrets stay in env, never config/logs). */
+  env: Readonly<Record<string, string | undefined>>;
 }
 
 export interface QueueStartResult {

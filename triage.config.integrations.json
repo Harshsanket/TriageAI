@@ -1,0 +1,54 @@
+{
+  "profile": "support",
+  "queue": {
+    "adapter": "pg-queue",
+    "pollIntervalMs": 250
+  },
+  "modules": {
+    "support": { "enabled": true },
+    "ai-pipeline": { "enabled": true },
+    "kb": { "enabled": true, "options": { "collection": "kb_docs" } },
+    "chat": { "enabled": false },
+    "doc-assistant": { "enabled": false },
+    "echo": { "enabled": false },
+    "integrations-github": {
+      "enabled": true,
+      "options": {
+        "repo": "local/triageai",
+        "baseUrl": "https://api.github.com",
+        "labels": ["triageai"],
+        "autoCreate": true,
+        "requireApproval": false,
+        "approvalCategories": ["security"],
+        "duplicateSearch": true,
+        "closeOnResolved": true
+      }
+    },
+    "integrations-slack": {
+      "enabled": true,
+      "options": {
+        "criticalChannel": "#incidents",
+        "routing": [
+          { "categories": [], "priorityCodes": ["P0", "P1"], "channel": "#incidents" },
+          { "categories": ["billing", "refund_dispute"], "channel": "#billing" },
+          { "categories": ["bug_report"], "channel": "#engineering" }
+        ],
+        "batchWindowMs": 60000,
+        "dedupeWindowMs": 300000,
+        "requireApproval": false,
+        "approvalCategories": ["security"]
+      }
+    }
+  },
+  "capabilities": {
+    "embedder": { "adapter": "ai-service" },
+    "classifier": { "adapter": "ai-service" },
+    "vectorStore": { "adapter": "pgvector" },
+    "retriever": { "adapter": "pgvector", "threshold": 0.35, "margin": 0.05 },
+    "generator": {
+      "adapter": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "model": "qwen2.5:1.5b"
+    }
+  }
+}

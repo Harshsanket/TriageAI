@@ -18,11 +18,16 @@ import { backoffFor } from './types.js';
 
 const DEFAULT_LEASE_SECONDS = 60;
 
+interface SubscriptionState {
+  timer: ReturnType<typeof setInterval>;
+  inflight: Promise<unknown>[];
+  /** Poll cycles currently waiting on the DB / claiming work. */
+  polls: Set<Promise<void>>;
+  stopped: boolean;
+}
+
 export class PgQueue implements Queue {
-  private subscriptions = new Map<
-    string,
-    { timer: ReturnType<typeof setInterval>; inflight: Promise<unknown>[] }
-  >();
+  private subscriptions = new Map<string, SubscriptionState>();
 
   constructor(
     private database: Database,
@@ -50,50 +55,76 @@ export class PgQueue implements Queue {
   subscribe(queue: string, handler: QueueWorker, opts?: QueueOptions): QueueSubscription {
     const concurrency = opts?.concurrency ?? 1;
     const pollIntervalMs = opts?.pollIntervalMs ?? 250;
-    const inflight: Promise<unknown>[] = [];
+    const state: SubscriptionState = {
+      timer: undefined as unknown as ReturnType<typeof setInterval>,
+      inflight: [],
+      polls: new Set(),
+      stopped: false,
+    };
 
     const poll = async (): Promise<void> => {
+      if (state.stopped) return;
       try {
         // Stuck-lease reaper: crashed or too-slow workers release their claims.
         await this.database.query(
           `UPDATE queue_jobs SET status = 'pending' WHERE status = 'processing' AND lease_expires_at < now()`,
         );
         for (let i = 0; i < concurrency; i++) {
+          if (state.stopped) break;
           const claimed = await this.claimOne(queue);
           if (!claimed) break;
           const work = this.runJob(claimed, handler, opts).finally(() => {
-            const index = inflight.indexOf(work);
-            if (index >= 0) inflight.splice(index, 1);
+            const index = state.inflight.indexOf(work);
+            if (index >= 0) state.inflight.splice(index, 1);
           });
-          inflight.push(work);
+          state.inflight.push(work);
         }
       } catch (err) {
         this.logger.error({ queue, err: (err as Error).message }, 'pg-queue poll failed');
       }
     };
 
-    const timer = setInterval(() => void poll(), pollIntervalMs);
-    void poll();
-    this.subscriptions.set(queue, { timer, inflight });
+    const runPoll = (): void => {
+      if (state.stopped) return;
+      const cycle = poll().finally(() => state.polls.delete(cycle));
+      state.polls.add(cycle);
+    };
+
+    state.timer = setInterval(runPoll, pollIntervalMs);
+    this.subscriptions.set(queue, state);
+    runPoll();
 
     return {
       stop: async () => {
-        const sub = this.subscriptions.get(queue);
-        if (sub) clearInterval(sub.timer);
+        state.stopped = true;
+        clearInterval(state.timer);
         this.subscriptions.delete(queue);
+        await PgQueue.settle(state);
       },
     };
   }
 
+  private static async settle(state: SubscriptionState): Promise<void> {
+    // Polls are the source of claims: wait for them first so every work item
+    // they start is visible in `inflight` before we drain the queue.
+    await Promise.allSettled([...state.polls]);
+    await Promise.allSettled([...state.inflight]);
+  }
+
   async drain(): Promise<void> {
-    const pending: Promise<unknown>[] = [];
-    for (const { inflight } of this.subscriptions.values()) pending.push(...inflight);
-    await Promise.allSettled(pending);
+    await Promise.allSettled([...this.subscriptions.values()].map((s) => PgQueue.settle(s)));
   }
 
   async close(): Promise<void> {
-    for (const { timer } of this.subscriptions.values()) clearInterval(timer);
-    await this.drain();
+    const states = [...this.subscriptions.values()];
+    for (const state of states) {
+      state.stopped = true;
+      clearInterval(state.timer);
+    }
+    // A poll can already be between `claimOne` and pushing its work item. Wait
+    // for those cycles before closing the DB so no worker runs against a
+    // closed connection (the old bug: a closed app stole the next test's job).
+    await Promise.allSettled(states.map((state) => PgQueue.settle(state)));
     this.subscriptions.clear();
   }
 

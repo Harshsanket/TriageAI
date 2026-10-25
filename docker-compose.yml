@@ -45,6 +45,9 @@ services:
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
       TRIAGEAI_GENERATOR_BASE_URL: ${TRIAGEAI_GENERATOR_BASE_URL:-http://ollama:11434}
       TRIAGEAI_CONFIG: ${TRIAGEAI_CONFIG:-/app/triage.config.json}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

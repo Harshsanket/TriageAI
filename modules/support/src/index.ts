@@ -412,7 +412,7 @@ export const supportModule: TriageModule = {
         if (!input.ticketId) throw new Error('support.ticket.apply requires ticketId');
 
         const rows = await ctx.database.query<TicketRow>(
-          `SELECT id, status FROM support_tickets WHERE id = $1`,
+          `SELECT * FROM support_tickets WHERE id = $1`,
           [input.ticketId],
         );
         const ticket = rows[0];
@@ -490,6 +490,33 @@ export const supportModule: TriageModule = {
             { classification, routing, triage },
           ],
         );
+
+        // Cross-module reactions (integrations) consume this event instead of
+        // reading support tables directly (module-contract §4). Best-effort:
+        // a broken subscriber must never roll back ticket state.
+        try {
+          await ctx.events.publish('support.ticket.routed', {
+            ticketId: input.ticketId,
+            status: nextStatus,
+            subject: ticket.subject,
+            body: ticket.body,
+            requester: ticket.requester,
+            category: classification.category,
+            confidence: classification.confidence,
+            priorityCode: triage.priorityCode,
+            teamId: triage.teamId,
+            team: routing.team,
+            priority: routing.priority,
+            safetyCritical: classification.safetyCritical,
+            ambiguous: triageAmbiguous,
+            reasonCodes: classification.reasonCodes,
+          });
+        } catch (err) {
+          ctx.logger.warn(
+            { ticketId: input.ticketId, err: (err as Error).message },
+            'support.ticket.routed subscriber failed',
+          );
+        }
         return {
           output: {
             ticketId: input.ticketId,
@@ -935,6 +962,113 @@ export const supportModule: TriageModule = {
       },
     });
 
+    // Inbound integration sync: GitHub is authoritative for its issue state,
+    // but ticket state stays owned by support (acyclic machine). Closed issues
+    // resolve active tickets; reopening a resolved ticket is a recorded
+    // conflict, never an illegal transition.
+    ctx.events.subscribe('integrations.github.issue_closed', async (payload) => {
+      const event = payload as { ticketId?: string; ref?: string; actor?: string };
+      if (!event.ticketId) return;
+      const ticket = await loadTicketRow(event.ticketId);
+      if (!ticket) return;
+      if (ticket.status === 'RESOLVED' || ticket.status === 'CANCELLED') {
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'integration_sync_ignored', $3, $4)`,
+          [
+            ulid(),
+            event.ticketId,
+            {
+              source: 'github',
+              ref: event.ref ?? null,
+              reason: `ticket_${ticket.status.toLowerCase()}`,
+            },
+            event.actor ?? 'github',
+          ],
+        );
+        return;
+      }
+      await transitionTicket(
+        event.ticketId,
+        'RESOLVED',
+        event.actor ?? 'github',
+        `Closed via linked GitHub issue ${event.ref ?? ''}`.trim(),
+      );
+    });
+
+    ctx.events.subscribe('integrations.github.issue_reopened', async (payload) => {
+      const event = payload as { ticketId?: string; ref?: string; actor?: string };
+      if (!event.ticketId) return;
+      const ticket = await loadTicketRow(event.ticketId);
+      if (!ticket) return;
+      if (ticket.status === 'RESOLVED' || ticket.status === 'CANCELLED') {
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'integration_sync_conflict', $3, $4)`,
+          [
+            ulid(),
+            event.ticketId,
+            {
+              source: 'github',
+              ref: event.ref ?? null,
+              reason: 'reopen_requires_manual_ticket',
+              ticketStatus: ticket.status,
+            },
+            event.actor ?? 'github',
+          ],
+        );
+      }
+    });
+
+    ctx.events.subscribe('integrations.github.issue_linked', async (payload) => {
+      const event = payload as {
+        ticketId?: string;
+        ref?: string;
+        url?: string;
+        reason?: string;
+        actor?: string;
+      };
+      if (!event.ticketId || !event.ref) return;
+      const existing = await ctx.database.query<{ id: string }>(
+        `SELECT id FROM support_ticket_events
+         WHERE ticket_id = $1 AND type = 'integration_issue_linked'
+           AND payload->>'ref' = $2 LIMIT 1`,
+        [event.ticketId, event.ref],
+      );
+      if (existing[0]) return;
+      await ctx.database.query(
+        `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+         VALUES ($1, $2, 'integration_issue_linked', $3, $4)`,
+        [
+          ulid(),
+          event.ticketId,
+          {
+            source: 'github',
+            ref: event.ref,
+            url: event.url ?? null,
+            reason: event.reason ?? null,
+          },
+          event.actor ?? 'system',
+        ],
+      );
+      await ctx.database.query(
+        `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
+         VALUES ($1, $2, 'system', 'system', $3, $4)`,
+        [
+          ulid(),
+          event.ticketId,
+          `Linked GitHub issue: ${event.url ?? event.ref}`,
+          {
+            kind: 'integration_link',
+            source: 'github',
+            ref: event.ref,
+            url: event.url ?? null,
+            customerVisible: false,
+          },
+        ],
+      );
+    });
+
     ctx.events.subscribe('workflow.run.finished', async (payload) => {
       const event = payload as {
         runId?: string;
@@ -1308,6 +1442,19 @@ export const supportModule: TriageModule = {
           `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body)
            VALUES ($1, $2, 'agent', $3, $4)`,
           [ulid(), id, actor, note],
+        );
+      }
+      try {
+        await ctx.events.publish('support.ticket.status_changed', {
+          ticketId: id,
+          from: ticket.status,
+          to,
+          actor,
+        });
+      } catch (err) {
+        ctx.logger.warn(
+          { ticketId: id, err: (err as Error).message },
+          'support.ticket.status_changed subscriber failed',
         );
       }
       return { ticketId: id, from: ticket.status, to };

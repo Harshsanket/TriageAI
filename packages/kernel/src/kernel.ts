@@ -10,6 +10,7 @@ import { AppError, bootValidationError, configInvalid } from './errors.js';
 import { createEventBus } from './eventbus.js';
 import type { EventBus } from './eventbus.js';
 import { CORE_MIGRATIONS } from './migrations.js';
+import { createOutputChannelRegistry } from './outputChannel.js';
 import { InlineQueue } from './queue/inline.js';
 import { PgQueue } from './queue/pg.js';
 import type { Queue } from './queue/types.js';
@@ -95,6 +96,7 @@ function createKernelContext(
     drain: () => queue.drain(),
   };
 
+  const outputChannel = capabilities.outputChannel;
   const context: KernelContext = {
     moduleOptions,
     capabilities,
@@ -102,6 +104,7 @@ function createKernelContext(
     events,
     queue: queueCapability,
     logger,
+    env: process.env,
     registerRoute(def) {
       if (!ROUTE_URL_SCHEME.test(def.url)) {
         throw new Error(`module ${moduleId} registered invalid route url ${def.url}`);
@@ -110,6 +113,12 @@ function createKernelContext(
     },
     registerStageHandler(kind: string, def: StageHandlerDef) {
       engine.registerStageHandler(kind, def);
+    },
+    registerOutputChannel(channel, adapter) {
+      if (!outputChannel) {
+        throw new Error('output channel registry is not available');
+      }
+      outputChannel.register(channel, adapter);
     },
   };
   return context;
@@ -134,14 +143,18 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   if (resolution.error) throw bootValidationError('Boot validation failed', resolution.error);
   const ordered = resolution.ordered;
 
-  const capabilities: Capabilities = options.capabilities ?? {};
+  const capabilities: Capabilities = {
+    ...(options.capabilities ?? {}),
+    outputChannel: options.capabilities?.outputChannel ?? createOutputChannelRegistry(),
+  };
   const capabilityProblems: string[] = [];
   for (const resolved of ordered) {
     for (const dep of resolved.module.dependsOn.capabilities ?? []) {
       if (
         dep.capability === 'storage' ||
         dep.capability === 'queue' ||
-        dep.capability === 'eventBus'
+        dep.capability === 'eventBus' ||
+        dep.capability === 'outputChannel'
       ) {
         continue; // always present on KernelContext
       }

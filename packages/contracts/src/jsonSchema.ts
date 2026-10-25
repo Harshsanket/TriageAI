@@ -3,6 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import * as ai from './ai.js';
 import * as feedback from './feedback.js';
+import * as integrations from './integrations.js';
 import * as dto from './manifest.js';
 import * as support from './support.js';
 
@@ -46,5 +47,7 @@ export function exportJsonSchemas(): Record<string, unknown> {
     RollbackModelRequest: zodToJsonSchema(feedback.RollbackModelRequestSchema),
     EvalReportInput: zodToJsonSchema(feedback.EvalReportInputSchema),
     EvalReportDto: zodToJsonSchema(feedback.EvalReportDtoSchema),
+    IntegrationActionDto: zodToJsonSchema(integrations.IntegrationActionDtoSchema),
+    IntegrationApprovalRequest: zodToJsonSchema(integrations.IntegrationApprovalRequestSchema),
   };
 }

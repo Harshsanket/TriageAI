@@ -27,6 +27,8 @@ interface TicketPayload {
   };
 }
 
+type TicketDto = TicketPayload['ticket'];
+
 function classification(category = 'billing'): ClassificationResult {
   return {
     category,
@@ -135,7 +137,7 @@ describeIfDb('advanced triage + agent overrides (phase 7)', () => {
   });
 
   it('sends ambiguous priority/team cases to manual triage (never fabricates ids)', async () => {
-    const ticketId = await createTicket('Help', 'asdf qwer zxcv');
+    const ticketId = await createTicket('Problem report', 'asdf qwer zxcv');
     const detail = await waitForStatus(ticketId, ['HUMAN_REVIEW']);
     expect(detail.ticket.status).toBe('HUMAN_REVIEW');
     expect(detail.ticket.priorityCode).toBeNull();
@@ -166,9 +168,9 @@ describeIfDb('advanced triage + agent overrides (phase 7)', () => {
       },
     });
     expect(override.statusCode).toBe(200);
-    const updated = override.json() as TicketPayload;
-    expect(updated.ticket.priorityCode).toBe('P2');
-    expect(updated.ticket.teamId).toBe('engineering');
+    const updated = override.json() as TicketDto;
+    expect(updated.priorityCode).toBe('P2');
+    expect(updated.teamId).toBe('engineering');
 
     const proposed = await app.inject({
       method: 'GET',
@@ -210,7 +212,7 @@ describeIfDb('advanced triage + agent overrides (phase 7)', () => {
   });
 
   it('clears the ambiguity flag after a valid agent override', async () => {
-    const ticketId = await createTicket('Help', 'asdf qwer zxcv');
+    const ticketId = await createTicket('Problem report', 'asdf qwer zxcv');
     await waitForStatus(ticketId, ['HUMAN_REVIEW']);
 
     const override = await app.inject({
@@ -219,11 +221,11 @@ describeIfDb('advanced triage + agent overrides (phase 7)', () => {
       payload: { priorityCode: 'P3', teamId: 'support', actor: 'agent-7' },
     });
     expect(override.statusCode).toBe(200);
-    const body = override.json() as TicketPayload;
-    expect(body.ticket.status).toBe('HUMAN_REVIEW');
-    expect(body.ticket.priorityCode).toBe('P3');
-    expect(body.ticket.teamId).toBe('support');
-    expect(body.ticket.triage?.ambiguous).toBe(false);
-    expect(body.ticket.triage?.reasons).toContain('agent_override');
+    const body = override.json() as TicketDto;
+    expect(body.status).toBe('HUMAN_REVIEW');
+    expect(body.priorityCode).toBe('P3');
+    expect(body.teamId).toBe('support');
+    expect(body.triage?.ambiguous).toBe(false);
+    expect(body.triage?.reasons).toContain('agent_override');
   });
 });

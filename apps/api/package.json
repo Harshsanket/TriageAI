@@ -35,6 +35,8 @@
     "@triageai/module-support": "workspace:*",
     "@triageai/module-kb": "workspace:*",
     "@triageai/module-doc-assistant": "workspace:*",
+    "@triageai/module-integrations-github": "workspace:*",
+    "@triageai/module-integrations-slack": "workspace:*",
     "@triageai/rag": "workspace:*"
   },
   "devDependencies": {

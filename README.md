@@ -1,6 +1,6 @@
 # TriageAI
 
-> **Beta (`v0.3.0-beta.1`)** — Phases 0–7 are complete: kernel, workflow engine, support triage, RAG assistant, validated support auto-reply, the feedback → dataset → eval → model-registry loop, and conditional linear-probe training with advanced priority/team triage. Expect rough edges; APIs and configs may change before `v1.0`.
+> **Beta (`v0.4.0-beta.1`)** — Phases 0–8 are complete: kernel, workflow engine, support triage, RAG assistant, validated support auto-reply, the feedback → dataset → eval → model-registry loop, conditional linear-probe training with advanced priority/team triage, and approved/audited GitHub + Slack integrations with a measured stress suite. Expect rough edges; APIs and configs may change before `v1.0`.
 
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
@@ -12,10 +12,11 @@ TriageAI combines classification, retrieval, generation, validation, and human r
 - **`assistant`** — KB-grounded chat and a doc-assistant that answers from this repository's `docs/**` with file-path citations.
 - **`full`** — Support + chat + KB + doc-assistant in one process (the easiest way to see everything).
 - **`core`** — Minimal kernel and application hosts for custom workflows.
+- **`integrations`** — Support plus optional GitHub/Slack outward actions (`triage.config.integrations.json`); enable/disable and credentials stay config/env-only.
 
 ## Development Status
 
-**Phase 0, 1, 2, 3, 4, 5, 6 and 7 complete:**
+**Phases 0–8 complete:**
 
 - **Kernel + module system** — config-driven enable/disable, capability seams, Docker profiles, and the `echo` reference module running queue-backed workflows on PostgreSQL.
 - **Workflow engine (Phase 2)** — safe `when` guards, per-stage retries/backoff, per-attempt timeouts (`AbortSignal`), cancellation, and fallback policies (`retry_alternative_retrieval`, `halt_run`, `AWAITING` outcomes).
@@ -27,10 +28,11 @@ TriageAI combines classification, retrieval, generation, validation, and human r
 - **Validation + support auto-reply (Phase 5)** — a composable deterministic `Validator` (format, grounding, opt-in citation, injection, PII, forbidden-topic) guards every generated answer; fallbacks record policy/action/reasons and pending outcomes; routed tickets can receive a grounded reply and move to `AWAITING_CUSTOMER`, with customer confirmation, per-category versioned auto-reply policy, and hash-based repeat detection. Injection fixtures in tickets and KB text fail closed (no reply sent).
 - **Feedback loop + registry (Phase 6)** — review queue at `/feedback` approves/rejects corrections with provenance and audit rows; approved examples build deterministic, leakage-guarded `train/val/test` datasets (sha256, export for training); classifier + retrieval + generation evals merge into one report format; model promotion requires a passing report and no baseline regression (false auto-routing always blocks), rollback is audited, and the active pointer appears in every run's `adapter_versions`.
 - **Training + advanced triage (Phase 7)** — CPU linear-probe trainer on frozen embeddings (dataset-id input, baseline comparison, merged eval report, optional register/promote) and a second serving backend selected by the active registry pointer, so promotion/rollback changes the next run without a restart. Support triage now derives P0–P3 priority from configurable impact/severity/availability signals plus team mappings, sends unmapped/ambiguous cases to human review (never fabricated ids), and records agent overrides as reviewable candidates. The shipped default remains the frozen similarity baseline until an approved corpus proves a margin. Optional `train` compose profile; trainer/serving boundary is tested.
+- **Integrations + stress (Phase 8)** — a kernel `OutputChannel` seam (retries, rate limits, credential rotation, delivery idempotency, contract suite) with two provider modules. GitHub creates issues **exactly once** (marker-based duplicate recovery even after a lost response), supports per-category approval gates, audited action rows, signed webhooks, and bidirectional ticket↔issue status sync. Slack routes by category/priority, sends critical tickets immediately, batches the rest by window, suppresses duplicates, and offers the same approval gate. Tickets are read from events, never another module's tables. Approval UI lives at `/integrations/github` and `/integrations/slack`; measured Phase-8 results are in `docs/perf/phase8-budget.md`.
 
-**Next:** Phase 8 — GitHub/Slack integrations and the full stress suite.
+**Next:** Phase 9 — hardening, security depth, retention, and packaging.
 
-Later phases (integrations, hardening) are planned but not yet complete.
+Later work (auth/RBAC matrix, retention jobs, backup/restore, multi-tenant prep, attachments) is planned but not yet complete.
 
 ## Repository Layout
 
@@ -44,6 +46,10 @@ apps/
   api/           # Fastify host (system, inspector, datasets, model registry API)
   ai-service/    # Optional Python inference service + eval/ + train/ (CPU seed)
 modules/         # Replaceable first-party modules
+  integrations-github/  # github-issue OutputChannel, approval gates, webhook sync
+  integrations-slack/   # slack-message OutputChannel, routing/batching/dedupe
+  support/ · kb/ · chat/ · ai-pipeline/ · doc-assistant/ · echo/
+perf/k6/          # ingest/drain + Phase-8 burst, fairness, hot-swap suites
 ```
 
 ## Prerequisites
@@ -151,6 +157,23 @@ Open `/feedback` (or use the API) to run the improvement loop:
 3. **Export** the dataset for training: `GET /api/v1/datasets/:id/export` → `uv run python -m train.linear_probe --dataset-id <id> --register --promote` (see `apps/ai-service/train/README.md`). The trainer writes a portable linear-probe artifact, reports the held-out baseline comparison, and registers/promotes only through the gated API.
 4. **Ingest** one canonical eval report (`POST /api/v1/models/eval-reports`) and **promote** only when it passes and does not regress the active baseline: `POST /api/v1/models/:id/promote`. False auto-routing always blocks. The next run forwards the active pointer to the ai-service, so a promoted linear probe serves without a restart; rollback is audited: `POST /api/v1/models/:id/rollback`.
 5. **Bless corrections as fixtures** (optional): `pnpm eval:fixtures` writes approved per-category examples to `apps/ai-service/eval/blessed/`; the classification eval merges them into the held-out set.
+
+## Integrations (GitHub + Slack)
+
+Enable the modules in `triage.config.integrations.json` (or copy their `modules.*` entries into your own config) and provide credentials through the environment — never the config file:
+
+```bash
+export GITHUB_TOKEN=ghp_...            # comma-separate multiple tokens for rotation
+export GITHUB_WEBHOOK_SECRET=...       # signs X-Hub-Signature-256 webhooks
+export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+TRIAGEAI_CONFIG=triage.config.integrations.json pnpm dev
+```
+
+- **GitHub**: routed tickets create one issue (search marker prevents duplicates); `requireApproval` / `approvalCategories` hold actions until an admin approves. Configure the webhook to `POST /api/v1/integrations/github/webhook`; closing the issue resolves the linked ticket, while reopening a resolved ticket is recorded as a conflict instead of an illegal transition.
+- **Slack**: P0/P1 or safety-critical tickets go immediately to `criticalChannel`; everything else needs a matching routing rule and is batched by `batchWindowMs`. `dedupeWindowMs` suppresses repeat notifications for the same ticket/channel.
+- **Approval/retry**: `/integrations/github` and `/integrations/slack` list action rows; `POST /api/v1/integrations/<provider>/actions/:id/{approve|reject|retry}`. Every suppression, send, failure, and approval writes an `audit_events` row, and an integration outage never changes ticket state.
+
+Outward calls use the `OutputChannel` capability; all adapters pass the same contract suite (`packages/kernel/src/outputChannel/contract.ts`) against local mock servers, so CI needs no live credentials. Phase-8 load results and budgets: `docs/perf/phase8-budget.md`.
 
 `pnpm eval:generation` + `pnpm eval:merge` produce the generation and merged reports locally (CI runs the classifier, retrieval, generation, and merged jobs). The active model pointer is recorded in every run's `decision_records.adapter_versions`.
 

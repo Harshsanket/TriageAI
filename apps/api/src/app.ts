@@ -9,6 +9,8 @@ import { aiPipelineModule } from '@triageai/module-ai-pipeline';
 import { chatModule } from '@triageai/module-chat';
 import { docAssistantModule } from '@triageai/module-doc-assistant';
 import { echoModule } from '@triageai/module-echo';
+import { integrationsGitHubModule } from '@triageai/module-integrations-github';
+import { integrationsSlackModule } from '@triageai/module-integrations-slack';
 import { kbModule } from '@triageai/module-kb';
 import { supportModule } from '@triageai/module-support';
 
@@ -41,6 +43,9 @@ declare module 'fastify' {
   interface FastifyInstance {
     kernel?: Kernel;
   }
+  interface FastifyRequest {
+    rawBody?: string;
+  }
 }
 
 /**
@@ -55,6 +60,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   );
 
   await app.register(cors, { origin: true });
+
+  // Capture the raw JSON for webhook HMAC verification before parsing.
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, raw, done) => {
+    const rawBody = typeof raw === 'string' ? raw : raw.toString('utf8');
+    request.rawBody = rawBody;
+    try {
+      done(null, rawBody.length > 0 ? JSON.parse(rawBody) : null);
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
@@ -95,9 +111,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     const database = new PostgresDatabase(config.databaseUrl);
     const kernelConfig = buildKernelConfig(loadConfigFile(options.configPath), process.env);
     const modelRegistry = new DbModelRegistry(database);
-    const capabilities =
-      options.capabilities ??
-      createCapabilities(kernelConfig, config.aiServiceUrl, database, modelRegistry);
+    // Never mutate a caller-provided capability bag: tests reuse one object
+    // across app instances, and a leaked registry would point at a closed DB.
+    const capabilities = {
+      ...(options.capabilities ??
+        createCapabilities(kernelConfig, config.aiServiceUrl, database, modelRegistry)),
+    };
     capabilities.modelRegistry ??= modelRegistry;
     const activeRegistry =
       capabilities.modelRegistry instanceof DbModelRegistry
@@ -115,6 +134,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         'ai-pipeline': aiPipelineModule,
         kb: kbModule,
         'doc-assistant': docAssistantModule,
+        'integrations-github': integrationsGitHubModule,
+        'integrations-slack': integrationsSlackModule,
       },
     });
     app.decorate('kernel', kernel);
@@ -143,6 +164,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               ]),
             ),
             body: request.body,
+            headers: Object.fromEntries(
+              Object.entries(request.headers).map(([key, value]) => [
+                key,
+                Array.isArray(value) ? value.join(',') : String(value ?? ''),
+              ]),
+            ),
+            rawBody: request.rawBody,
           }),
       });
     }

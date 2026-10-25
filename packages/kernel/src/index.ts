@@ -18,3 +18,10 @@ export { InlineQueue } from './queue/inline.js';
 export { PgQueue } from './queue/pg.js';
 export { CORE_MIGRATIONS } from './migrations.js';
 export { satisfiesRange, parseVersion } from './semver.js';
+export { createOutputChannelRegistry } from './outputChannel.js';
+export { HttpOutputChannel, TokenRotator, requestWithRetry } from './outputChannel/http.js';
+export type {
+  ChannelContractFactory,
+  OutputChannelContractOptions,
+  MockChannelServer,
+} from './outputChannel/contract.js';

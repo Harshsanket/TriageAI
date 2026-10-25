@@ -9,4 +9,6 @@ export const moduleRegistry: Record<string, ComponentType> = {
   support: lazy(() => import('./support/SupportApp')),
   kb: lazy(() => import('./kb/KbApp')),
   'doc-assistant': lazy(() => import('./doc-assistant/DocAssistantApp')),
+  'integrations/github': lazy(() => import('./integrations/GitHubApp')),
+  'integrations/slack': lazy(() => import('./integrations/SlackApp')),
 };
