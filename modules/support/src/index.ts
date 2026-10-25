@@ -13,19 +13,61 @@ import {
   AutoReplyPolicyUpdateSchema,
   TicketConfirmationRequestSchema,
   TicketConfirmationResponseSchema,
+  TicketPriorityCodeSchema,
+  TicketTriageOverrideRequestSchema,
+  TicketTriagePolicyDtoSchema,
 } from '@triageai/contracts';
 import { AppError } from '@triageai/kernel';
+import type { TicketPriorityCode } from '@triageai/contracts';
 import type { TriageModule } from '@triageai/kernel';
 
 import { assertTransition, canTransition, TICKET_STATUSES, type TicketStatus } from './state.js';
+import {
+  DEFAULT_PRIORITY_SIGNALS,
+  DEFAULT_TEAM_MAPPINGS,
+  matchPriority,
+  mapTeam,
+  policyTeamIds,
+  PRIORITY_CODES,
+  type PrioritySignals,
+  type TeamMapping,
+} from './triage.js';
 
 export { TICKET_STATUSES, TICKET_TRANSITIONS, assertTransition, canTransition } from './state.js';
 export type { TicketStatus } from './state.js';
+export { matchPriority, mapTeam, PRIORITY_CODES } from './triage.js';
+export type { PrioritySignals, TeamMapping } from './triage.js';
+
+const triageConfigSchema = z
+  .object({
+    prioritySignals: z
+      .object({
+        P0: z.array(z.string().min(1)).default(DEFAULT_PRIORITY_SIGNALS.P0),
+        P1: z.array(z.string().min(1)).default(DEFAULT_PRIORITY_SIGNALS.P1),
+        P2: z.array(z.string().min(1)).default(DEFAULT_PRIORITY_SIGNALS.P2),
+        P3: z.array(z.string().min(1)).default(DEFAULT_PRIORITY_SIGNALS.P3),
+      })
+      .default(DEFAULT_PRIORITY_SIGNALS),
+    teamMappings: z
+      .array(
+        z.object({
+          teamId: z.string().min(1).max(100),
+          categories: z.array(z.string().min(1)).default([]),
+          priorities: z.array(TicketPriorityCodeSchema).optional(),
+        }),
+      )
+      .default(DEFAULT_TEAM_MAPPINGS),
+    // Policy default for tickets with no signal. Set to null for a strict
+    // profile where every unmatched ticket goes to manual triage.
+    fallbackPriorityCode: TicketPriorityCodeSchema.nullable().default('P3'),
+  })
+  .default({});
 
 const configSchema = z
   .object({
     defaultMaxAnswerChars: z.number().int().positive().max(20_000).default(1200),
     defaultCollection: z.string().default('kb_docs'),
+    triage: triageConfigSchema,
   })
   .strict();
 
@@ -124,6 +166,16 @@ const MIGRATIONS = [
     dropSql:
       'DROP TABLE IF EXISTS support_auto_replies; DROP TABLE IF EXISTS support_auto_reply_policies;',
   },
+  {
+    id: '0003-support-triage',
+    sql: `
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS priority_code TEXT;
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS team_id TEXT;
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS triage JSONB;
+      CREATE INDEX IF NOT EXISTS support_tickets_triage
+        ON support_tickets (priority_code, team_id);
+    `,
+  },
 ];
 
 interface TicketRow {
@@ -138,8 +190,11 @@ interface TicketRow {
   margin: number | null;
   priority: string | null;
   team: string | null;
+  priority_code: string | null;
+  team_id: string | null;
   classification: Record<string, unknown> | null;
   routing: Record<string, unknown> | null;
+  triage: Record<string, unknown> | null;
   auto_reply: Record<string, unknown> | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -182,8 +237,11 @@ const ticketDto = (row: TicketRow) => ({
   margin: row.margin,
   priority: row.priority,
   team: row.team,
+  priorityCode: row.priority_code,
+  teamId: row.team_id,
   classification: row.classification,
   routing: row.routing,
+  triage: row.triage ?? null,
   autoReply: row.auto_reply ?? null,
   createdAt: new Date(row.created_at).toISOString(),
   updatedAt: new Date(row.updated_at).toISOString(),
@@ -191,7 +249,7 @@ const ticketDto = (row: TicketRow) => ({
 
 export const supportModule: TriageModule = {
   id: 'support',
-  version: '0.2.0',
+  version: '0.3.0',
   capabilities: ['queue', 'eventBus', 'storage', 'retriever', 'generator', 'validator'],
   dependsOn: {
     modules: [{ id: 'ai-pipeline', version: '^0.1.0' }],
@@ -244,10 +302,85 @@ export const supportModule: TriageModule = {
             category: ticket.category,
             team: ticket.team,
             priority: ticket.priority,
+            priorityCode: ticket.priority_code,
+            teamId: ticket.team_id,
+            triage: ticket.triage,
             autoReply: ticket.auto_reply,
           },
           evidence: { kind: 'deterministic', ticketId: ticket.id },
           deterministic: { ticketId: ticket.id, status: ticket.status },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.triage.priority', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          subject?: string;
+          body?: string;
+          category?: string | null;
+          safetyCritical?: boolean;
+        };
+        const text = `${input.subject ?? ''}\n\n${input.body ?? ''}`.trim();
+        const match = matchPriority(
+          text,
+          options.triage.prioritySignals as PrioritySignals,
+          options.triage.fallbackPriorityCode ?? null,
+        );
+        const reasons = [...match.reasons];
+        if (input.safetyCritical) reasons.push('safety_critical');
+        return {
+          output: {
+            priorityCode: match.priorityCode,
+            ambiguous: match.ambiguous,
+            reasons,
+            matchedLevels: match.matchedLevels,
+          },
+          evidence: {
+            kind: 'deterministic',
+            priorityCode: match.priorityCode,
+            ambiguous: match.ambiguous,
+            matchedLevels: match.matchedLevels,
+            reasons,
+          },
+          deterministic: {
+            category: input.category ?? null,
+            safetyCritical: Boolean(input.safetyCritical),
+            signals: options.triage.prioritySignals,
+          },
+        };
+      },
+    });
+
+    ctx.registerStageHandler('support.triage.team', {
+      execute: async (stage) => {
+        const input = stage.input as {
+          category?: string | null;
+          priorityCode?: TicketPriorityCode | null;
+        };
+        const match = mapTeam(
+          input.category ?? null,
+          input.priorityCode ?? null,
+          options.triage.teamMappings as TeamMapping[],
+        );
+        return {
+          output: {
+            teamId: match.teamId,
+            ambiguous: match.ambiguous,
+            reasons: match.reasons,
+            candidates: match.candidates,
+          },
+          evidence: {
+            kind: 'deterministic',
+            teamId: match.teamId,
+            ambiguous: match.ambiguous,
+            reasons: match.reasons,
+          },
+          deterministic: {
+            category: input.category ?? null,
+            priorityCode: input.priorityCode ?? null,
+            mappings: options.triage.teamMappings,
+          },
         };
       },
     });
@@ -269,6 +402,12 @@ export const supportModule: TriageModule = {
           ruleIds?: string[];
           rulesVersion?: number;
           routeReasons?: string[];
+          priorityCode?: string | null;
+          priorityAmbiguous?: boolean;
+          priorityReasons?: string[];
+          teamId?: string | null;
+          teamAmbiguous?: boolean;
+          teamReasons?: string[];
         };
         if (!input.ticketId) throw new Error('support.ticket.apply requires ticketId');
 
@@ -279,31 +418,47 @@ export const supportModule: TriageModule = {
         const ticket = rows[0];
         if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
 
-        const nextStatus: TicketStatus = input.escalate ? 'HUMAN_REVIEW' : 'ROUTED';
+        const triageAmbiguous = Boolean(input.priorityAmbiguous) || Boolean(input.teamAmbiguous);
+        const nextStatus: TicketStatus =
+          input.escalate || triageAmbiguous ? 'HUMAN_REVIEW' : 'ROUTED';
         assertTransition(ticket.status, nextStatus);
 
+        const triageReasons = [
+          ...(input.priorityReasons ?? []),
+          ...(input.teamReasons ?? []),
+          ...(triageAmbiguous ? ['manual_triage_required'] : []),
+        ];
         const classification = {
           category: input.category ?? 'unknown',
           confidence: input.confidence ?? 0,
           margin: input.margin ?? 0,
           method: input.method ?? 'zero-shot',
           modelVersion: input.modelVersion ?? null,
-          reasonCodes: input.reasonCodes ?? [],
+          reasonCodes: [...(input.reasonCodes ?? []), ...triageReasons],
           safetyCritical: Boolean(input.safetyCritical),
         };
         const routing = {
           team: input.team ?? 'human-review',
           priority: input.priority ?? 'normal',
-          escalate: Boolean(input.escalate),
+          escalate: Boolean(input.escalate) || triageAmbiguous,
           ruleIds: input.ruleIds ?? [],
           rulesVersion: input.rulesVersion ?? null,
           reasons: input.routeReasons ?? [],
+        };
+        const triage = {
+          priorityCode: input.priorityCode ?? null,
+          teamId: input.teamId ?? null,
+          ambiguous: triageAmbiguous,
+          reasons: triageReasons,
+          priorityReasons: input.priorityReasons ?? [],
+          teamReasons: input.teamReasons ?? [],
         };
 
         await ctx.database.query(
           `UPDATE support_tickets
              SET status = $2, category = $3, confidence = $4, margin = $5,
-                 priority = $6, team = $7, classification = $8, routing = $9, updated_at = now()
+                 priority = $6, team = $7, classification = $8, routing = $9,
+                 priority_code = $10, team_id = $11, triage = $12, updated_at = now()
            WHERE id = $1`,
           [
             input.ticketId,
@@ -315,12 +470,15 @@ export const supportModule: TriageModule = {
             routing.team,
             classification,
             routing,
+            triage.priorityCode,
+            triage.teamId,
+            triage,
           ],
         );
         await ctx.database.query(
           `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
            VALUES ($1, $2, 'classified_and_routed', $3, 'system')`,
-          [ulid(), input.ticketId, { classification, routing }],
+          [ulid(), input.ticketId, { classification, routing, triage }],
         );
         await ctx.database.query(
           `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
@@ -328,14 +486,27 @@ export const supportModule: TriageModule = {
           [
             ulid(),
             input.ticketId,
-            `Ticket classified as ${classification.category} (confidence ${classification.confidence.toFixed(2)}) and sent to ${routing.team}.`,
-            { classification, routing },
+            `Ticket classified as ${classification.category} (confidence ${classification.confidence.toFixed(2)}) and sent to ${triage.teamId ?? routing.team} at ${triage.priorityCode ?? routing.priority}.`,
+            { classification, routing, triage },
           ],
         );
         return {
-          output: { ticketId: input.ticketId, status: nextStatus, team: routing.team },
-          evidence: { kind: 'deterministic', values: { classification, routing } },
-          deterministic: { from: ticket.status, to: nextStatus, classification, routing },
+          output: {
+            ticketId: input.ticketId,
+            status: nextStatus,
+            team: routing.team,
+            teamId: triage.teamId,
+            priorityCode: triage.priorityCode,
+            ambiguous: triageAmbiguous,
+          },
+          evidence: { kind: 'deterministic', values: { classification, routing, triage } },
+          deterministic: {
+            from: ticket.status,
+            to: nextStatus,
+            classification,
+            routing,
+            triage,
+          },
         };
       },
     });
@@ -816,6 +987,24 @@ export const supportModule: TriageModule = {
           },
         },
         {
+          id: 'priority',
+          kind: 'support.triage.priority',
+          input: {
+            subject: '${stages.load.output.subject}',
+            body: '${stages.load.output.body}',
+            category: '${stages.classify.output.category}',
+            safetyCritical: '${stages.classify.output.safetyCritical}',
+          },
+        },
+        {
+          id: 'team',
+          kind: 'support.triage.team',
+          input: {
+            category: '${stages.classify.output.category}',
+            priorityCode: '${stages.priority.output.priorityCode}',
+          },
+        },
+        {
           id: 'apply',
           kind: 'support.ticket.apply',
           input: {
@@ -833,6 +1022,12 @@ export const supportModule: TriageModule = {
             ruleIds: '${stages.route.output.ruleIds}',
             rulesVersion: '${stages.route.output.rulesVersion}',
             routeReasons: '${stages.route.output.reasons}',
+            priorityCode: '${stages.priority.output.priorityCode}',
+            priorityAmbiguous: '${stages.priority.output.ambiguous}',
+            priorityReasons: '${stages.priority.output.reasons}',
+            teamId: '${stages.team.output.teamId}',
+            teamAmbiguous: '${stages.team.output.ambiguous}',
+            teamReasons: '${stages.team.output.reasons}',
           },
         },
         {
@@ -1146,6 +1341,112 @@ export const supportModule: TriageModule = {
           })
           .parse(request.body ?? {});
         return transitionTicket(id, 'RESOLVED', body.actor, body.note);
+      },
+    });
+
+    ctx.registerRoute({
+      method: 'GET',
+      url: '/api/v1/support/triage-policy',
+      handler: async () =>
+        TicketTriagePolicyDtoSchema.parse({
+          priorities: PRIORITY_CODES,
+          teamIds: policyTeamIds(options.triage.teamMappings as TeamMapping[]),
+          ambiguous: 'unmatched or conflicting priority/team signals go to human review',
+        }),
+    });
+
+    ctx.registerRoute({
+      method: 'PATCH',
+      url: '/api/v1/support/tickets/:id/triage',
+      handler: async (request) => {
+        const { id } = request.params;
+        const body = TicketTriageOverrideRequestSchema.parse(request.body);
+        const configuredTeams = new Set(
+          policyTeamIds(options.triage.teamMappings as TeamMapping[]),
+        );
+        if (!configuredTeams.has(body.teamId)) {
+          throw new AppError(
+            'VALIDATION_ERROR',
+            `team ${body.teamId} is not configured; refusing to fabricate a team id`,
+            { teamIds: [...configuredTeams] },
+          );
+        }
+        const ticket = await loadTicketRow(id);
+        if (!ticket) throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+        if (ticket.status === 'RESOLVED' || ticket.status === 'CANCELLED') {
+          throw new AppError('CONFLICT', `ticket ${id} is ${ticket.status}; triage is immutable`);
+        }
+
+        const previous = {
+          priorityCode: ticket.priority_code,
+          teamId: ticket.team_id,
+          triage: ticket.triage,
+        };
+        const triage = {
+          ...(ticket.triage ?? {}),
+          priorityCode: body.priorityCode,
+          teamId: body.teamId,
+          ambiguous: false,
+          reasons: ['agent_override'],
+          overriddenBy: body.actor,
+          overriddenAt: new Date().toISOString(),
+        };
+        const updatedRows = await ctx.database.query<TicketRow>(
+          `UPDATE support_tickets
+             SET priority_code = $2, team_id = $3, triage = $4, updated_at = now()
+           WHERE id = $1
+           RETURNING *`,
+          [id, body.priorityCode, body.teamId, triage],
+        );
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'triage_overridden', $3, $4)`,
+          [
+            ulid(),
+            id,
+            {
+              previous,
+              triage,
+              method: body.method,
+              note: body.note ?? null,
+              status: ticket.status,
+            },
+            body.actor,
+          ],
+        );
+
+        // Agent corrections are feedback, never training data: they enter the
+        // candidate pool as `proposed` and must be reviewed (FR-6.2).
+        const latestRun = await ctx.database.query<{ id: string }>(
+          `SELECT id FROM workflow_runs
+           WHERE input->>'ticketId' = $1 ORDER BY created_at DESC LIMIT 1`,
+          [id],
+        );
+        await ctx.database.query(
+          `INSERT INTO candidate_examples
+             (id, source, source_run_id, input, gold, provenance, status, actor)
+           VALUES ($1, 'agent_override', $2, $3, $4, $5, 'proposed', $6)`,
+          [
+            ulid(),
+            latestRun[0]?.id ?? null,
+            { ticketId: id, subject: ticket.subject, body: ticket.body },
+            {
+              category: ticket.category,
+              priorityCode: body.priorityCode,
+              teamId: body.teamId,
+            },
+            {
+              ticketId: id,
+              previous,
+              method: body.method,
+              note: body.note ?? null,
+              actor: body.actor,
+            },
+            body.actor,
+          ],
+        );
+
+        return ticketDto(updatedRows[0] as TicketRow);
       },
     });
 

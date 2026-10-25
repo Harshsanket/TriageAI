@@ -16,8 +16,22 @@ export const AiEmbedResponseSchema = z.object({
 });
 export type AiEmbedResponse = z.infer<typeof AiEmbedResponseSchema>;
 
+/**
+ * Optional model descriptor (Phase 7). The host resolves the active registry
+ * pointer and forwards it; the ai-service loads that artifact instead of the
+ * default similarity backend. `artifactRef` is resolved under the service's
+ * artifacts directory, never as an arbitrary path.
+ */
+export const AiClassifyModelSchema = z.object({
+  name: z.string().min(1),
+  artifactRef: z.string().min(1),
+  kind: z.enum(['similarity', 'linear-probe']),
+});
+export type AiClassifyModel = z.infer<typeof AiClassifyModelSchema>;
+
 export const AiClassifyRequestSchema = z.object({
   text: z.string().min(1).max(20_000),
+  model: AiClassifyModelSchema.optional(),
 });
 export type AiClassifyRequest = z.infer<typeof AiClassifyRequestSchema>;
 

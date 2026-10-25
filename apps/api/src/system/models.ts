@@ -171,6 +171,16 @@ export function registerModelRoutes(
   app.post('/api/v1/models', async (request, reply) => {
     const body = RegisterModelRequestSchema.parse(request.body);
     if (body.evalReportId) await loadReport(kernel.database, body.evalReportId);
+    if (
+      body.component === 'classifier' &&
+      body.config.kind === 'linear-probe' &&
+      !body.artifactRef
+    ) {
+      throw new AppError(
+        'CONFLICT',
+        'a linear-probe classifier must declare artifactRef (resolved by the ai-service)',
+      );
+    }
     const id = ulid();
     const rows = (await kernel.database.query<ModelRow>(
       `INSERT INTO model_assets (id, component, name, artifact_ref, config, eval_report_id, status)

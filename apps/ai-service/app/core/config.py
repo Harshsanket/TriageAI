@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     exemplars_path: str = ""
     preload_model: bool = True
 
+    # Phase 7 trained classifier: artifacts are resolved under this root only.
+    # `classifier_artifact` pins a default artifact (config-only selection);
+    # otherwise the host sends the active registry pointer per request.
+    artifacts_dir: str = "artifacts"
+    classifier_artifact: str = ""
+
     # Local-only generation adapters (Phase 3). No hosted LLM APIs.
     llm_provider: str = "ollama"  # mlx | lmstudio | ollama
     ollama_base_url: str = "http://localhost:11434"

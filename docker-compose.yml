@@ -80,10 +80,30 @@ services:
     image: triageai/ai-service:dev
     container_name: triageai-ai-service
     profiles: [ai, llm]
+    environment:
+      ARTIFACTS_DIR: ${ARTIFACTS_DIR:-/artifacts}
     ports:
       - '8000:8000'
     volumes:
       - triageai-hf-cache:/models
+      - triageai-artifacts:/artifacts
+
+  trainer:
+    build:
+      context: .
+      dockerfile: docker/trainer.Dockerfile
+    image: triageai/trainer:dev
+    container_name: triageai-trainer
+    profiles: [train]
+    environment:
+      TRIAGEAI_API_URL: ${TRIAGEAI_API_URL:-http://api:3000}
+      ARTIFACTS_DIR: /artifacts
+      HF_HOME: /models
+    volumes:
+      - triageai-hf-cache:/models
+      - triageai-artifacts:/artifacts
+    depends_on:
+      - api
 
   ollama:
     image: ollama/ollama:latest
@@ -117,4 +137,5 @@ services:
 volumes:
   triageai-pgdata:
   triageai-hf-cache:
+  triageai-artifacts:
   triageai-ollama:

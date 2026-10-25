@@ -19,7 +19,7 @@ def fake_model(request, monkeypatch):
     monkeypatch.setattr(
         routes.classification,
         "classify",
-        lambda text: routes.classification.ClassifyResponse(
+        lambda text, model=None: routes.classification.ClassifyResponse(
             category="billing",
             confidence=0.91,
             margin=0.3,
@@ -50,6 +50,35 @@ def test_classify_returns_contract_shape() -> None:
     assert body["method"] == "zero-shot"
     assert body["modelVersion"] == "fake-mini"
     assert {score["category"] for score in body["scores"]} == {"billing", "security"}
+
+
+def test_classify_forwards_registry_model_descriptor(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(text, model=None):
+        seen["model"] = model
+        return routes.classification.ClassifyResponse(
+            category="billing",
+            confidence=0.91,
+            margin=0.3,
+            method="trained",
+            model_version="probe-v1",
+            scores=[{"category": "billing", "score": 0.91}],
+        )
+
+    monkeypatch.setattr(routes.classification, "classify", fake)
+    response = client.post(
+        "/ai/v1/classify",
+        json={
+            "text": "I was charged twice",
+            "model": {"name": "probe-v1", "artifactRef": "probe-v1", "kind": "linear-probe"},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["method"] == "trained"
+    model = seen["model"]
+    assert getattr(model, "kind") == "linear-probe"
+    assert getattr(model, "artifact_ref") == "probe-v1"
 
 
 def test_classify_rejects_empty_text() -> None:

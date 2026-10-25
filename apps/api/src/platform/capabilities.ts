@@ -40,14 +40,28 @@ export class HttpEmbedder {
   }
 }
 
+/**
+ * Classifier adapter. It forwards the active registry pointer (Phase 7) so a
+ * promoted linear-probe artifact becomes the serving backend on the next run;
+ * the similarity default is used when no trained asset is active.
+ */
 export class HttpClassifier {
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly modelRegistry?: ModelRegistry,
+  ) {}
 
   async classify(text: string): Promise<ClassificationResult> {
+    const active = await this.modelRegistry?.active('classifier');
+    const kind = active?.config?.kind;
+    const model =
+      active && kind === 'linear-probe' && active.artifactRef
+        ? { name: active.name, artifactRef: active.artifactRef, kind }
+        : undefined;
     const res = await fetch(`${this.baseUrl}/ai/v1/classify`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(model ? { text, model } : { text }),
       signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`ai-service classify failed (${res.status})`);
@@ -310,7 +324,7 @@ export function createCapabilities(
         `unsupported classifier adapter "${cfg.classifier.adapter}" (supported: ai-service)`,
       );
     }
-    capabilities.classifier = new HttpClassifier(aiBase(cfg.classifier));
+    capabilities.classifier = new HttpClassifier(aiBase(cfg.classifier), modelRegistry);
   }
   if (cfg.vectorStore) {
     if (cfg.vectorStore.adapter !== 'pgvector') {

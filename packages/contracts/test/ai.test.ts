@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { AiClassifyResponseSchema, exportJsonSchemas } from '../src/index.js';
+import {
+  AiClassifyRequestSchema,
+  AiClassifyResponseSchema,
+  exportJsonSchemas,
+} from '../src/index.js';
 
 describe('ai wire contracts', () => {
   it('are part of the JSON Schema export', () => {
@@ -9,11 +13,27 @@ describe('ai wire contracts', () => {
       'AiEmbedRequest',
       'AiEmbedResponse',
       'AiClassifyRequest',
+      'AiClassifyModel',
       'AiCategoryScore',
       'AiClassifyResponse',
     ]) {
       expect(schemas[name]).toBeDefined();
     }
+  });
+
+  it('accepts an optional trained-model descriptor', () => {
+    const request = {
+      text: 'refund please',
+      model: { name: 'probe-v1', artifactRef: 'probe-v1', kind: 'linear-probe' },
+    };
+    expect(AiClassifyRequestSchema.parse(request).model?.kind).toBe('linear-probe');
+    expect(AiClassifyRequestSchema.parse({ text: 'plain' }).model).toBeUndefined();
+    expect(() =>
+      AiClassifyRequestSchema.parse({
+        text: 'x',
+        model: { name: 'm', artifactRef: 'a', kind: 'magic' },
+      }),
+    ).toThrow();
   });
 
   it('parse a representative classify response', () => {

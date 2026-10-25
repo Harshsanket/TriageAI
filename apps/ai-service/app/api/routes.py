@@ -17,7 +17,7 @@ async def health() -> HealthResponse:
 async def classify(request: ClassifyRequest) -> ClassifyResponse:
     """Embedding-similarity classification. Never a generative LLM call."""
     try:
-        return classification.classify(request.text)
+        return classification.classify(request.text, request.model)
     except Exception as exc:  # noqa: BLE001 - surfaced as a typed 503, never a stack trace
         raise HTTPException(
             status_code=503,

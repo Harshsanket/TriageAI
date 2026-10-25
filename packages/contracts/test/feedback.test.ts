@@ -50,6 +50,7 @@ describe('feedback contracts (phase 6)', () => {
     expect(PromoteModelRequestSchema.parse({})).toEqual({ actor: 'admin' });
     const schemas = exportJsonSchemas();
     expect(schemas).toHaveProperty('CandidateReviewRequest');
+    expect(schemas).toHaveProperty('CandidateExportDto');
     expect(schemas).toHaveProperty('DatasetDto');
     expect(schemas).toHaveProperty('EvalReportInput');
   });

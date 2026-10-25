@@ -1,6 +1,6 @@
 # TriageAI
 
-> **Beta (`v0.2.0-beta.1`)** — Phases 0–6 are complete: kernel, workflow engine, support triage, RAG assistant, validated support auto-reply, and the feedback → dataset → eval → model-registry loop. Expect rough edges; APIs and configs may change before `v1.0`.
+> **Beta (`v0.3.0-beta.1`)** — Phases 0–7 are complete: kernel, workflow engine, support triage, RAG assistant, validated support auto-reply, the feedback → dataset → eval → model-registry loop, and conditional linear-probe training with advanced priority/team triage. Expect rough edges; APIs and configs may change before `v1.0`.
 
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
@@ -15,7 +15,7 @@ TriageAI combines classification, retrieval, generation, validation, and human r
 
 ## Development Status
 
-**Phase 0, 1, 2, 3, 4, 5 and 6 complete:**
+**Phase 0, 1, 2, 3, 4, 5, 6 and 7 complete:**
 
 - **Kernel + module system** — config-driven enable/disable, capability seams, Docker profiles, and the `echo` reference module running queue-backed workflows on PostgreSQL.
 - **Workflow engine (Phase 2)** — safe `when` guards, per-stage retries/backoff, per-attempt timeouts (`AbortSignal`), cancellation, and fallback policies (`retry_alternative_retrieval`, `halt_run`, `AWAITING` outcomes).
@@ -26,10 +26,11 @@ TriageAI combines classification, retrieval, generation, validation, and human r
 - **Knowledge base + grounded assistant (Phase 4)** — pgvector-backed KB with approval gating and idempotent ingestion; retrieval with a τ/δ sufficiency gate; **local-only generation** (Ollama / LM Studio / OpenAI-compatible); grounded answers are cited, with missing citations attached deterministically and ungrounded answers refused; assistant chat with persisted conversations; doc-assistant answering from `docs/**` with file-path citations. Retrieval eval gates recall@3 ≥ 0.8 (currently 1.0, MRR 1.0); verified with a real local model (`qwen2.5:1.5b`, CPU).
 - **Validation + support auto-reply (Phase 5)** — a composable deterministic `Validator` (format, grounding, opt-in citation, injection, PII, forbidden-topic) guards every generated answer; fallbacks record policy/action/reasons and pending outcomes; routed tickets can receive a grounded reply and move to `AWAITING_CUSTOMER`, with customer confirmation, per-category versioned auto-reply policy, and hash-based repeat detection. Injection fixtures in tickets and KB text fail closed (no reply sent).
 - **Feedback loop + registry (Phase 6)** — review queue at `/feedback` approves/rejects corrections with provenance and audit rows; approved examples build deterministic, leakage-guarded `train/val/test` datasets (sha256, export for training); classifier + retrieval + generation evals merge into one report format; model promotion requires a passing report and no baseline regression (false auto-routing always blocks), rollback is audited, and the active pointer appears in every run's `adapter_versions`.
+- **Training + advanced triage (Phase 7)** — CPU linear-probe trainer on frozen embeddings (dataset-id input, baseline comparison, merged eval report, optional register/promote) and a second serving backend selected by the active registry pointer, so promotion/rollback changes the next run without a restart. Support triage now derives P0–P3 priority from configurable impact/severity/availability signals plus team mappings, sends unmapped/ambiguous cases to human review (never fabricated ids), and records agent overrides as reviewable candidates. The shipped default remains the frozen similarity baseline until an approved corpus proves a margin. Optional `train` compose profile; trainer/serving boundary is tested.
 
-**Next:** Phase 7 — conditional classifier training and priority/team triage.
+**Next:** Phase 8 — GitHub/Slack integrations and the full stress suite.
 
-Later phases (training, integrations, hardening) are planned but not yet complete.
+Later phases (integrations, hardening) are planned but not yet complete.
 
 ## Repository Layout
 
@@ -147,8 +148,9 @@ Open `/feedback` (or use the API) to run the improvement loop:
 
 1. **Review** proposed corrections / confirmed resolutions with a method (`mistake`, `better_answer`, `denied_outcome`): `PATCH /api/v1/system/candidates/:id`. Reviews are terminal and audited.
 2. **Build** a versioned dataset from approved examples: `POST /api/v1/datasets`. Splits are deterministic, time-ordered, stratified by label, and guarded against source-run/duplicate leakage. Rebuilding an unchanged pool returns the same version.
-3. **Export** the dataset for training: `GET /api/v1/datasets/:id/export` → `uv run python -m train.linear_probe --dataset …` (see `apps/ai-service/train/README.md`).
-4. **Ingest** one canonical eval report (`POST /api/v1/models/eval-reports`) and **promote** only when it passes and does not regress the active baseline: `POST /api/v1/models/:id/promote`. False auto-routing always blocks. Rollback is audited: `POST /api/v1/models/:id/rollback`.
+3. **Export** the dataset for training: `GET /api/v1/datasets/:id/export` → `uv run python -m train.linear_probe --dataset-id <id> --register --promote` (see `apps/ai-service/train/README.md`). The trainer writes a portable linear-probe artifact, reports the held-out baseline comparison, and registers/promotes only through the gated API.
+4. **Ingest** one canonical eval report (`POST /api/v1/models/eval-reports`) and **promote** only when it passes and does not regress the active baseline: `POST /api/v1/models/:id/promote`. False auto-routing always blocks. The next run forwards the active pointer to the ai-service, so a promoted linear probe serves without a restart; rollback is audited: `POST /api/v1/models/:id/rollback`.
+5. **Bless corrections as fixtures** (optional): `pnpm eval:fixtures` writes approved per-category examples to `apps/ai-service/eval/blessed/`; the classification eval merges them into the held-out set.
 
 `pnpm eval:generation` + `pnpm eval:merge` produce the generation and merged reports locally (CI runs the classifier, retrieval, generation, and merged jobs). The active model pointer is recorded in every run's `decision_records.adapter_versions`.
 
@@ -165,6 +167,7 @@ Open `/feedback` (or use the API) to run the improvement loop:
 | `pnpm eval:retrieval`      | Run the retrieval eval gates (needs DB + ai-service) |
 | `pnpm eval:generation`     | Run the grounding/validation eval gates              |
 | `pnpm eval:merge`          | Merge suites into the registry report format         |
+| `pnpm eval:fixtures`       | Export approved corrections as blessed fixtures      |
 | `pnpm db:generate`         | Generate Drizzle migrations                          |
 | `pnpm db:migrate`          | Apply database migrations                            |
 

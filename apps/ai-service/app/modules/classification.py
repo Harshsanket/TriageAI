@@ -11,9 +11,9 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from app.api.schemas import CategoryScore, ClassifyResponse, EmbedResponse
+from app.api.schemas import CategoryScore, ClassifyModel, ClassifyResponse, EmbedResponse
 from app.core.config import settings
-from app.modules import embeddings
+from app.modules import embeddings, linear_probe
 
 DEFAULT_EXEMPLARS_PATH = Path(__file__).resolve().parent.parent / "data" / "exemplars.json"
 
@@ -31,6 +31,7 @@ def exemplar_vectors() -> dict[str, list[list[float]]]:
 
 def reset_cache() -> None:
     exemplar_vectors.cache_clear()
+    linear_probe.reset_cache()
 
 
 def _dot(a: list[float], b: list[float]) -> float:
@@ -41,7 +42,20 @@ def embed(texts: list[str]) -> EmbedResponse:
     return EmbedResponse(vectors=embeddings.embed_texts(texts), model_version=embeddings.model_version())
 
 
-def classify(text: str) -> ClassifyResponse:
+def classify(text: str, model: ClassifyModel | None = None) -> ClassifyResponse:
+    """Dispatch to the configured backend.
+
+    A per-request registry descriptor (Phase 7) wins over the config default so
+    promotion/rollback takes effect on the next run without a restart.
+    """
+    artifact_ref = (
+        model.artifact_ref
+        if model and model.kind == "linear-probe"
+        else settings.classifier_artifact
+    )
+    if artifact_ref:
+        return linear_probe.classify(text, artifact_ref)
+
     vector = embeddings.embed_texts([text])[0]
     scores = [
         CategoryScore(category=category, score=max(0.0, min(1.0, max(_dot(vector, exemplar) for exemplar in vectors))))
@@ -66,5 +80,16 @@ def classify(text: str) -> ClassifyResponse:
     )
 
 
+def preload() -> None:
+    """Warm whichever backend is configured (used by readiness/lifespan)."""
+    if settings.classifier_artifact:
+        linear_probe.load_artifact(settings.classifier_artifact)
+        return
+    embeddings.get_model()
+    exemplar_vectors()
+
+
 def describe() -> str:
+    if settings.classifier_artifact:
+        return linear_probe.describe(settings.classifier_artifact)
     return f"similarity-zero-shot (model={embeddings.model_version()}, categories={len(load_exemplars())})"

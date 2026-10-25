@@ -11,9 +11,18 @@ interface Ticket {
   margin: number | null;
   priority: string | null;
   team: string | null;
+  priorityCode: string | null;
+  teamId: string | null;
   classification: { reasonCodes?: string[]; modelVersion?: string } | null;
   routing: { ruleIds?: string[]; rulesVersion?: number; reasons?: string[] } | null;
+  triage: { ambiguous?: boolean; reasons?: string[] } | null;
   createdAt: string;
+}
+
+interface TriagePolicy {
+  priorities: string[];
+  teamIds: string[];
+  ambiguous: string;
 }
 
 interface TicketDetail {
@@ -48,6 +57,13 @@ export default function SupportApp() {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [policy, setPolicy] = useState<TriagePolicy>({
+    priorities: [],
+    teamIds: [],
+    ambiguous: '',
+  });
+  const [priorityCode, setPriorityCode] = useState('');
+  const [teamId, setTeamId] = useState('');
 
   const load = useCallback(async () => {
     const res = await fetch('/api/v1/support/tickets?limit=50');
@@ -61,9 +77,57 @@ export default function SupportApp() {
     return () => clearInterval(timer);
   }, [load]);
 
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch('/api/v1/support/triage-policy');
+      if (!res.ok) return;
+      const body = (await res.json()) as Partial<TriagePolicy>;
+      if (Array.isArray(body.priorities) && Array.isArray(body.teamIds)) {
+        setPolicy({
+          priorities: body.priorities,
+          teamIds: body.teamIds,
+          ambiguous: body.ambiguous ?? '',
+        });
+      }
+    })();
+  }, []);
+
   const openTicket = async (id: string) => {
     const res = await fetch(`/api/v1/support/tickets/${id}`);
-    if (res.ok) setSelected((await res.json()) as TicketDetail);
+    if (!res.ok) return;
+    const detail = (await res.json()) as TicketDetail;
+    setSelected(detail);
+    setPriorityCode(detail.ticket.priorityCode ?? policy.priorities[0] ?? '');
+    setTeamId(detail.ticket.teamId ?? policy.teamIds[0] ?? '');
+  };
+
+  useEffect(() => {
+    if (!selected) return;
+    setPriorityCode(selected.ticket.priorityCode ?? policy.priorities[0] ?? '');
+    setTeamId(selected.ticket.teamId ?? policy.teamIds[0] ?? '');
+    // Re-sync only when the open ticket or the policy changes.
+  }, [selected?.ticket.id, selected?.ticket.priorityCode, selected?.ticket.teamId, policy]);
+
+  const saveTriage = async () => {
+    if (!selected || !priorityCode || !teamId) return;
+    setError(null);
+    const res = await fetch(`/api/v1/support/tickets/${selected.ticket.id}/triage`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        priorityCode,
+        teamId,
+        actor: 'ui-agent',
+        method: 'mistake',
+        note: 'Manual triage override from the agent queue',
+      }),
+    });
+    if (!res.ok) {
+      setError(`triage override failed (${res.status})`);
+      return;
+    }
+    await openTicket(selected.ticket.id);
+    await load();
   };
 
   const createTicket = async (event: React.FormEvent) => {
@@ -143,8 +207,8 @@ export default function SupportApp() {
                 </strong>
               </td>
               <td>{ticket.category ?? '—'}</td>
-              <td>{ticket.team ?? '—'}</td>
-              <td>{ticket.priority ?? '—'}</td>
+              <td>{ticket.teamId ?? ticket.team ?? '—'}</td>
+              <td>{ticket.priorityCode ?? ticket.priority ?? '—'}</td>
             </tr>
           ))}
         </tbody>
@@ -164,12 +228,53 @@ export default function SupportApp() {
               ` (${(selected.ticket.confidence * 100).toFixed(0)}% / margin ${selected.ticket.margin?.toFixed(2)})`}
           </p>
           <p>
-            <strong>Routing:</strong> {selected.ticket.team ?? '—'} ·{' '}
-            {selected.ticket.priority ?? '—'}
+            <strong>Routing:</strong> {selected.ticket.teamId ?? selected.ticket.team ?? '—'} ·{' '}
+            {selected.ticket.priorityCode ?? selected.ticket.priority ?? '—'}
             {selected.ticket.routing?.ruleIds?.length
               ? ` · rules ${selected.ticket.routing.ruleIds.join(', ')} (v${selected.ticket.routing.rulesVersion})`
               : ''}
           </p>
+          {selected.ticket.triage?.ambiguous && (
+            <p role="status">
+              <strong>Manual triage:</strong>{' '}
+              {(selected.ticket.triage.reasons ?? []).join(', ') || 'ambiguous signals'}
+            </p>
+          )}
+          {policy.priorities.length > 0 && (
+            <p>
+              <label>
+                Priority{' '}
+                <select
+                  aria-label="triage priority"
+                  value={priorityCode}
+                  onChange={(event) => setPriorityCode(event.target.value)}
+                >
+                  {policy.priorities.map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+                </select>
+              </label>{' '}
+              <label>
+                Team{' '}
+                <select
+                  aria-label="triage team"
+                  value={teamId}
+                  onChange={(event) => setTeamId(event.target.value)}
+                >
+                  {policy.teamIds.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              </label>{' '}
+              <button type="button" onClick={() => void saveTriage()}>
+                Save triage override
+              </button>
+            </p>
+          )}
           {selected.ticket.classification?.reasonCodes?.length ? (
             <p>
               <strong>Reasons:</strong>{' '}

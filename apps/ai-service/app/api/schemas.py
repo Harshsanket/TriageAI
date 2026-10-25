@@ -9,8 +9,19 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class ClassifyModel(BaseModel):
+    """Active model registry pointer forwarded by the host (Phase 7)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(min_length=1)
+    artifact_ref: str = Field(alias="artifactRef", min_length=1)
+    kind: Literal["similarity", "linear-probe"]
+
+
 class ClassifyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
+    model: ClassifyModel | None = None
 
 
 class CategoryScore(BaseModel):

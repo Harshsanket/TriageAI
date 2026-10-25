@@ -16,9 +16,8 @@ async def lifespan(app: FastAPI):
     """Warm the embedding model so the first classification meets its latency budget."""
     if settings.preload_model:
         try:
-            embeddings.get_model()
-            classification.exemplar_vectors()
-            logger.info("embedding model + exemplar vectors ready")
+            classification.preload()
+            logger.info("classifier backend ready")
         except Exception:  # noqa: BLE001 - readiness must reflect real failures
             logger.exception("failed to preload embedding model")
     yield
@@ -55,8 +54,7 @@ def create_app() -> FastAPI:
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
         try:
-            embeddings.get_model()
-            classification.exemplar_vectors()
+            classification.preload()
         except Exception as exc:  # noqa: BLE001
             return JSONResponse(status_code=503, content={"status": "not_ready", "detail": str(exc)})
         return JSONResponse(content={"status": "ready", "model": embeddings.model_version()})

@@ -1,7 +1,7 @@
 /**
- * Support module public DTOs (Phase 5): auto-reply policy + customer
- * confirmation. Kept in contracts so the wire shape is shared and JSON-Schema
- * export stays available.
+ * Support module public DTOs (Phases 5/7): auto-reply policy, customer
+ * confirmation, and advanced triage (P0–P3 priority + team overrides). Kept in
+ * contracts so the wire shape is shared and JSON-Schema export stays available.
  */
 import { z } from 'zod';
 
@@ -36,6 +36,28 @@ export const AutoReplyPolicyUpdateSchema = z
     updatedBy: z.string().min(1).max(200).default('admin'),
   })
   .strict();
+
+/** Phase 7 priority codes (impact/severity/availability policy). */
+export const TicketPriorityCodeSchema = z.enum(['P0', 'P1', 'P2', 'P3']);
+export type TicketPriorityCode = z.infer<typeof TicketPriorityCodeSchema>;
+
+export const TicketTriagePolicyDtoSchema = z.object({
+  priorities: z.array(TicketPriorityCodeSchema),
+  teamIds: z.array(z.string()),
+  ambiguous: z.string(),
+});
+export type TicketTriagePolicyDto = z.infer<typeof TicketTriagePolicyDtoSchema>;
+
+export const TicketTriageOverrideRequestSchema = z
+  .object({
+    priorityCode: TicketPriorityCodeSchema,
+    teamId: z.string().min(1).max(100),
+    actor: z.string().min(1).max(200).default('agent'),
+    method: z.enum(['mistake', 'better_answer']).default('mistake'),
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
+export type TicketTriageOverrideRequest = z.infer<typeof TicketTriageOverrideRequestSchema>;
 
 export const TicketConfirmationRequestSchema = z
   .object({

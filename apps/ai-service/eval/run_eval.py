@@ -25,8 +25,51 @@ def p95(values: list[float]) -> float:
     return ordered[index]
 
 
+def load_blessed_fixtures() -> list[dict[str, object]]:
+    """Approved corrections exported by `evals/exportFixtures.eval.ts`.
+
+    Files are optional: CI still runs on the curated set when no corrections
+    have been blessed yet.
+    """
+    blessed_dir = ROOT / "blessed"
+    if not blessed_dir.is_dir():
+        return []
+    fixtures: list[dict[str, object]] = []
+    for path in sorted(blessed_dir.glob("*.json")):
+        if path.name == "manifest.json":
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for item in payload.get("examples") or []:
+            text = item.get("text")
+            expected = item.get("expected")
+            if isinstance(text, str) and text and isinstance(expected, str) and expected:
+                fixtures.append(
+                    {
+                        "text": text,
+                        "expected": expected,
+                        "sourceCandidateId": item.get("sourceCandidateId"),
+                        "blessed": True,
+                    }
+                )
+    return fixtures
+
+
+def merge_fixtures(
+    curated: list[dict[str, object]], blessed: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Dedupe by text; blessed corrections replace a curated duplicate."""
+    merged: dict[str, dict[str, object]] = {
+        str(item["text"]): item for item in curated
+    }
+    for item in blessed:
+        merged[str(item["text"])] = item
+    return list(merged.values())
+
+
 def main() -> int:
-    fixtures = json.loads((ROOT / "fixtures.json").read_text(encoding="utf-8"))
+    curated = json.loads((ROOT / "fixtures.json").read_text(encoding="utf-8"))
+    blessed = load_blessed_fixtures()
+    fixtures = merge_fixtures(curated, blessed)
     labels = sorted({item["expected"] for item in fixtures})
 
     confusion: dict[str, dict[str, int]] = {label: defaultdict(int) for label in labels}
@@ -79,6 +122,7 @@ def main() -> int:
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "modelVersion": classification.embeddings.model_version(),
         "fixtures": len(fixtures),
+        "blessedFixtures": len(blessed),
         "macroF1": round(macro_f1, 4),
         "p95LatencyMs": round(p95(latencies), 2),
         "falseAutoRouting": {category: false_auto.count for category in []},

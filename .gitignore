@@ -51,5 +51,8 @@ docs/
 # Timestamped eval artifacts (latest.json is committed)
 apps/ai-service/eval/reports/classification-*.json
 
+# Local trained model artifacts (register the path, do not commit weights)
+apps/ai-service/artifacts/
+
 # Locally vendored agent skills (never committed)
 .opencode/skills/

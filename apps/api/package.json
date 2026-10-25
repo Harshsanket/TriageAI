@@ -14,7 +14,8 @@
     "db:studio": "drizzle-kit studio",
     "eval:retrieval": "tsx evals/retrieval.eval.ts",
     "eval:generation": "tsx evals/generation.eval.ts",
-    "eval:merge": "tsx evals/merge.eval.ts"
+    "eval:merge": "tsx evals/merge.eval.ts",
+    "eval:fixtures": "tsx evals/exportFixtures.eval.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

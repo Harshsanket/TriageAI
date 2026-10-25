@@ -4,6 +4,7 @@ import {
   AutoReplyPolicyDtoSchema,
   AutoReplyPolicyUpdateSchema,
   TicketConfirmationRequestSchema,
+  TicketTriageOverrideRequestSchema,
 } from '../src/index.js';
 
 describe('support contracts (phase 5)', () => {
@@ -27,6 +28,20 @@ describe('support contracts (phase 5)', () => {
       AutoReplyPolicyUpdateSchema.parse({ enabled: true, fallbackPolicy: 'invented' }),
     ).toThrow();
     expect(() => AutoReplyPolicyUpdateSchema.parse({ enabled: true, maxAnswerChars: 0 })).toThrow();
+  });
+
+  it('validates priority codes and override actors (phase 7)', () => {
+    const override = TicketTriageOverrideRequestSchema.parse({
+      priorityCode: 'P1',
+      teamId: 'billing',
+    });
+    expect(override).toMatchObject({ priorityCode: 'P1', teamId: 'billing', actor: 'agent' });
+    expect(() =>
+      TicketTriageOverrideRequestSchema.parse({ priorityCode: 'P9', teamId: 'billing' }),
+    ).toThrow();
+    expect(() =>
+      TicketTriageOverrideRequestSchema.parse({ priorityCode: 'P1', teamId: '' }),
+    ).toThrow();
   });
 
   it('requires an explicit solved boolean on confirmation', () => {

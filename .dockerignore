@@ -15,3 +15,8 @@ coverage
 docs
 scripts
 qbittorrent
+**/.venv
+**/.pytest_cache
+**/__pycache__
+apps/ai-service/artifacts
+apps/ai-service/eval/reports

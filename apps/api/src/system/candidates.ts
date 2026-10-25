@@ -8,10 +8,16 @@
 import type { FastifyInstance } from 'fastify';
 import { ulid } from 'ulid';
 
-import { CandidateReviewRequestSchema, CorrectionRequestSchema } from '@triageai/contracts';
+import {
+  CandidateExportDtoSchema,
+  CandidateReviewRequestSchema,
+  CorrectionRequestSchema,
+} from '@triageai/contracts';
 import type { Kernel } from '@triageai/kernel';
 
 import { writeAudit } from '../platform/audit.js';
+import { candidateText } from '../platform/candidates.js';
+import { labelOf } from '../platform/datasets.js';
 import { AppError } from '../platform/errors.js';
 
 interface CandidateRow {
@@ -42,6 +48,36 @@ const toCandidate = (row: CandidateRow) => ({
 });
 
 export function registerCandidateRoutes(app: FastifyInstance, kernel: Kernel): void {
+  app.get('/api/v1/system/candidates/export', async (request) => {
+    const query = request.query as { category?: string; status?: string; limit?: string };
+    const status =
+      query.status === 'proposed' || query.status === 'rejected' ? query.status : 'approved';
+    const rawLimit = Number(query.limit ?? 500);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(1, rawLimit), 5000) : 500;
+    const rows = (await kernel.database.query<CandidateRow>(
+      `SELECT id, source, source_run_id, input, gold, provenance, status, actor, reviewed_at, created_at
+       FROM candidate_examples
+       WHERE status = $1
+         AND ($2::text IS NULL OR gold->>'category' = $2 OR gold->>'label' = $2)
+       ORDER BY created_at ASC, id ASC
+       LIMIT $3`,
+      [status, query.category ?? null, limit],
+    )) as unknown as CandidateRow[];
+    return CandidateExportDtoSchema.parse({
+      category: query.category ?? null,
+      status,
+      count: rows.length,
+      examples: rows.map((row) => ({
+        id: row.id,
+        text: candidateText(row.input),
+        expected: labelOf(row.gold),
+        input: row.input,
+        gold: row.gold,
+        provenance: row.provenance ?? {},
+      })),
+    });
+  });
+
   app.get('/api/v1/system/candidates', async (request) => {
     const query = request.query as { status?: string; source?: string; limit?: string };
     const rawLimit = Number(query.limit ?? 50);

@@ -39,6 +39,28 @@ export const CandidateReviewRequestSchema = z
   })
   .strict();
 
+/**
+ * Per-category correction export (Phase 7). CI blesses these as fixture sets;
+ * only reviewed examples leave the review queue.
+ */
+export const CandidateExportExampleSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  expected: z.string(),
+  input: z.unknown(),
+  gold: z.unknown(),
+  provenance: z.record(z.unknown()),
+});
+export type CandidateExportExample = z.infer<typeof CandidateExportExampleSchema>;
+
+export const CandidateExportDtoSchema = z.object({
+  category: z.string().nullable(),
+  status: CandidateStatusSchema,
+  count: z.number().int().nonnegative(),
+  examples: z.array(CandidateExportExampleSchema),
+});
+export type CandidateExportDto = z.infer<typeof CandidateExportDtoSchema>;
+
 export const CorrectionRequestSchema = z
   .object({
     runId: z.string().optional(),
