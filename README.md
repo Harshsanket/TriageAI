@@ -1,7 +1,4 @@
 # TriageAI
-
-> **v1.0.0** — self-hosted modular AI automation platform: kernel + workflow engine, support triage, RAG assistant, validated auto-reply, feedback/eval/model-registry loop, training + advanced triage, GitHub/Slack integrations, identity/RBAC, retention, and operations tooling.
-
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
 TriageAI combines classification, retrieval, generation, validation, and human review into composable workflows. Capabilities are replaceable independently, every decision is inspectable, and inference stays local.
@@ -198,7 +195,10 @@ Developed and maintained by **Harsh Sanket**.
 
 ## Sponsor
 
-The development of this project and my open-source work on GitHub are supported by **[kumarsidd](https://github.com/kumarsidd)**.
+My open-source work on GitHub is currently supported by [**kumarsidd**](https://github.com/kumarsidd).
+
+
+All my work is independently developed, and sponsorship does not influence my work, technical decisions, or project direction.
 
 ## License
 
