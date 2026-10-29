@@ -187,6 +187,39 @@ describeIfDb('first-run setup (phase 11)', () => {
     }
   }, 60_000);
 
+  it('writes a new overlay version and audit row when setup changes after completion', async () => {
+    const app = await boot();
+    try {
+      const applied = await app.inject({
+        method: 'POST',
+        url: '/api/v1/setup/apply',
+        payload: { ...ticketSolverAnswers, ticketSolver: { autoReply: true } },
+      });
+      expect(applied.statusCode).toBe(200);
+      expect(applied.json()).toMatchObject({ applied: true, overlayVersion: 2 });
+
+      const versions = await app.kernel!.database.query(
+        `SELECT version FROM config_overlays ORDER BY version`,
+      );
+      expect(versions.map((row) => (row as { version: number }).version)).toEqual([1, 2]);
+      const audit = await app.kernel!.database.query(
+        `SELECT subject FROM audit_events WHERE action = 'config.overlay_written' ORDER BY id`,
+      );
+      expect(audit.map((row) => (row as { subject: string }).subject)).toContain('2');
+    } finally {
+      await app.close();
+    }
+
+    // The next boot uses the newest overlay and stays complete.
+    const rebooted = await boot();
+    try {
+      const status = await rebooted.inject({ method: 'GET', url: '/api/v1/setup/status' });
+      expect(status.json()).toMatchObject({ state: 'complete', overlayVersion: 2 });
+    } finally {
+      await rebooted.close();
+    }
+  }, 60_000);
+
   it('reverts an applied config that fails to boot and reopens setup', async () => {
     const database = new PostgresDatabase(SETUP_URL);
     try {

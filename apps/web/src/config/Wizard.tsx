@@ -108,7 +108,16 @@ interface ApplyResult {
   importsQueued?: number;
 }
 
-export function Wizard({ status, onApplied }: { status: SetupStatus; onApplied: () => void }) {
+export function Wizard({
+  status,
+  onApplied,
+  initial,
+}: {
+  status: SetupStatus;
+  onApplied: () => void;
+  /** Running answers when re-opened from `/config`; defaults for a first run. */
+  initial?: SetupAnswers;
+}) {
   const steps = useMemo<StepId[]>(
     () => [
       ...(status.tokenRequired ? (['token'] as StepId[]) : []),
@@ -122,7 +131,7 @@ export function Wizard({ status, onApplied }: { status: SetupStatus; onApplied: 
     [status.tokenRequired],
   );
   const [index, setIndex] = useState(() => (status.tokenRequired && getSetupToken() ? 1 : 0));
-  const [answers, setAnswers] = useState<SetupAnswers>(DEFAULT_ANSWERS);
+  const [answers, setAnswers] = useState<SetupAnswers>(initial ?? DEFAULT_ANSWERS);
   const [error, setError] = useState<string | null>(null);
   const step = steps[index] as StepId;
 

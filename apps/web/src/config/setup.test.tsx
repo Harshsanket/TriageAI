@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HardwareProfile, SetupStatus } from '@triageai/contracts';
 
 import { App } from '../App';
+import { ConfigView } from './ConfigPage';
 import { Wizard } from './Wizard';
 
 const PENDING: SetupStatus = {
@@ -14,6 +15,13 @@ const PENDING: SetupStatus = {
   lastError: null,
   overlayVersion: null,
   secretStoreAvailable: true,
+};
+
+const COMPLETE: SetupStatus = {
+  ...PENDING,
+  state: 'complete',
+  tokenRequired: false,
+  overlayVersion: 1,
 };
 
 const HARDWARE: HardwareProfile = {
@@ -87,6 +95,62 @@ describe('setup token step', () => {
     expect(await screen.findByRole('heading', { name: 'Machine check' })).toBeInTheDocument();
     expect(seen).toContain('Setup wrong-token');
     expect(seen).toContain('Setup good-token');
+  });
+});
+
+describe('changing setup after it is complete', () => {
+  it('pre-fills the wizard from the running config', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/v1/setup/config/effective') {
+        return json({
+          bootedOverlayVersion: 1,
+          latestOverlay: null,
+          history: [],
+          running: {
+            profile: 'support',
+            modules: {
+              chat: { enabled: true },
+              support: { enabled: true },
+              kb: { enabled: true },
+              'integrations-github': { enabled: true, options: { repo: 'acme/help' } },
+              echo: { enabled: false },
+            },
+            capabilities: {
+              generator: {
+                adapter: 'ollama',
+                baseUrl: 'http://localhost:11434',
+                model: 'qwen2.5:3b',
+              },
+            },
+          },
+          authMode: 'required',
+          authModeSource: 'setting',
+        });
+      }
+      if (url === '/api/v1/setup/secrets') return json({ available: true, secrets: [] });
+      if (url === '/api/v1/setup/hardware') return json(HARDWARE);
+      if (url.startsWith('/api/v1/setup/models')) return json({ models: [] });
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<ConfigView status={COMPLETE} refresh={() => undefined} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Change setup' }));
+
+    expect(await screen.findByRole('heading', { name: 'Machine check' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByRole('checkbox', { name: /Chatbot/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /Ticket solver/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /GitHub issues/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /Doc assistant/ })).not.toBeChecked();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByRole('radio', { name: /Ollama/ })).toBeChecked();
+    expect(screen.getByRole('textbox', { name: /Model \(as the runtime names it\)/ })).toHaveValue(
+      'qwen2.5:3b',
+    );
   });
 });
 

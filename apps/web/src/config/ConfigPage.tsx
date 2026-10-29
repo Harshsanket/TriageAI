@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type { SetupStatus } from '@triageai/contracts';
+import type { SetupAnswers, SetupStatus } from '@triageai/contracts';
 
 import './config.css';
 import { setupJson, useSetupStatus } from './setupApi';
@@ -18,7 +18,6 @@ export default function ConfigPage() {
 }
 
 export function ConfigView({ status, refresh }: { status: SetupStatus; refresh: () => void }) {
-  const [editing, setEditing] = useState(false);
   useRestartWatcher(status, refresh);
 
   if (status.state === 'applied') {
@@ -35,18 +34,10 @@ export function ConfigView({ status, refresh }: { status: SetupStatus; refresh: 
       </section>
     );
   }
-  if (status.state === 'pending' || editing) {
-    return (
-      <Wizard
-        status={status}
-        onApplied={() => {
-          setEditing(false);
-          refresh();
-        }}
-      />
-    );
+  if (status.state === 'pending') {
+    return <Wizard status={status} onApplied={refresh} />;
   }
-  return <SettingsView status={status} onEdit={() => setEditing(true)} />;
+  return <SettingsView status={status} refresh={refresh} />;
 }
 
 /**
@@ -77,7 +68,7 @@ interface Effective {
   history: Array<{ version: number; createdBy: string; createdAt: string; note: string | null }>;
   running: {
     profile: string;
-    modules: Record<string, { enabled: boolean }>;
+    modules: Record<string, { enabled: boolean; options?: { repo?: string } }>;
     capabilities: Record<string, unknown>;
   };
   authMode: string;
@@ -89,11 +80,12 @@ interface SecretList {
   secrets: Array<{ name: string; updatedBy: string; updatedAt: string }>;
 }
 
-function SettingsView({ status, onEdit }: { status: SetupStatus; onEdit: () => void }) {
+function SettingsView({ status, refresh }: { status: SetupStatus; refresh: () => void }) {
   const [effective, setEffective] = useState<Effective | null>(null);
   const [secrets, setSecrets] = useState<SecretList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     setupJson<Effective>('/api/v1/setup/config/effective').then(setEffective, (e: Error) =>
@@ -101,6 +93,20 @@ function SettingsView({ status, onEdit }: { status: SetupStatus; onEdit: () => v
     );
     setupJson<SecretList>('/api/v1/setup/secrets').then(setSecrets, () => undefined);
   }, [nonce]);
+
+  // Re-open the wizard with the running answers (ADR-0024, Phase 11 AC 5).
+  if (editing) {
+    return (
+      <Wizard
+        status={status}
+        initial={effective ? answersFromEffective(effective) : undefined}
+        onApplied={() => {
+          setEditing(false);
+          refresh();
+        }}
+      />
+    );
+  }
 
   const enabled = effective
     ? Object.entries(effective.running.modules)
@@ -145,7 +151,7 @@ function SettingsView({ status, onEdit }: { status: SetupStatus; onEdit: () => v
               </dd>
             </div>
           </dl>
-          <button type="button" className="cfg-button" onClick={onEdit}>
+          <button type="button" className="cfg-button" onClick={() => setEditing(true)}>
             Change setup
           </button>
         </div>
@@ -240,4 +246,47 @@ function describeGenerator(generator: unknown): string {
   if (!generator || typeof generator !== 'object') return 'none';
   const g = generator as { adapter?: string; model?: string };
   return `${g.model ?? '?'} via ${g.adapter ?? '?'}`;
+}
+
+/**
+ * Turn the running config back into wizard answers, so "Change setup" starts
+ * from what is actually running rather than from the shipped defaults.
+ * Documents and credentials are not reconstructible and start empty.
+ */
+function answersFromEffective(effective: Effective): SetupAnswers {
+  const modules = effective.running.modules;
+  const enabled = (id: string) => modules[id]?.enabled === true;
+  const interfaces: SetupAnswers['interfaces'] = [];
+  if (enabled('chat')) interfaces.push('chatbot');
+  if (enabled('support')) interfaces.push('ticket-solver');
+  if (enabled('doc-assistant')) interfaces.push('doc-assistant');
+  if (enabled('integrations-github')) interfaces.push('notifications-github');
+  if (enabled('integrations-slack')) interfaces.push('notifications-slack');
+  // The wizard needs at least one interface; an empty/core install keeps the default.
+  if (interfaces.length === 0) interfaces.push('chatbot');
+
+  const generator = effective.running.capabilities.generator as
+    { adapter?: string; baseUrl?: string; model?: string } | undefined;
+  const runtime: SetupAnswers['llm']['runtime'] =
+    generator?.adapter === 'ollama'
+      ? 'ollama'
+      : generator?.adapter === 'lmstudio'
+        ? 'lmstudio'
+        : generator?.adapter === 'openai_compatible_local'
+          ? 'openai-compatible'
+          : 'none';
+  const llm: SetupAnswers['llm'] =
+    runtime === 'none'
+      ? { runtime: 'none' }
+      : { runtime, baseUrl: generator?.baseUrl, model: generator?.model };
+
+  const githubRepo = modules['integrations-github']?.options?.repo;
+  return {
+    interfaces,
+    knowledge: { autoApprove: false, documents: [] },
+    llm,
+    ticketSolver: { autoReply: enabled('support') && runtime !== 'none' },
+    integrations: githubRepo ? { githubRepo } : {},
+    access: { authMode: effective.authMode === 'required' ? 'required' : 'disabled' },
+  };
 }
