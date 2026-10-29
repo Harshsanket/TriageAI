@@ -500,6 +500,11 @@ export interface KernelOptions {
   logger: KernelLogger;
   /** Host-provided capability adapters, selected by config.capabilities. */
   capabilities?: Capabilities;
+  /**
+   * Environment modules see as `ctx.env` (credentials by env-var name). The
+   * host may layer stored secrets under `process.env`; defaults to it.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 export interface ResolvedModule {

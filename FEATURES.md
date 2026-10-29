@@ -35,7 +35,7 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 | Generator                | Ollama, LM Studio, any OpenAI-compatible local server                                                     |   ✅   |
 | Validator                | Format, grounding, citations, prompt-injection, PII, forbidden topics                                     |   ✅   |
 | Model registry           | Versioned assets, eval-gated promote, audited rollback, hot-swap without deploy                           |   ✅   |
-| Model catalog            | Hugging Face search filtered by your hardware, one-click download                                         |   🗺️   |
+| Model catalog            | Hugging Face search filtered by your hardware, one-click download                                         |   ✅   |
 | Hosted LLM APIs          | Anthropic, OpenAI, Google, any OpenAI-compatible host — opt-in with egress classes, redaction and budgets |   🗺️   |
 | ChatModel (tool calling) | One chat + tools interface over every local and hosted adapter                                            |   🗺️   |
 
@@ -69,12 +69,13 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 
 ### Chatbot — `chat`
 
-| Feature                                           | Status |
-| ------------------------------------------------- | :----: |
-| Conversations + messages                          |   ✅   |
-| Grounded answers with citations, explicit refusal |   ✅   |
-| Per-user conversation ownership                   |   ✅   |
-| Streaming responses, memory/summary               |   🗺️   |
+| Feature                                                                                               | Status |
+| ----------------------------------------------------------------------------------------------------- | :----: |
+| Conversations + messages                                                                              |   ✅   |
+| Grounded answers with citations, explicit refusal                                                     |   ✅   |
+| Per-user conversation ownership                                                                       |   ✅   |
+| Conversation history: sidebar, search, rename, pin, delete/restore, export; replies use earlier turns |   🗺️   |
+| Streaming responses, memory/summary                                                                   |   🗺️   |
 
 ### Doc assistant — `doc-assistant`
 
@@ -103,37 +104,46 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 
 ## 4. Agents, tools and skills (planned, Phases 15–17)
 
-| Feature                                                                                                                                       | Status |
-| --------------------------------------------------------------------------------------------------------------------------------------------- | :----: |
-| Tool registry (module tools, allowlisted HTTP) with approval for write/external tools                                                         |   🗺️   |
-| MCP client: connect external MCP servers as tools                                                                                             |   🗺️   |
-| Skills in Agent Skills format, sha-pinned sources, loaded on demand — starting with [mattpocock/skills](https://github.com/mattpocock/skills) |   🗺️   |
-| Import Claude Code / Cursor plugin packs (e.g. [pstack](https://github.com/cursor/plugins/tree/main/pstack)) as skills + agent profiles       |   🗺️   |
-| Agents with per-step checkpointed state that resume after a crash                                                                             |   🗺️   |
-| Context budgets: retrieval packed to a fixed share of the model's window, pointers for the rest                                               |   🗺️   |
-| Capped, structured handoffs between agents (no transcript dumps)                                                                              |   🗺️   |
-| Per-run local workspace (handoff, log, decisions, plans) mirrored from the DB                                                                 |   🗺️   |
-| Long-term memory across runs: short sourced entries, deduped, capped, reviewable, user-erasable                                               |   🗺️   |
-| Teams with any model mix: api + local, api + api, local + local                                                                               |   🗺️   |
-| `/agents` monitor, watchdog agent, external agents reporting via the public API                                                               |   🗺️   |
-| Agent setup from [docs-internal](https://github.com/Harshsanket/docs-internal) conventions                                                    |   🗺️   |
+| Feature                                                                                                                                                         | Status |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----: |
+| Tool registry with read/write and low/high-risk labels; high-risk calls need preview, intent and taint checks                                                   |   🗺️   |
+| Approval policy per agent: ask a human, or auto with an allowlist of functions (conditions + daily limits); deletes, payments and permission changes always ask |   🗺️   |
+| MCP client: connect external MCP servers as tools                                                                                                               |   🗺️   |
+| Connectors for external apps (CRM, calendar, databases, docs, ticketing) via OpenAPI/GraphQL/SQL/MCP or first-party plugins, with OAuth, sync and triggers      |   🗺️   |
+| Skills in Agent Skills format, sha-pinned sources, loaded on demand — starting with [mattpocock/skills](https://github.com/mattpocock/skills)                   |   🗺️   |
+| Import Claude Code / Cursor plugin packs (e.g. [pstack](https://github.com/cursor/plugins/tree/main/pstack)) as skills + agent profiles                         |   🗺️   |
+| Agents with per-step checkpointed state that resume after a crash                                                                                               |   🗺️   |
+| Need-based context: each step gets only what it needs (short- or long-term), fetched on demand; ceilings, never filling the window; waste measured              |   🗺️   |
+| Capped, structured handoffs between agents (no transcript dumps)                                                                                                |   🗺️   |
+| Shared state, task board and decisions log across all agents in a workspace; one context-building rule                                                          |   🗺️   |
+| Per-run local workspace (handoff, log, decisions, plans) mirrored from the DB                                                                                   |   🗺️   |
+| Long-term memory across runs: short sourced entries, deduped, capped, reviewable, user-erasable                                                                 |   🗺️   |
+| Teams with any model mix: api + local, api + api, local + local                                                                                                 |   🗺️   |
+| `/agents` monitor, watchdog agent, external agents reporting via the public API                                                                                 |   🗺️   |
+| Agent setup from [docs-internal](https://github.com/Harshsanket/docs-internal) conventions                                                                      |   🗺️   |
 
 ### Running agents safely (planned, Phase 18)
 
-| Feature                                                                                                                         | Status |
-| ------------------------------------------------------------------------------------------------------------------------------- | :----: |
-| Continuous self-evaluation: sampled online scoring, nightly regression evals, drift alerts                                      |   🗺️   |
-| Improvements proposed as diffs, applied only after eval gate + approval (no silent self-modification)                           |   🗺️   |
-| Opt-in auto-rollback of a version that falls below its quality floor                                                            |   🗺️   |
-| One resumable state model for workflows, agents and teams, with pinned versions per run                                         |   🗺️   |
-| Concurrency limits, priority lanes, backpressure, durable scheduler and event outbox                                            |   🗺️   |
-| Traces across model, tool and agent calls; token/cost/eval metrics; alerting                                                    |   🗺️   |
-| Kill switches (pause agents, disable hosted models, read-only, freeze plugins), egress allowlist, tamper-evident audit          |   🗺️   |
-| Every setting on `/config` with a one-line explanation, versioned and revertible                                                |   🗺️   |
-| `WORKFLOW.md`: short committed project map (design, contracts, routing, observability, model strategy, cost) kept in sync by CI |   🗺️   |
-| Cost-aware model routing: cheapest model that meets each task's measured quality floor                                          |   🗺️   |
-| Cost ledger per call, budgets, forecasts; caching, batching and coordination-overhead tracking                                  |   🗺️   |
-| `/dashboard`: health, activity, quality, cost, efficiency, context, agents, security on one page                                |   🗺️   |
+| Feature                                                                                                                                                                   | Status |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----: |
+| Continuous self-evaluation: sampled online scoring, nightly regression evals, drift alerts                                                                                |   🗺️   |
+| Trace-level evaluation: every important step in a run (decisions, retrieval, tool calls, handoffs) is scored, not only the final answer; first bad step shown on the run  |   🗺️   |
+| Improvements proposed as diffs, applied only after eval gate + approval (no silent self-modification)                                                                     |   🗺️   |
+| Opt-in auto-rollback of a version that falls below its quality floor                                                                                                      |   🗺️   |
+| One resumable state model for workflows, agents and teams, with pinned versions per run                                                                                   |   🗺️   |
+| Explicit control flow: every workflow, agent loop and team is a declared, validated graph; models only choose between declared paths; the taken path is drawn on each run |   🗺️   |
+| Simplest execution style first: known steps run as pipelines or state machines; agents only for work that needs dynamic decisions; planning/reflection only when useful   |   🗺️   |
+| Concurrency limits, priority lanes, backpressure, durable scheduler and event outbox                                                                                      |   🗺️   |
+| Traces across model, tool and agent calls; token/cost/eval metrics; alerting                                                                                              |   🗺️   |
+| Kill switches (pause agents, disable hosted models, read-only, freeze plugins), egress allowlist, tamper-evident audit                                                    |   🗺️   |
+| Every setting on `/config` with a one-line explanation, versioned and revertible                                                                                          |   🗺️   |
+| Storage by access pattern: Postgres by default (partitioned logs, JSONB, full-text, pgvector with HNSW), Redis/S3/Qdrant only past measured thresholds                    |   🗺️   |
+| Data policy: every kind of data has rules for where it's stored, how long it's kept, how it's retrieved, and whether a model may see it (sent, redacted or withheld)      |   🗺️   |
+| `WORKFLOW.md`: short committed project map (design, contracts, routing, observability, model strategy, cost) kept in sync by CI                                           |   🗺️   |
+| Cost-aware model routing: cheapest model that meets each task's measured quality floor                                                                                    |   🗺️   |
+| Cost ledger per call, budgets, forecasts; caching, batching and coordination-overhead tracking                                                                            |   🗺️   |
+| `/dashboard`: health, activity, quality, cost, efficiency, context, agents, security on one page                                                                          |   🗺️   |
+| "Ask the system": plain-language questions about past activity ("what was done on this day?") answered by a small local model with links                                  |   🗺️   |
 
 ## 5. Improvement loop (host)
 
@@ -147,30 +157,32 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 
 ## 6. Operations & security
 
-| Feature                                                                                     |            Status            |
-| ------------------------------------------------------------------------------------------- | :--------------------------: |
-| Docker Compose profiles: core, ai, llm, queue, observ, train                                |              ✅              |
-| Loopback-only port binding by default (`TRIAGEAI_BIND`)                                     |              ✅              |
-| Auth: argon2id, short JWT + rotating refresh tokens, replay revocation                      |              ✅              |
-| RBAC matrix (public / customer / agent / admin, deny by default)                            |              ✅              |
-| Rate limiting, CORS allowlist, log/config secret redaction                                  |              ✅              |
-| Ownership ACLs (customer sees only their own data)                                          |              ✅              |
-| Prometheus `/metrics` (admin or `METRICS_TOKEN`), Grafana, hardware monitor, k6 load suites |              ✅              |
-| Backup/restore scripts, retention scheduler                                                 |              ✅              |
-| Multi-tenant enforcement, attachments                                                       | 🗺️ (designed: ADR-0022/0023) |
-| First-run setup wizard at `/config`                                                         |              🗺️              |
+| Feature                                                                                                                            |            Status            |
+| ---------------------------------------------------------------------------------------------------------------------------------- | :--------------------------: |
+| Docker Compose profiles: core, ai, llm, queue, observ, train                                                                       |              ✅              |
+| Loopback-only port binding by default (`TRIAGEAI_BIND`)                                                                            |              ✅              |
+| Auth: argon2id, short JWT + rotating refresh tokens, replay revocation                                                             |              ✅              |
+| RBAC matrix (public / customer / agent / admin, deny by default)                                                                   |              ✅              |
+| Rate limiting, CORS allowlist, log/config secret redaction                                                                         |              ✅              |
+| Ownership ACLs (customer sees only their own data)                                                                                 |              ✅              |
+| Typed errors with one envelope everywhere, retry only what can succeed, circuit breakers, dead-letter replay, graceful degradation |              🗺️              |
+| Prometheus `/metrics` (admin or `METRICS_TOKEN`), Grafana, hardware monitor, k6 load suites                                        |              ✅              |
+| Backup/restore scripts, retention scheduler                                                                                        |              ✅              |
+| Multi-tenant enforcement, attachments                                                                                              | 🗺️ (designed: ADR-0022/0023) |
+| First-run setup wizard at `/config`                                                                                                |              ✅              |
+| Config overlay: versioned, audited DB answers above the file, below env; encrypted secret store; restart-to-apply                  |              ✅              |
 
 ## 7. Web UI routes
 
-| Path                                          | Shown when                  |
-| --------------------------------------------- | --------------------------- |
-| `/support`                                    | `support` enabled           |
-| `/chat`                                       | `chat` enabled              |
-| `/kb`                                         | `kb` enabled                |
-| `/doc-assistant`                              | `doc-assistant` enabled     |
-| `/integrations/github`, `/integrations/slack` | integration enabled         |
-| `/echo`                                       | `echo` enabled              |
-| `/runs`, `/runs/:id`                          | always (inspector)          |
-| `/feedback`                                   | always (review + registry)  |
-| `/system`                                     | always (hardware + modules) |
-| `/config`                                     | 🗺️ Phase 11 setup wizard    |
+| Path                                          | Shown when                                         |
+| --------------------------------------------- | -------------------------------------------------- |
+| `/support`                                    | `support` enabled                                  |
+| `/chat`                                       | `chat` enabled                                     |
+| `/kb`                                         | `kb` enabled                                       |
+| `/doc-assistant`                              | `doc-assistant` enabled                            |
+| `/integrations/github`, `/integrations/slack` | integration enabled                                |
+| `/echo`                                       | `echo` enabled                                     |
+| `/runs`, `/runs/:id`                          | always (inspector)                                 |
+| `/feedback`                                   | always (review + registry)                         |
+| `/system`                                     | always (hardware + modules)                        |
+| `/config`                                     | always (setup wizard while pending, then settings) |

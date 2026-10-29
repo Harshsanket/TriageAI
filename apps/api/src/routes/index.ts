@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Kernel } from '@triageai/kernel';
 
 import type { DbModelRegistry } from '../services/modelRegistry.js';
+import { registerSetupRoutes, type SetupRouteDeps } from '../setup/routes.js';
 import { registerAuditRoutes } from './audit.js';
 import { registerCandidateRoutes } from './candidates.js';
 import { registerDatasetRoutes } from './datasets.js';
@@ -20,6 +21,7 @@ import { registerSystemRoutes } from './system.js';
 
 export interface HostRouteDeps {
   modelRegistry: DbModelRegistry;
+  setup: SetupRouteDeps;
 }
 
 export function registerHostRoutes(
@@ -27,7 +29,8 @@ export function registerHostRoutes(
   kernel: Kernel,
   deps: HostRouteDeps,
 ): void {
-  registerSystemRoutes(app, kernel);
+  registerSystemRoutes(app, kernel, deps.setup.runtime);
+  registerSetupRoutes(app, kernel, deps.setup);
   registerRunRoutes(app, kernel);
   registerMetricsRoute(app, kernel);
   registerAuditRoutes(app, kernel);

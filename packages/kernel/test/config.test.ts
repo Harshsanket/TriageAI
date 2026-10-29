@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildKernelConfig, loadConfigFile, parseConfigFile } from '../src/config.js';
+import {
+  applyConfigOverlay,
+  buildKernelConfig,
+  loadConfigFile,
+  parseConfigFile,
+} from '../src/config.js';
 import { satisfiesRange } from '../src/semver.js';
 
 describe('config', () => {
@@ -34,6 +39,43 @@ describe('config', () => {
     const file = parseConfigFile({});
     const cfg = buildKernelConfig(file, { TRIAGEAI_QUEUE_ADAPTER: 'inline' });
     expect(cfg.queue.adapter).toBe('inline');
+  });
+
+  it('applies a config overlay per module and capability, keeping unnamed keys', () => {
+    const file = parseConfigFile({
+      profile: 'support',
+      modules: { support: { enabled: true, options: { defaultCollection: 'kb_docs' } } },
+      capabilities: { generator: { adapter: 'ollama', model: 'a', baseUrl: 'http://x' } },
+    });
+    const merged = applyConfigOverlay(file, {
+      modules: { chat: { enabled: true }, support: { enabled: false } },
+      capabilities: { generator: { model: 'b' } },
+    });
+    expect(merged.modules.support).toEqual({
+      enabled: false,
+      options: { defaultCollection: 'kb_docs' },
+    });
+    expect(merged.modules.chat).toEqual({ enabled: true });
+    expect(merged.capabilities.generator).toEqual({
+      adapter: 'ollama',
+      model: 'b',
+      baseUrl: 'http://x',
+    });
+    expect(merged.profile).toBe('support');
+  });
+
+  it('env overrides still win over the overlay', () => {
+    const merged = applyConfigOverlay(parseConfigFile({}), {
+      modules: { chat: { enabled: true } },
+    });
+    const cfg = buildKernelConfig(merged, { TRIAGEAI_DISABLE_MODULES: 'chat' });
+    expect(cfg.modules.chat?.enabled).toBe(false);
+  });
+
+  it('rejects unknown overlay keys', () => {
+    expect(() => applyConfigOverlay(parseConfigFile({}), { secrets: {} })).toThrow(
+      /Invalid config overlay/,
+    );
   });
 
   it('loadConfigFile fails when an explicit path is missing', () => {

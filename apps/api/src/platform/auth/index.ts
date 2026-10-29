@@ -31,7 +31,17 @@ export interface AuthGuardOptions {
   jwtSecret: string;
   /** Static bearer token a Prometheus scraper may present for GET /metrics. */
   metricsToken?: string;
+  /** First-run setup: while pending, setup routes take the one-time token instead. */
+  setup?: { isPending(): boolean; verify(header: string | undefined): boolean };
 }
+
+const SETUP_OPERATOR: Principal = {
+  userId: 'setup-operator',
+  email: 'setup@triageai.dev',
+  role: 'admin',
+  sessionId: null,
+  authenticated: false,
+};
 
 const METRICS_SCRAPER: Principal = {
   userId: 'metrics-scraper',
@@ -67,6 +77,23 @@ export function createAuthGuard(options: AuthGuardOptions) {
   return async function authGuard(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const path = request.url.split('?')[0] ?? request.url;
     const rule = ruleFor(request.method, path);
+
+    if (
+      options.setup?.isPending() &&
+      path.startsWith('/api/v1/setup/') &&
+      path !== '/api/v1/setup/status'
+    ) {
+      if (!options.setup.verify(request.headers.authorization)) {
+        throw new AppError(
+          'setup.TOKEN_REQUIRED',
+          'paste the setup token printed in the API log',
+          undefined,
+          401,
+        );
+      }
+      request.principal = SETUP_OPERATOR;
+      return;
+    }
 
     if (options.mode === 'disabled') {
       request.principal = LOCAL_DEVELOPER;

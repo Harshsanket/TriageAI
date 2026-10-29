@@ -1,0 +1,294 @@
+/*
+ * /config wizard. Uses the host's design tokens when present, with fallbacks so
+ * the page also renders without the global stylesheet.
+ */
+.cfg-wizard {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  color: var(--ink, #1b1c20);
+  font-family: inherit;
+}
+
+.cfg-wizard h1 {
+  margin: 4px 0 12px;
+  font-size: 1.6rem;
+}
+
+.cfg-wizard h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.cfg-eyebrow {
+  margin: 0;
+  color: var(--ink-soft, #5f636b);
+  font-size: 0.85rem;
+}
+
+.cfg-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 0;
+  margin: 0 0 20px;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--ink-soft, #5f636b);
+}
+
+.cfg-steps li[aria-current='step'] {
+  color: var(--ink, #1b1c20);
+  font-weight: 600;
+}
+
+.cfg-steps li.is-done::before {
+  content: '✓ ';
+}
+
+.cfg-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line, rgba(20, 22, 26, 0.12));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--paper, #fbfbf8) 70%, white);
+}
+
+.cfg-card p {
+  margin: 0;
+}
+
+.cfg-choices {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.cfg-choices legend {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.cfg-choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.cfg-choice span {
+  display: grid;
+  gap: 2px;
+}
+
+.cfg-choice small,
+.cfg-table small {
+  display: block;
+  color: var(--ink-soft, #5f636b);
+}
+
+.cfg-choice.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cfg-field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.cfg-field input {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line, rgba(20, 22, 26, 0.2));
+  border-radius: 8px;
+  font: inherit;
+  background: white;
+  color: inherit;
+}
+
+.cfg-search,
+.cfg-inline {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.cfg-inline {
+  grid-template-columns: 1fr 1fr auto;
+}
+
+.cfg-button {
+  justify-self: start;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--ink, #1b1c20);
+  color: var(--paper, #fbfbf8);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cfg-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cfg-button--ghost {
+  background: transparent;
+  color: var(--ink, #1b1c20);
+  border-color: var(--line, rgba(20, 22, 26, 0.25));
+}
+
+.cfg-button--small {
+  padding: 4px 10px;
+  font-size: 0.85rem;
+}
+
+.cfg-button:focus-visible,
+.cfg-field input:focus-visible,
+.cfg-link:focus-visible {
+  outline: 2px solid var(--ink, #1b1c20);
+  outline-offset: 2px;
+}
+
+.cfg-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.cfg-nav,
+.cfg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.cfg-facts {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.cfg-facts > div {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+}
+
+.cfg-facts dt {
+  color: var(--ink-soft, #5f636b);
+}
+
+.cfg-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cfg-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.cfg-table th,
+.cfg-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line, rgba(20, 22, 26, 0.1));
+  text-align: left;
+  vertical-align: top;
+}
+
+.cfg-table code {
+  overflow-wrap: anywhere;
+}
+
+.cfg-table tr[aria-selected='true'] {
+  background: color-mix(in srgb, var(--ink, #1b1c20) 6%, transparent);
+}
+
+.cfg-fit {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.cfg-fit--fits {
+  background: #dcefe0;
+  color: #1d5b2a;
+}
+
+.cfg-fit--tight {
+  background: #f6ead0;
+  color: #6b4a07;
+}
+
+.cfg-fit--too-large {
+  background: #f6d9d6;
+  color: #7a1f16;
+}
+
+.cfg-fit--unknown {
+  background: #ececec;
+  color: #444;
+}
+
+.cfg-alert {
+  padding: 10px 12px;
+  margin: 0 0 16px;
+  border-radius: 8px;
+  background: #f6d9d6;
+  color: #5c140d;
+}
+
+.cfg-hint {
+  color: var(--ink-soft, #5f636b);
+  font-size: 0.9rem;
+}
+
+.cfg-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.cfg-pre {
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f1f1ee;
+  font-size: 0.8rem;
+}
+
+.cfg-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+@media (max-width: 600px) {
+  .cfg-facts > div,
+  .cfg-search,
+  .cfg-inline {
+    grid-template-columns: 1fr;
+  }
+
+  .cfg-table th:nth-child(4),
+  .cfg-table td:nth-child(4) {
+    display: none;
+  }
+}

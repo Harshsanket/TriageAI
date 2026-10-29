@@ -37,16 +37,22 @@ services:
       dockerfile: docker/api.Dockerfile
     image: triageai/api:dev
     container_name: triageai-api
+    restart: unless-stopped
     profiles: [core, queue, ai, llm]
     environment:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: postgres://triageai:triageai@postgres:5432/triageai
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
-      AUTH_MODE: ${AUTH_MODE:-disabled}
+      # Unset = chosen in the /config wizard (or production default). Set it to pin.
+      AUTH_MODE: ${AUTH_MODE:-}
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # 32+ chars; enables the encrypted secret store used by /config.
+      TRIAGEAI_SECRET_KEY: ${TRIAGEAI_SECRET_KEY:-}
+      # Exit after the wizard applies so `restart:` boots the new config.
+      TRIAGEAI_RESTART_ON_APPLY: '1'
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       TRIAGEAI_GENERATOR_BASE_URL: ${TRIAGEAI_GENERATOR_BASE_URL:-http://ollama:11434}
       TRIAGEAI_CONFIG: ${TRIAGEAI_CONFIG:-/app/triage.config.json}

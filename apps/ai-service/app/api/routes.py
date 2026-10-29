@@ -1,7 +1,14 @@
 from fastapi import APIRouter, HTTPException
 
-from app.api.schemas import ClassifyRequest, ClassifyResponse, EmbedRequest, EmbedResponse, HealthResponse
-from app.modules import classification, embeddings
+from app.api.schemas import (
+    ClassifyRequest,
+    ClassifyResponse,
+    EmbedRequest,
+    EmbedResponse,
+    HardwareResponse,
+    HealthResponse,
+)
+from app.modules import classification, embeddings, hardware
 
 router = APIRouter(prefix="/ai/v1")
 
@@ -11,6 +18,12 @@ SERVICE_VERSION = "0.0.1"
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(version=SERVICE_VERSION)
+
+
+@router.get("/hardware", response_model=HardwareResponse)
+async def hardware_probe() -> HardwareResponse:
+    """Accelerator visible to this service (setup wizard machine check)."""
+    return hardware.probe()
 
 
 @router.post("/classify", response_model=ClassifyResponse)

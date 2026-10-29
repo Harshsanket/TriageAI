@@ -5,8 +5,13 @@ import type { Kernel } from '@triageai/kernel';
 
 import { config } from '../platform/config.js';
 import { redactValue } from '../platform/redact.js';
+import type { SetupRuntime } from '../setup/boot.js';
 
-export function registerSystemRoutes(app: FastifyInstance, kernel: Kernel): void {
+export function registerSystemRoutes(
+  app: FastifyInstance,
+  kernel: Kernel,
+  setup: SetupRuntime,
+): void {
   app.get('/api/v1/system/manifest', async () => kernel.manifest());
   app.get('/api/v1/system/modules', async () => kernel.infos());
   app.get('/api/v1/system/modules/health', async () => kernel.health());
@@ -16,7 +21,8 @@ export function registerSystemRoutes(app: FastifyInstance, kernel: Kernel): void
       queue: kernel.config.queue,
       modules: kernel.config.modules,
       capabilities: kernel.config.capabilities,
-      authMode: config.authMode,
+      authMode: setup.authMode,
+      authModeSource: setup.authModeSource,
       rateLimit: { max: config.rateLimitMax, window: config.rateLimitWindow },
     }),
   );

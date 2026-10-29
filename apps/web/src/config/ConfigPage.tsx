@@ -1,0 +1,243 @@
+import { useEffect, useRef, useState } from 'react';
+
+import type { SetupStatus } from '@triageai/contracts';
+
+import './config.css';
+import { setupJson, useSetupStatus } from './setupApi';
+import { Wizard } from './Wizard';
+
+/**
+ * `/config` (ADR-0024): the first-run wizard while setup is pending, and the
+ * current setup — status, running config, history and secrets — afterwards,
+ * with the wizard one click away for changes.
+ */
+export default function ConfigPage() {
+  const setup = useSetupStatus();
+  if (setup.phase === 'loading') return <p>Loading setup…</p>;
+  return <ConfigView status={setup.status} refresh={setup.refresh} />;
+}
+
+export function ConfigView({ status, refresh }: { status: SetupStatus; refresh: () => void }) {
+  const [editing, setEditing] = useState(false);
+  useRestartWatcher(status, refresh);
+
+  if (status.state === 'applied') {
+    return (
+      <section className="cfg-wizard">
+        <h1>Restart to finish setup</h1>
+        <p>
+          The answers are saved. Restart the API (stop and start <code>pnpm dev</code>, or the api
+          container) and this page will continue.
+        </p>
+        <button type="button" className="cfg-button" onClick={refresh}>
+          Check again
+        </button>
+      </section>
+    );
+  }
+  if (status.state === 'pending' || editing) {
+    return (
+      <Wizard
+        status={status}
+        onApplied={() => {
+          setEditing(false);
+          refresh();
+        }}
+      />
+    );
+  }
+  return <SettingsView status={status} onEdit={() => setEditing(true)} />;
+}
+
+/**
+ * While the API restarts after an apply, poll until the new config is up; a
+ * first-run page then reloads into the configured app.
+ */
+function useRestartWatcher(status: SetupStatus, refresh: () => void) {
+  const initial = useRef(status.state);
+  useEffect(() => {
+    if (initial.current !== 'complete' && status.state === 'complete') {
+      window.location.assign('/');
+      return;
+    }
+    if (status.state !== 'applied' && !status.restartRequired) return;
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
+  }, [status.state, status.restartRequired, refresh]);
+}
+
+interface Effective {
+  bootedOverlayVersion: number | null;
+  latestOverlay: {
+    version: number;
+    createdBy: string;
+    createdAt: string;
+    note: string | null;
+  } | null;
+  history: Array<{ version: number; createdBy: string; createdAt: string; note: string | null }>;
+  running: {
+    profile: string;
+    modules: Record<string, { enabled: boolean }>;
+    capabilities: Record<string, unknown>;
+  };
+  authMode: string;
+  authModeSource: string;
+}
+
+interface SecretList {
+  available: boolean;
+  secrets: Array<{ name: string; updatedBy: string; updatedAt: string }>;
+}
+
+function SettingsView({ status, onEdit }: { status: SetupStatus; onEdit: () => void }) {
+  const [effective, setEffective] = useState<Effective | null>(null);
+  const [secrets, setSecrets] = useState<SecretList | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    setupJson<Effective>('/api/v1/setup/config/effective').then(setEffective, (e: Error) =>
+      setError(e.message),
+    );
+    setupJson<SecretList>('/api/v1/setup/secrets').then(setSecrets, () => undefined);
+  }, [nonce]);
+
+  const enabled = effective
+    ? Object.entries(effective.running.modules)
+        .filter(([, m]) => m.enabled)
+        .map(([id]) => id)
+    : [];
+
+  return (
+    <section className="cfg-wizard" aria-labelledby="cfg-settings">
+      <header className="cfg-wizard__head">
+        <p className="cfg-eyebrow">Configuration</p>
+        <h1 id="cfg-settings">Setup</h1>
+      </header>
+      {status.restartRequired && (
+        <p className="cfg-alert" role="status">
+          A newer configuration is saved. Restart the API to use it.
+        </p>
+      )}
+      {error ? <p className="cfg-alert">{error}</p> : null}
+      {effective && (
+        <div className="cfg-card">
+          <dl className="cfg-facts">
+            <div>
+              <dt>Running</dt>
+              <dd>
+                profile {effective.running.profile} · overlay v
+                {effective.bootedOverlayVersion ?? '—'}
+              </dd>
+            </div>
+            <div>
+              <dt>Modules</dt>
+              <dd>{enabled.join(', ') || 'none'}</dd>
+            </div>
+            <div>
+              <dt>Model</dt>
+              <dd>{describeGenerator(effective.running.capabilities.generator)}</dd>
+            </div>
+            <div>
+              <dt>Sign-in</dt>
+              <dd>
+                {effective.authMode} (from {effective.authModeSource})
+              </dd>
+            </div>
+          </dl>
+          <button type="button" className="cfg-button" onClick={onEdit}>
+            Change setup
+          </button>
+        </div>
+      )}
+      {effective && effective.history.length > 0 && (
+        <div className="cfg-card">
+          <h2>History</h2>
+          <ul className="cfg-list">
+            {effective.history.map((h) => (
+              <li key={h.version}>
+                v{h.version} · {h.note ?? 'change'} · {h.createdBy} ·{' '}
+                {new Date(h.createdAt).toLocaleString()}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {secrets && <SecretsCard list={secrets} onSaved={() => setNonce((n) => n + 1)} />}
+    </section>
+  );
+}
+
+function SecretsCard({ list, onSaved }: { list: SecretList; onSaved: () => void }) {
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
+  const [note, setNote] = useState<string | null>(null);
+  const save = async () => {
+    try {
+      await setupJson(`/api/v1/setup/secrets/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+      });
+      setValue('');
+      setNote(`${name} saved. Restart the API to use it.`);
+      onSaved();
+    } catch (err) {
+      setNote((err as Error).message);
+    }
+  };
+  return (
+    <div className="cfg-card">
+      <h2>Secrets</h2>
+      {!list.available ? (
+        <p className="cfg-hint">
+          The secret store is off. Set TRIAGEAI_SECRET_KEY (32+ characters) on the API to store
+          credentials here; until then use environment variables.
+        </p>
+      ) : (
+        <>
+          <p className="cfg-hint">
+            Values are encrypted and never shown again. Environment variables take precedence.
+          </p>
+          <ul className="cfg-list">
+            {list.secrets.map((s) => (
+              <li key={s.name}>
+                <code>{s.name}</code> · set by {s.updatedBy} ·{' '}
+                {new Date(s.updatedAt).toLocaleString()}
+              </li>
+            ))}
+          </ul>
+          <div className="cfg-inline">
+            <label className="cfg-field">
+              <span>Name (env var, e.g. GITHUB_TOKEN)</span>
+              <input value={name} onChange={(e) => setName(e.target.value.toUpperCase())} />
+            </label>
+            <label className="cfg-field">
+              <span>Value</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="cfg-button"
+              disabled={!name || !value}
+              onClick={() => void save()}
+            >
+              Save secret
+            </button>
+          </div>
+          {note ? <p aria-live="polite">{note}</p> : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function describeGenerator(generator: unknown): string {
+  if (!generator || typeof generator !== 'object') return 'none';
+  const g = generator as { adapter?: string; model?: string };
+  return `${g.model ?? '?'} via ${g.adapter ?? '?'}`;
+}

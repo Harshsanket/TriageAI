@@ -25,3 +25,9 @@ def test_modules_are_separate_and_describable() -> None:
     body = response.json()
     assert set(body) == {"classification", "embedding_model"}
     assert all(isinstance(v, str) and v for v in body.values())
+
+
+def test_hardware_probe_reports_a_known_backend() -> None:
+    response = client.get("/ai/v1/hardware")
+    assert response.status_code == 200
+    assert response.json()["kind"] in {"cuda", "mps", "none"}

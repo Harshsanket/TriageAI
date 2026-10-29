@@ -1,13 +1,22 @@
 import { z } from 'zod';
 
+const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DATABASE_URL: z.string().url(),
   AI_SERVICE_URL: z.string().url().default('http://localhost:8000'),
-  AUTH_MODE: z.enum(['disabled', 'required']).optional(),
-  AUTH_JWT_SECRET: z.string().optional(),
+  // Compose passes empty strings for unset values; treat '' as "not set".
+  AUTH_MODE: z.preprocess(emptyToUndefined, z.enum(['disabled', 'required']).optional()),
+  AUTH_JWT_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
+  TRIAGEAI_SECRET_KEY: z.preprocess(emptyToUndefined, z.string().min(32).optional()),
+  TRIAGEAI_SETUP: z.preprocess(emptyToUndefined, z.enum(['auto', 'off']).default('auto')),
+  TRIAGEAI_RESTART_ON_APPLY: z
+    .string()
+    .optional()
+    .transform((value) => value === '1' || value === 'true'),
   AUTH_ACCESS_TTL_SECONDS: z.coerce
     .number()
     .int()
@@ -43,19 +52,23 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
-const authMode = env.AUTH_MODE ?? (env.NODE_ENV === 'production' ? 'required' : 'disabled');
-if (authMode === 'required' && (!env.AUTH_JWT_SECRET || env.AUTH_JWT_SECRET.length < 32)) {
-  throw new Error('AUTH_JWT_SECRET must be set to at least 32 characters when AUTH_MODE=required');
-}
-
 export const config = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
   logLevel: env.LOG_LEVEL,
   databaseUrl: env.DATABASE_URL,
   aiServiceUrl: env.AI_SERVICE_URL,
-  authMode,
+  /**
+   * Explicit `AUTH_MODE`, if any. The effective mode is resolved at boot
+   * (env → /config setting → default) and checked there (setup/boot.ts).
+   */
+  authModeEnv: env.AUTH_MODE,
+  authJwtSecretEnv: env.AUTH_JWT_SECRET,
+  /** Env secret or the dev fallback; tests sign tokens with it. */
   authJwtSecret: env.AUTH_JWT_SECRET ?? 'development-only-insecure-secret-change-me',
+  secretKey: env.TRIAGEAI_SECRET_KEY,
+  setupEnabled: env.TRIAGEAI_SETUP !== 'off',
+  restartOnApply: env.TRIAGEAI_RESTART_ON_APPLY,
   authAccessTtlSeconds: env.AUTH_ACCESS_TTL_SECONDS,
   authRefreshTtlSeconds: env.AUTH_REFRESH_TTL_SECONDS,
   /** Explicit browser origins; `*` opts back into reflecting any origin. */

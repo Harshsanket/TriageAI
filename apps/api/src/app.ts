@@ -4,8 +4,20 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { ZodError } from 'zod';
 
-import { bootKernel, buildKernelConfig, loadConfigFile, PostgresDatabase } from '@triageai/kernel';
-import type { Kernel, KernelLogger, RouteRequest, TriageModule } from '@triageai/kernel';
+import {
+  applyConfigOverlay,
+  bootKernel,
+  buildKernelConfig,
+  loadConfigFile,
+  PostgresDatabase,
+} from '@triageai/kernel';
+import type {
+  Capabilities,
+  Kernel,
+  KernelLogger,
+  RouteRequest,
+  TriageModule,
+} from '@triageai/kernel';
 import { aiPipelineModule } from '@triageai/module-ai-pipeline';
 import { chatModule } from '@triageai/module-chat';
 import { docAssistantModule } from '@triageai/module-doc-assistant';
@@ -17,6 +29,13 @@ import { supportModule } from '@triageai/module-support';
 
 import { registerHealthRoutes } from './routes/health.js';
 import { registerHostRoutes } from './routes/index.js';
+import {
+  finishSetupBoot,
+  prepareSetup,
+  processPendingImports,
+  recoverFailedApply,
+  type SetupRuntime,
+} from './setup/boot.js';
 import { createCapabilities } from './services/capabilities.js';
 import { DbModelRegistry } from './services/modelRegistry.js';
 import { AppError } from './platform/errors.js';
@@ -45,9 +64,15 @@ export interface BuildAppOptions {
   /** Test seam: explicit config file path instead of the cwd probe. */
   configPath?: string;
   /** Test seam: inject capability adapters instead of calling ai-service. */
-  capabilities?: import('@triageai/kernel').Capabilities;
+  capabilities?: Capabilities;
   /** Test seam: override the boot-time auth mode. */
   authMode?: 'disabled' | 'required';
+  /** Test seam: a different database (e.g. a fresh one for first-run setup). */
+  databaseUrl?: string;
+  /** Test seam: force the first-run setup gate on/off (default: TRIAGEAI_SETUP). */
+  setup?: boolean;
+  /** Exit after a wizard apply so a supervisor restarts with the new config. */
+  restartOnApply?: boolean;
   /** Test seam: override rate limiting (max 0 disables it). */
   rateLimit?: { max?: number; timeWindow?: string };
 }
@@ -55,6 +80,7 @@ export interface BuildAppOptions {
 declare module 'fastify' {
   interface FastifyInstance {
     kernel?: Kernel;
+    setupRuntime?: SetupRuntime;
   }
   interface FastifyRequest {
     rawBody?: string;
@@ -138,13 +164,54 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     const kernelLogger: KernelLogger = options.quiet
       ? { info: () => undefined, warn: () => undefined, error: () => undefined }
       : (logger as unknown as KernelLogger);
-    const database = new PostgresDatabase(config.databaseUrl);
-    const kernelConfig = buildKernelConfig(loadConfigFile(options.configPath), process.env);
-    const authMode = options.authMode ?? config.authMode;
+    const database = new PostgresDatabase(options.databaseUrl ?? config.databaseUrl);
+    // Setup state, saved overlay, stored secrets and auth mode are resolved
+    // before the kernel boots: they decide what it boots (ADR-0024).
+    const setup = await prepareSetup({
+      database,
+      enabled: options.setup ?? config.setupEnabled,
+      secretKey: config.secretKey,
+      authModeOverride: options.authMode,
+      authModeEnv: config.authModeEnv,
+      jwtSecretEnv: config.authJwtSecretEnv,
+      devJwtSecret: config.authJwtSecret,
+      nodeEnv: config.nodeEnv,
+      logger: kernelLogger,
+    });
+    const { runtime } = setup;
+    const fileConfig = loadConfigFile(options.configPath);
+    const authMode = runtime.authMode;
+    if (authMode === 'disabled' && config.nodeEnv === 'production') {
+      kernelLogger.warn(
+        'auth is disabled in production mode: every request is an admin. Only run this way on a loopback-bound port (see SETUP.md).',
+      );
+    }
     const authService = new AuthService(database, {
       accessTtlSeconds: config.authAccessTtlSeconds,
       refreshTtlSeconds: config.authRefreshTtlSeconds,
-      jwtSecret: config.authJwtSecret,
+      jwtSecret: setup.jwtSecret,
+    });
+
+    // Until setup is complete only health and /api/v1/setup/* answer.
+    app.addHook('onRequest', async (request) => {
+      if (runtime.state === 'complete' || !runtime.enabled) return;
+      const path = request.url.split('?')[0] ?? request.url;
+      if (
+        request.method === 'OPTIONS' ||
+        path === '/healthz' ||
+        path === '/readyz' ||
+        path.startsWith('/api/v1/setup/')
+      ) {
+        return;
+      }
+      throw new AppError(
+        'setup.REQUIRED',
+        runtime.state === 'applied'
+          ? 'setup was applied; restart the API to boot the new configuration'
+          : 'finish first-run setup at /config',
+        { state: runtime.state },
+        409,
+      );
     });
 
     const limitMax = options.rateLimit?.max ?? config.rateLimitMax;
@@ -160,29 +227,48 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       'preHandler',
       createAuthGuard({
         mode: authMode,
-        jwtSecret: config.authJwtSecret,
+        jwtSecret: setup.jwtSecret,
         metricsToken: config.metricsToken,
+        setup: {
+          isPending: () => runtime.enabled && runtime.state === 'pending',
+          verify: (header) => runtime.token.verify(header),
+        },
       }),
     );
     const modelRegistry = new DbModelRegistry(database);
-    // Never mutate a caller-provided capability bag: tests reuse one object
-    // across app instances, and a leaked registry would point at a closed DB.
-    const capabilities = {
-      ...(options.capabilities ??
-        createCapabilities(kernelConfig, config.aiServiceUrl, database, modelRegistry)),
-    };
-    capabilities.modelRegistry ??= modelRegistry;
+
+    let kernel: Kernel;
+    let kernelConfig: ReturnType<typeof buildKernelConfig>;
+    let capabilities: Capabilities;
+    try {
+      const effectiveFile = setup.overlay
+        ? applyConfigOverlay(fileConfig, setup.overlay.overlay)
+        : fileConfig;
+      kernelConfig = buildKernelConfig(effectiveFile, setup.env as NodeJS.ProcessEnv);
+      // Never mutate a caller-provided capability bag: tests reuse one object
+      // across app instances, and a leaked registry would point at a closed DB.
+      capabilities = {
+        ...(options.capabilities ??
+          createCapabilities(kernelConfig, config.aiServiceUrl, database, modelRegistry)),
+      };
+      capabilities.modelRegistry ??= modelRegistry;
+      kernel = await bootKernel({
+        config: kernelConfig,
+        database,
+        logger: kernelLogger,
+        capabilities,
+        modules: MODULES,
+        env: setup.env,
+      });
+    } catch (err) {
+      if (runtime.state === 'applied') await recoverFailedApply(runtime, err, kernelLogger);
+      await database.close();
+      throw err;
+    }
     const activeRegistry =
       capabilities.modelRegistry instanceof DbModelRegistry
         ? capabilities.modelRegistry
         : modelRegistry;
-    const kernel = await bootKernel({
-      config: kernelConfig,
-      database,
-      logger: kernelLogger,
-      capabilities,
-      modules: MODULES,
-    });
     app.decorate('kernel', kernel);
 
     let retentionTimer: NodeJS.Timeout | undefined;
@@ -200,7 +286,30 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       retentionTimer.unref();
     }
 
-    registerHostRoutes(app, kernel, { modelRegistry: activeRegistry });
+    await finishSetupBoot(runtime, setup.fresh, kernelLogger, (line) =>
+      // The token must reach the operator even when logs are JSON or quiet.
+      options.quiet ? undefined : process.stdout.write(`${line}\n`),
+    );
+    app.decorate('setupRuntime', runtime);
+
+    registerHostRoutes(app, kernel, {
+      modelRegistry: activeRegistry,
+      setup: {
+        runtime,
+        file: fileConfig,
+        modules: MODULES,
+        env: setup.env,
+        authService,
+        restartOnApply: options.restartOnApply ?? config.restartOnApply,
+      },
+    });
+
+    // Knowledge queued by the wizard is imported once the KB module runs.
+    app.addHook('onReady', async () => {
+      void processPendingImports(runtime, kernel, kernelLogger).catch((err: unknown) =>
+        kernelLogger.error({ err: (err as Error).message }, 'setup imports failed'),
+      );
+    });
 
     app.addHook('onClose', async () => {
       if (retentionTimer) clearInterval(retentionTimer);

@@ -1,6 +1,14 @@
 export * from './types.js';
 export { AppError, bootValidationError, configInvalid } from './errors.js';
-export { loadConfigFile, buildKernelConfig, parseConfigFile, PROFILE_PRESETS } from './config.js';
+export {
+  loadConfigFile,
+  buildKernelConfig,
+  parseConfigFile,
+  parseConfigOverlay,
+  applyConfigOverlay,
+  PROFILE_PRESETS,
+} from './config.js';
+export type { ConfigFile, ConfigOverlay, RawConfigFile } from './config.js';
 export { PostgresDatabase, MigrationRunner, checksumSql, MIGRATIONS_TABLE_SQL } from './storage.js';
 export { bootKernel, resolveModules, DEFAULT_RETENTION } from './kernel.js';
 export type { Kernel } from './kernel.js';

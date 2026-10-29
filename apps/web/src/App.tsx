@@ -1,6 +1,8 @@
 import { Suspense } from 'react';
 import type { ReactElement } from 'react';
 
+import ConfigPage, { ConfigView } from './config/ConfigPage';
+import { useSetupStatus } from './config/setupApi';
 import { navEntries, useSystemManifest } from './host/manifest';
 import { navigate, useRoute } from './host/router';
 import { moduleRegistry } from './modules/registry';
@@ -15,6 +17,7 @@ const hostPages: Array<{ label: string; path: string; render: (route: string) =>
   { label: 'Runs', path: '/runs', render: (route) => renderRuns(route) },
   { label: 'Feedback', path: '/feedback', render: () => <FeedbackPage /> },
   { label: 'System', path: '/system', render: () => <SystemPage /> },
+  { label: 'Config', path: '/config', render: () => <ConfigPage /> },
 ];
 
 function renderRuns(route: string): ReactElement {
@@ -25,6 +28,16 @@ function renderRuns(route: string): ReactElement {
 export function App() {
   const manifestState = useSystemManifest();
   const route = useRoute();
+  const setup = useSetupStatus();
+
+  // Until first-run setup is applied the API answers nothing else (ADR-0024).
+  if (setup.phase === 'ready' && setup.status.state !== 'complete') {
+    return (
+      <main>
+        <ConfigView status={setup.status} refresh={setup.refresh} />
+      </main>
+    );
+  }
 
   if (manifestState.phase === 'unauthenticated') {
     return <LoginPage />;

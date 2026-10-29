@@ -26,6 +26,21 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/v1/auth/refresh', roles: 'public' },
   { method: 'POST', pattern: '/api/v1/auth/logout', roles: 'public' },
   { method: 'POST', pattern: '/api/v1/integrations/:provider/webhook', roles: 'public' },
+  // Setup: status is public (the web app decides whether to show /config);
+  // everything else is admin, or the setup token while setup is pending.
+  { method: 'GET', pattern: '/api/v1/setup/status', roles: 'public' },
+  { method: 'GET', pattern: '/api/v1/setup/hardware', roles: ADMIN },
+  { method: 'GET', pattern: '/api/v1/setup/models', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/setup/models/pull', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/setup/llm/test', roles: ADMIN },
+  { method: 'GET', pattern: '/api/v1/setup/draft', roles: ADMIN },
+  { method: 'PUT', pattern: '/api/v1/setup/draft', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/setup/plan', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/setup/apply', roles: ADMIN },
+  { method: 'GET', pattern: '/api/v1/setup/config/effective', roles: ADMIN },
+  { method: 'GET', pattern: '/api/v1/setup/secrets', roles: ADMIN },
+  { method: 'PUT', pattern: '/api/v1/setup/secrets/:name', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/setup/imports/retry', roles: ADMIN },
 
   { method: 'GET', pattern: '/api/v1/auth/me', roles: ANY },
   { method: 'GET', pattern: '/api/v1/system/manifest', roles: ANY },

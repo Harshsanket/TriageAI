@@ -10,6 +10,7 @@ import { explicitRuleFor } from '../src/platform/auth/rbac.js';
 import { registerHealthRoutes } from '../src/routes/health.js';
 import { registerHostRoutes } from '../src/routes/index.js';
 import type { DbModelRegistry } from '../src/services/modelRegistry.js';
+import type { SetupRouteDeps } from '../src/setup/routes.js';
 
 /** Callable, infinitely deep no-op: stands in for every context service. */
 function inert(): unknown {
@@ -62,7 +63,10 @@ describe('RBAC coverage', () => {
 
     await registerHealthRoutes(fakeApp);
     registerAuthRoutes(fakeApp, inert() as AuthService, { mode: 'required' });
-    registerHostRoutes(fakeApp, fakeKernel, { modelRegistry: inert() as DbModelRegistry });
+    registerHostRoutes(fakeApp, fakeKernel, {
+      modelRegistry: inert() as DbModelRegistry,
+      setup: inert() as SetupRouteDeps,
+    });
 
     expect(moduleRoutes.length).toBeGreaterThan(30);
     const unruled = mounted

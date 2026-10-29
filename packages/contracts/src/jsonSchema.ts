@@ -8,6 +8,7 @@ import * as health from './health.js';
 import * as integrations from './integrations.js';
 import * as kb from './kb.js';
 import * as dto from './manifest.js';
+import * as setup from './setup.js';
 import * as support from './support.js';
 
 export function exportJsonSchemas(): Record<string, unknown> {
@@ -42,6 +43,11 @@ export function exportJsonSchemas(): Record<string, unknown> {
     ChatConversationDto: zodToJsonSchema(chat.ChatConversationDtoSchema),
     ChatSendMessageRequest: zodToJsonSchema(chat.ChatSendMessageRequestSchema),
     ChatSendMessageResponse: zodToJsonSchema(chat.ChatSendMessageResponseSchema),
+    SetupStatus: zodToJsonSchema(setup.SetupStatusSchema),
+    SetupAnswers: zodToJsonSchema(setup.SetupAnswersSchema),
+    SetupPlan: zodToJsonSchema(setup.SetupPlanSchema),
+    HardwareProfile: zodToJsonSchema(setup.HardwareProfileSchema),
+    CatalogModel: zodToJsonSchema(setup.CatalogModelSchema),
     AutoReplyPolicyDto: zodToJsonSchema(support.AutoReplyPolicyDtoSchema),
     AutoReplyPolicyUpdate: zodToJsonSchema(support.AutoReplyPolicyUpdateSchema),
     TicketTriagePolicyDto: zodToJsonSchema(support.TicketTriagePolicyDtoSchema),

@@ -1,0 +1,83 @@
+{
+  "$comment": "Recommended models per hardware tier for the /config wizard (ADR-0025). Model names live here, never in code (ADR-0008). Sizes are approximate download sizes of the default quantisation; edit freely.",
+  "generation": {
+    "small": [
+      {
+        "runtimeModel": "qwen2.5:1.5b",
+        "sizeBytes": 986000000,
+        "contextLength": 32768,
+        "license": "apache-2.0",
+        "note": "Default. Grounded answers verified in Phase 4 evals."
+      },
+      {
+        "runtimeModel": "llama3.2:1b",
+        "sizeBytes": 1300000000,
+        "contextLength": 131072,
+        "license": "llama3.2",
+        "note": "Smallest option; weaker citation formatting."
+      }
+    ],
+    "medium": [
+      {
+        "runtimeModel": "qwen2.5:3b",
+        "sizeBytes": 1900000000,
+        "contextLength": 32768,
+        "license": "qwen-research",
+        "note": "Better instruction following than 1.5B at modest cost."
+      },
+      {
+        "runtimeModel": "llama3.2:3b",
+        "sizeBytes": 2000000000,
+        "contextLength": 131072,
+        "license": "llama3.2",
+        "note": "Long context."
+      },
+      {
+        "runtimeModel": "qwen2.5:1.5b",
+        "sizeBytes": 986000000,
+        "contextLength": 32768,
+        "license": "apache-2.0",
+        "note": "Fastest; the evaluated default."
+      }
+    ],
+    "large": [
+      {
+        "runtimeModel": "qwen2.5:7b",
+        "sizeBytes": 4700000000,
+        "contextLength": 32768,
+        "license": "apache-2.0",
+        "note": "Strong grounded answers; needs ~6 GB free."
+      },
+      {
+        "runtimeModel": "llama3.1:8b",
+        "sizeBytes": 4900000000,
+        "contextLength": 131072,
+        "license": "llama3.1",
+        "note": "Long context."
+      },
+      {
+        "runtimeModel": "qwen2.5:3b",
+        "sizeBytes": 1900000000,
+        "contextLength": 32768,
+        "license": "qwen-research",
+        "note": "Lower latency."
+      }
+    ]
+  },
+  "embedding": [
+    {
+      "runtimeModel": "all-MiniLM-L6-v2",
+      "sizeBytes": 91000000,
+      "contextLength": 256,
+      "license": "apache-2.0",
+      "note": "Default; what the classifier evals were run with."
+    },
+    {
+      "runtimeModel": "BAAI/bge-small-en-v1.5",
+      "sizeBytes": 134000000,
+      "contextLength": 512,
+      "license": "mit",
+      "note": "Pending decision P1: benchmark before switching."
+    }
+  ]
+}

@@ -235,10 +235,48 @@ CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions (user_id);
 CREATE INDEX IF NOT EXISTS auth_sessions_family ON auth_sessions (family_id);
 `;
 
+/**
+ * Phase 11 setup tables (host-owned semantics, kernel-owned schema like auth):
+ * versioned config overlays written by the `/config` wizard, encrypted secrets,
+ * and knowledge imports queued until the KB module is running.
+ */
+const SETUP_TABLES = `
+CREATE TABLE IF NOT EXISTS config_overlays (
+  version SERIAL PRIMARY KEY,
+  overlay JSONB NOT NULL,
+  note TEXT,
+  created_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS secrets (
+  name TEXT PRIMARY KEY,
+  ciphertext TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS setup_imports (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  source TEXT NOT NULL,
+  auto_approve BOOLEAN NOT NULL DEFAULT false,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','imported','failed')),
+  error TEXT,
+  document_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  processed_at TIMESTAMPTZ
+);
+`;
+
 export const CORE_MIGRATIONS: Migration[] = [
   { id: '0001-core-tables', sql: CORE_TABLES },
   { id: '0002-queue-tables', sql: QUEUE_TABLES },
   { id: '0003-vector-store', sql: VECTOR_TABLES },
   { id: '0004-feedback-columns', sql: FEEDBACK_COLUMNS },
   { id: '0005-auth-tables', sql: AUTH_TABLES },
+  { id: '0006-setup-tables', sql: SETUP_TABLES },
 ];

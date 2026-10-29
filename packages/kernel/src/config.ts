@@ -67,6 +67,8 @@ const getSchema = z.object({
 });
 
 export type RawConfigFile = z.input<typeof getSchema>;
+/** A config file after validation and defaults. */
+export type ConfigFile = z.infer<typeof getSchema>;
 
 const defaults = getSchema.parse({});
 
@@ -115,6 +117,62 @@ export function loadConfigFile(
     }
     throw err;
   }
+}
+
+const overlaySchema = z
+  .object({
+    profile: profileNameSchema.optional(),
+    queue: queueAdapterSchema.partial().optional(),
+    modules: z.record(z.string(), moduleConfigSchema.partial()).optional(),
+    capabilities: z.record(z.string(), capabilityPatchSchema()).optional(),
+    retention: retentionSchema.partial().optional(),
+  })
+  .strict();
+
+function capabilityPatchSchema() {
+  return z.object({ adapter: z.string().min(1).optional() }).passthrough();
+}
+
+export type ConfigOverlay = z.infer<typeof overlaySchema>;
+
+/** Validate an overlay on its own (wizard input) with the file's error style. */
+export function parseConfigOverlay(raw: unknown): ConfigOverlay {
+  const result = overlaySchema.safeParse(raw ?? {});
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((i) => `  overlay.${i.path.join('.')}: ${i.message}`)
+      .join('\n');
+    throw configInvalid(`Invalid config overlay:\n${issues}`, result.error.issues);
+  }
+  return result.data;
+}
+
+/**
+ * Layer a saved-settings overlay (the `/config` wizard) on top of the config
+ * file: modules and capabilities merge per key, so the overlay only names
+ * what it changes. The result is re-validated exactly like a file, and env
+ * overrides still apply afterwards in `buildKernelConfig` (module-contract §5).
+ */
+export function applyConfigOverlay(
+  file: z.infer<typeof getSchema>,
+  rawOverlay: unknown,
+): z.infer<typeof getSchema> {
+  const overlay = parseConfigOverlay(rawOverlay);
+  const modules: Record<string, unknown> = { ...file.modules };
+  for (const [id, patch] of Object.entries(overlay.modules ?? {})) {
+    modules[id] = { ...(file.modules[id] ?? { enabled: false }), ...patch };
+  }
+  const capabilities: Record<string, unknown> = { ...file.capabilities };
+  for (const [id, patch] of Object.entries(overlay.capabilities ?? {})) {
+    capabilities[id] = { ...file.capabilities[id], ...patch };
+  }
+  return parseConfigFile({
+    profile: overlay.profile ?? file.profile,
+    queue: { ...file.queue, ...overlay.queue },
+    modules,
+    capabilities,
+    retention: { ...file.retention, ...overlay.retention },
+  });
 }
 
 /** Merge presets + file + env overrides into the kernel config. */

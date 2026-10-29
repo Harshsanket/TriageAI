@@ -68,6 +68,7 @@ function createKernelContext(
   queue: Queue,
   logger: KernelLogger,
   retentionTasks: RetentionTask[],
+  env: Record<string, string | undefined>,
 ): KernelContext {
   const queueCapability: QueueCapability = {
     start(def: WorkflowDef) {
@@ -111,7 +112,7 @@ function createKernelContext(
     events,
     queue: queueCapability,
     logger,
-    env: process.env,
+    env,
     registerRoute(def) {
       if (!ROUTE_URL_SCHEME.test(def.url)) {
         throw new Error(`module ${moduleId} registered invalid route url ${def.url}`);
@@ -259,6 +260,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       queue,
       logger,
       retentionTasks,
+      options.env ?? process.env,
     );
     try {
       module.register(context);

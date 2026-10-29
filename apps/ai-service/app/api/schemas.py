@@ -3,6 +3,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class HardwareResponse(BaseModel):
+    """GPU backend visible to torch. Mirrors HardwareProfile.gpu in packages/contracts."""
+
+    kind: Literal["cuda", "mps", "none"]
+    name: str | None = None
+    memoryBytes: int | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     service: Literal["ai-service"] = "ai-service"
