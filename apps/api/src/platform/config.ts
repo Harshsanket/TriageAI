@@ -19,6 +19,7 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(30 * 24 * 60 * 60),
+  CORS_ORIGINS: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
   RATE_LIMIT_MAX: z.coerce.number().int().nonnegative().default(300),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
   RATE_LIMIT_DISABLED: z
@@ -51,6 +52,10 @@ export const config = {
   authJwtSecret: env.AUTH_JWT_SECRET ?? 'development-only-insecure-secret-change-me',
   authAccessTtlSeconds: env.AUTH_ACCESS_TTL_SECONDS,
   authRefreshTtlSeconds: env.AUTH_REFRESH_TTL_SECONDS,
+  /** Explicit browser origins; `*` opts back into reflecting any origin. */
+  corsOrigins: env.CORS_ORIGINS.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   rateLimitMax: env.RATE_LIMIT_DISABLED ? 0 : env.RATE_LIMIT_MAX,
   rateLimitWindow: env.RATE_LIMIT_WINDOW,
 } as const;

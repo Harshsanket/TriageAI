@@ -137,6 +137,14 @@ function createKernelContext(
 export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   const { config, database, logger } = options;
 
+  if (config.queue.adapter === 'bullmq') {
+    // Accepted by the schema for forward compatibility, but no adapter exists
+    // yet; failing here beats silently running pg-queue (ADR-0003).
+    throw bootValidationError('Boot validation failed', [
+      'queue adapter "bullmq" is not implemented yet; use "pg-queue" or "inline"',
+    ]);
+  }
+
   await database.transaction(async (tx) => {
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext('kernel:migrations-table'))`);
     await tx.query(MIGRATIONS_TABLE_SQL);

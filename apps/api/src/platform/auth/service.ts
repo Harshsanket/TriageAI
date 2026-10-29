@@ -71,6 +71,12 @@ const toUser = (row: UserRow): AuthUser => ({
   createdAt: new Date(row.created_at).toISOString(),
 });
 
+// Verified against when the email is unknown so a miss costs the same argon2
+// work as a wrong password (no user enumeration by response time).
+let dummyHash: Promise<string> | undefined;
+const timingDummyHash = (): Promise<string> =>
+  (dummyHash ??= hashPassword('timing-equaliser-not-a-real-password'));
+
 const isoIn = (seconds: number): string => new Date(Date.now() + seconds * 1000).toISOString();
 
 export class AuthService {
@@ -131,7 +137,9 @@ export class AuthService {
       [email],
     )) as unknown as UserRow[];
     const user = rows[0];
-    const ok = user ? await verifyPassword(user.password_hash, password) : false;
+    const ok = user
+      ? await verifyPassword(user.password_hash, password)
+      : (await verifyPassword(await timingDummyHash(), password)) && false;
     if (!user || !ok) {
       await writeAudit(this.database, {
         actor: email,

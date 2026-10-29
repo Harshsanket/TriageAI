@@ -68,7 +68,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       : { loggerInstance: logger as FastifyBaseLogger, genReqId: () => crypto.randomUUID() },
   );
 
-  await app.register(cors, { origin: true });
+  // Reflecting every origin would let any page the operator visits drive the
+  // admin API (uninstall drops tables) whenever AUTH_MODE=disabled.
+  await app.register(cors, {
+    origin: config.corsOrigins.includes('*') ? true : config.corsOrigins,
+  });
 
   // Capture the raw JSON for webhook HMAC verification before parsing.
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, raw, done) => {
@@ -77,7 +81,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     try {
       done(null, rawBody.length > 0 ? JSON.parse(rawBody) : null);
     } catch (err) {
-      done(err as Error, undefined);
+      // A malformed body is the client's fault, not a server fault.
+      done(Object.assign(err as Error, { statusCode: 400, code: 'INVALID_JSON' }), undefined);
     }
   });
 
@@ -99,6 +104,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         status: 400,
         detail: 'Request validation failed',
         issues: error.issues,
+      });
+      return;
+    }
+    // Framework/plugin client errors (rate limit 429, bad JSON 400, body too
+    // large 413) carry their own status; only genuine faults become 500s.
+    const statusCode = (error as { statusCode?: unknown }).statusCode;
+    if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+      reply.status(statusCode).send({
+        type: `https://triageai.dev/errors/HTTP_${statusCode}`,
+        title: (error as { code?: string }).code ?? `HTTP_${statusCode}`,
+        status: statusCode,
+        detail: (error as Error).message,
       });
       return;
     }

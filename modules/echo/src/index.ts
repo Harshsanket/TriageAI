@@ -121,7 +121,9 @@ export function createEchoModule(): TriageModule {
         url: '/api/v1/echo/runs',
         handler: async (request) => {
           const rawLimit = Number(request.query.limit ?? 10);
-          const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(1, rawLimit), 100) : 10;
+          const limit = Number.isFinite(rawLimit)
+            ? Math.min(Math.max(1, Math.trunc(rawLimit)), 100)
+            : 10;
           interface RunRow {
             [key: string]: unknown;
             id: string;
@@ -159,7 +161,8 @@ export function createEchoModule(): TriageModule {
                     s.started_at, s.finished_at
              FROM stage_runs s JOIN workflow_runs r ON r.id = s.run_id
              WHERE r.workflow_id = 'echo.run'
-             ORDER BY s.created_at DESC LIMIT ${limit * 10}`,
+             ORDER BY s.created_at DESC LIMIT $1`,
+            [limit * 10],
           );
           const byRun = new Map<string, StageRow[]>();
           for (const row of stageRows)

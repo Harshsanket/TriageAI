@@ -92,7 +92,8 @@ describeIfDb('feedback review + datasets (phase 6)', () => {
     expect(approved.status).toBe('approved');
     expect(approved.provenance.review).toMatchObject({
       decision: 'approved',
-      actor: 'reviewer-1',
+      // The authenticated principal wins over a body-supplied actor (ADR-0020).
+      actor: 'local@triageai.dev',
       method: 'better_answer',
     });
 
@@ -107,7 +108,7 @@ describeIfDb('feedback review + datasets (phase 6)', () => {
       `SELECT action, actor FROM audit_events WHERE subject = $1`,
       [first.id],
     );
-    expect(audit).toEqual([{ action: 'feedback.reviewed', actor: 'reviewer-1' }]);
+    expect(audit).toEqual([{ action: 'feedback.reviewed', actor: 'local@triageai.dev' }]);
   });
 
   it('builds a deterministic dataset from approved examples only', async () => {

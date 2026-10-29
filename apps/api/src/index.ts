@@ -3,6 +3,12 @@ import { config } from './platform/config.js';
 import { logger } from './platform/logger.js';
 
 async function main(): Promise<void> {
+  if (config.authMode === 'disabled' && config.nodeEnv === 'production') {
+    logger.warn(
+      'AUTH_MODE=disabled with NODE_ENV=production: every request is an admin. ' +
+        'Only run this way on a loopback-bound port (see SETUP.md).',
+    );
+  }
   const app = await buildApp();
   const kernel = app.kernel;
 

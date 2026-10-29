@@ -29,6 +29,8 @@ modules/         # Replaceable first-party modules
 perf/k6/          # ingest/drain + Phase-8 burst, fairness, hot-swap suites
 ```
 
+Step-by-step setup (every profile, env var, and troubleshooting tip): [SETUP.md](./SETUP.md). Feature inventory: [FEATURES.md](./FEATURES.md).
+
 ## Prerequisites
 
 - Docker with Compose v2 — to run the application and its services.
@@ -170,8 +172,7 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 | `pnpm eval:generation`     | Run the grounding/validation eval gates              |
 | `pnpm eval:merge`          | Merge suites into the registry report format         |
 | `pnpm eval:fixtures`       | Export approved corrections as blessed fixtures      |
-| `pnpm db:generate`         | Generate Drizzle migrations                          |
-| `pnpm db:migrate`          | Apply database migrations                            |
+| `pnpm seed:demo`           | Seed demo KB docs + a ticket (after `readyz`)        |
 
 ## About
 
@@ -182,16 +183,16 @@ Developed and maintained by **Harsh Sanket**.
 
 ## Tech Stack
 
-| Category          | Technologies                                              |
-| ----------------- | --------------------------------------------------------- |
-| Languages         | TypeScript, Python                                        |
-| Frontend          | React 19, Vite                                            |
-| Backend           | Node.js, Fastify, FastAPI, Zod                            |
-| Database          | PostgreSQL, pgvector, thin SQL adapter (Drizzle optional) |
-| AI & ML           | all-MiniLM-L6-v2, Qwen2.5-1.5B via Ollama, LM Studio      |
-| Testing           | Vitest, pytest, Playwright, k6                            |
-| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana        |
-| Development Tools | pnpm, uv, ESLint, Prettier                                |
+| Category          | Technologies                                                        |
+| ----------------- | ------------------------------------------------------------------- |
+| Languages         | TypeScript, Python                                                  |
+| Frontend          | React 19, Vite                                                      |
+| Backend           | Node.js, Fastify, FastAPI, Zod                                      |
+| Database          | PostgreSQL, pgvector, thin SQL adapter (migrations applied on boot) |
+| AI & ML           | all-MiniLM-L6-v2, Qwen2.5-1.5B via Ollama, LM Studio                |
+| Testing           | Vitest, pytest, Playwright, k6                                      |
+| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana                  |
+| Development Tools | pnpm, uv, ESLint, Prettier                                          |
 
 ## License
 

@@ -15,7 +15,9 @@ async function postJson(app: FastifyInstance, url: string, body: Record<string, 
   return { status: res.statusCode, body: res.json() as unknown };
 }
 
-describe('api host + kernel', () => {
+const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
+
+describeIfDb('api host + kernel', () => {
   let app: FastifyInstance & { kernel?: import('@triageai/kernel').Kernel };
 
   beforeEach(async () => {
