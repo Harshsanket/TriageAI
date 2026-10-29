@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createAuthGuard } from '../src/platform/auth/index.js';
 import { hashPassword, verifyPassword } from '../src/platform/auth/password.js';
 import { isAllowed, ruleFor } from '../src/platform/auth/rbac.js';
 import { signAccessToken, verifyAccessToken } from '../src/platform/auth/tokens.js';
@@ -57,9 +58,14 @@ describe('RBAC matrix', () => {
   it('keeps operational endpoints public', () => {
     expect(isAllowed('customer', 'GET', '/healthz')).toBe(true);
     expect(isAllowed('customer', 'GET', '/readyz')).toBe(true);
-    expect(isAllowed('customer', 'GET', '/metrics')).toBe(true);
     expect(isAllowed('customer', 'POST', '/api/v1/auth/login')).toBe(true);
     expect(isAllowed('customer', 'POST', '/api/v1/integrations/github/webhook')).toBe(true);
+  });
+
+  it('keeps /metrics admin-only (scrapers use METRICS_TOKEN)', () => {
+    expect(isAllowed('customer', 'GET', '/metrics')).toBe(false);
+    expect(isAllowed('agent', 'GET', '/metrics')).toBe(false);
+    expect(isAllowed('admin', 'GET', '/metrics')).toBe(true);
   });
 
   it('lets customers create tickets but not read the agent queue or admin surface', () => {
@@ -109,5 +115,28 @@ describe('secret redaction', () => {
       },
       list: [{ password: '[redacted]' }, { name: 'visible' }],
     });
+  });
+});
+
+describe('metrics scrape token', () => {
+  const guard = createAuthGuard({
+    mode: 'required',
+    jwtSecret: 'unit-test-secret-at-least-32-characters-long',
+    metricsToken: 'scrape-token-0123456789',
+  });
+  const request = (url: string, token: string) =>
+    ({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } }) as never;
+  const reply = { header: () => reply } as never;
+
+  it('admits the scrape token on GET /metrics only', async () => {
+    await expect(guard(request('/metrics', 'scrape-token-0123456789'), reply)).resolves.toBe(
+      undefined,
+    );
+    await expect(
+      guard(request('/api/v1/system/config', 'scrape-token-0123456789'), reply),
+    ).rejects.toMatchObject({ code: 'auth.UNAUTHENTICATED' });
+    await expect(guard(request('/metrics', 'wrong-token-0123456789'), reply)).rejects.toMatchObject(
+      { code: 'auth.UNAUTHENTICATED' },
+    );
   });
 });

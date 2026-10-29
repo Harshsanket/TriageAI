@@ -7,6 +7,7 @@
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
+import { AppError } from '@triageai/kernel';
 import type { TriageModule } from '@triageai/kernel';
 
 const configSchema = z
@@ -40,6 +41,14 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS chat_messages_conversation ON chat_messages (conversation_id, created_at);
     `,
     dropSql: 'DROP TABLE IF EXISTS chat_messages; DROP TABLE IF EXISTS chat_conversations;',
+  },
+  {
+    id: '0002-chat-owner',
+    sql: `
+      ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS owner_id TEXT;
+      CREATE INDEX IF NOT EXISTS chat_conversations_owner
+        ON chat_conversations (owner_id, updated_at DESC);
+    `,
   },
 ];
 
@@ -262,16 +271,26 @@ export const chatModule: TriageModule = {
       ],
     });
 
+    /** Owner-scoped callers get 404 for conversations that are not theirs. */
+    async function assertVisible(id: string, ownerScope: string | undefined): Promise<void> {
+      if (ownerScope === undefined) return;
+      const rows = await ctx.database.query(
+        `SELECT 1 FROM chat_conversations WHERE id = $1 AND owner_id = $2`,
+        [id, ownerScope],
+      );
+      if (rows.length === 0) throw new AppError('NOT_FOUND', `conversation ${id} not found`);
+    }
+
     ctx.registerRoute({
       method: 'POST',
       url: '/api/v1/chat/conversations',
       handler: async (request) => {
         const body = z.object({ title: z.string().max(200).optional() }).parse(request.body ?? {});
         const id = ulid();
-        await ctx.database.query(`INSERT INTO chat_conversations (id, title) VALUES ($1, $2)`, [
-          id,
-          body.title ?? 'Conversation',
-        ]);
+        await ctx.database.query(
+          `INSERT INTO chat_conversations (id, title, owner_id) VALUES ($1, $2, $3)`,
+          [id, body.title ?? 'Conversation', request.actorId ?? null],
+        );
         return { conversationId: id };
       },
     });
@@ -279,9 +298,12 @@ export const chatModule: TriageModule = {
     ctx.registerRoute({
       method: 'GET',
       url: '/api/v1/chat/conversations',
-      handler: async () => {
+      handler: async (request) => {
         const rows = await ctx.database.query<Record<string, unknown>>(
-          `SELECT id, title, created_at, updated_at FROM chat_conversations ORDER BY updated_at DESC LIMIT 50`,
+          `SELECT id, title, created_at, updated_at FROM chat_conversations
+           WHERE ($1::text IS NULL OR owner_id = $1)
+           ORDER BY updated_at DESC LIMIT 50`,
+          [request.ownerScope ?? null],
         );
         return rows.map((row) => ({
           id: row.id,
@@ -296,6 +318,7 @@ export const chatModule: TriageModule = {
       method: 'GET',
       url: '/api/v1/chat/conversations/:id',
       handler: async (request) => {
+        await assertVisible(request.params.id ?? '', request.ownerScope);
         const rows = await ctx.database.query<MessageRow>(
           `SELECT id, conversation_id, role, content, citations, created_at
            FROM chat_messages WHERE conversation_id = $1 ORDER BY created_at`,
@@ -317,12 +340,14 @@ export const chatModule: TriageModule = {
           .parse(request.body);
 
         let conversationId = body.conversationId;
-        if (!conversationId) {
+        if (conversationId) {
+          await assertVisible(conversationId, request.ownerScope);
+        } else {
           conversationId = ulid();
-          await ctx.database.query(`INSERT INTO chat_conversations (id, title) VALUES ($1, $2)`, [
-            conversationId,
-            body.text.slice(0, 80),
-          ]);
+          await ctx.database.query(
+            `INSERT INTO chat_conversations (id, title, owner_id) VALUES ($1, $2, $3)`,
+            [conversationId, body.text.slice(0, 80), request.actorId ?? null],
+          );
         }
         const messageId = ulid();
         await ctx.database.query(

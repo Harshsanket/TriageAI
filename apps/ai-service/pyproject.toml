@@ -1,7 +1,7 @@
 [project]
 name = "triageai-ai-service"
 version = "0.0.1"
-description = "TriageAI local ML/AI inference service (classification, retrieval support, generation adapters)"
+description = "TriageAI local ML/AI inference service (embeddings and classification)"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

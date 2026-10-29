@@ -152,7 +152,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       });
     }
     registerAuthRoutes(app, authService, { mode: authMode });
-    app.addHook('preHandler', createAuthGuard({ mode: authMode, jwtSecret: config.authJwtSecret }));
+    app.addHook(
+      'preHandler',
+      createAuthGuard({
+        mode: authMode,
+        jwtSecret: config.authJwtSecret,
+        metricsToken: config.metricsToken,
+      }),
+    );
     const modelRegistry = new DbModelRegistry(database);
     // Never mutate a caller-provided capability bag: tests reuse one object
     // across app instances, and a leaked registry would point at a closed DB.
@@ -224,6 +231,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             ),
             body: request.body,
             actor: request.principal?.email,
+            actorId: request.principal?.userId,
+            // Customers only ever see their own records (ADR-0020 amendment).
+            ownerScope:
+              request.principal?.role === 'customer' ? request.principal.userId : undefined,
             headers: Object.fromEntries(
               Object.entries(request.headers).map(([key, value]) => [
                 key,

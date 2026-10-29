@@ -209,6 +209,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate compose file and require pinned third-party images
+        run: |
+          docker compose config --quiet
+          if grep -nE '^\s*image:\s*[^#]*:latest\b|^\s*image:\s*[a-z0-9./-]+\s*$' docker-compose.yml; then
+            echo "Pin every image to a version (no :latest / untagged)"; exit 1
+          fi
       - run: docker compose --profile core build
       - name: Boot core profile
         run: docker compose --profile core up -d

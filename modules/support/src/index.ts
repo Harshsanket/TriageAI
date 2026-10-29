@@ -176,6 +176,14 @@ const MIGRATIONS = [
         ON support_tickets (priority_code, team_id);
     `,
   },
+  {
+    id: '0004-support-owner',
+    sql: `
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS owner_id TEXT;
+      CREATE INDEX IF NOT EXISTS support_tickets_owner
+        ON support_tickets (owner_id, created_at DESC);
+    `,
+  },
 ];
 
 interface TicketRow {
@@ -196,9 +204,14 @@ interface TicketRow {
   routing: Record<string, unknown> | null;
   triage: Record<string, unknown> | null;
   auto_reply: Record<string, unknown> | null;
+  owner_id?: string | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
+
+/** True when the caller is unscoped (agent/admin) or owns the ticket. */
+const ownedBy = (ticket: TicketRow, ownerScope: string | undefined): boolean =>
+  ownerScope === undefined || ticket.owner_id === ownerScope;
 
 interface PolicyRow {
   [key: string]: unknown;
@@ -1296,12 +1309,18 @@ export const supportModule: TriageModule = {
             orgId: z.string().optional(),
           })
           .parse(request.body);
+        // A scoped caller (customer) is always the requester; never trust the body.
+        if (request.ownerScope !== undefined) body.requester = request.actor ?? body.requester;
 
         if (body.idempotencyKey) {
           const existing = await ctx.database.query<TicketRow>(
             `SELECT * FROM support_tickets WHERE idempotency_key = $1`,
             [body.idempotencyKey],
           );
+          if (existing[0] && !ownedBy(existing[0], request.ownerScope)) {
+            // Keys are global; never hand another owner's ticket back.
+            throw new AppError('CONFLICT', 'idempotency key already used');
+          }
           if (existing[0]) {
             return {
               ticketId: existing[0].id,
@@ -1315,8 +1334,9 @@ export const supportModule: TriageModule = {
 
         const ticketId = ulid();
         await ctx.database.query(
-          `INSERT INTO support_tickets (id, org_id, subject, body, requester, status, idempotency_key)
-           VALUES ($1, $2, $3, $4, $5, 'NEW', $6)`,
+          `INSERT INTO support_tickets
+             (id, org_id, subject, body, requester, status, idempotency_key, owner_id)
+           VALUES ($1, $2, $3, $4, $5, 'NEW', $6, $7)`,
           [
             ticketId,
             body.orgId ?? null,
@@ -1324,6 +1344,7 @@ export const supportModule: TriageModule = {
             body.body,
             body.requester,
             body.idempotencyKey ?? null,
+            request.actorId ?? null,
           ],
         );
         await ctx.database.query(
@@ -1373,17 +1394,26 @@ export const supportModule: TriageModule = {
           [id],
         );
         const ticket = rows[0];
-        if (!ticket) throw Object.assign(new Error(`ticket ${id} not found`), { statusCode: 404 });
+        if (!ticket || !ownedBy(ticket, request.ownerScope)) {
+          throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+        }
+        const customerView = request.ownerScope !== undefined;
+        // Customers see their own and agent messages plus system messages that
+        // were explicitly marked customer-visible; internal events stay hidden.
         const messages = await ctx.database.query<{ [key: string]: unknown }>(
           `SELECT id, author_type, author, body, meta, created_at FROM support_ticket_messages
-           WHERE ticket_id = $1 ORDER BY created_at`,
-          [id],
+           WHERE ticket_id = $1
+             AND (NOT $2::boolean OR author_type <> 'system' OR meta->>'customerVisible' = 'true')
+           ORDER BY created_at`,
+          [id, customerView],
         );
-        const events = await ctx.database.query<{ [key: string]: unknown }>(
-          `SELECT id, type, payload, actor, created_at FROM support_ticket_events
-           WHERE ticket_id = $1 ORDER BY created_at`,
-          [id],
-        );
+        const events = customerView
+          ? []
+          : await ctx.database.query<{ [key: string]: unknown }>(
+              `SELECT id, type, payload, actor, created_at FROM support_ticket_events
+               WHERE ticket_id = $1 ORDER BY created_at`,
+              [id],
+            );
         return {
           ticket: ticketDto(ticket),
           messages: messages.map((message) => ({
@@ -1670,7 +1700,9 @@ export const supportModule: TriageModule = {
         const { id } = request.params;
         const body = TicketConfirmationRequestSchema.parse(request.body);
         const ticket = await loadTicketRow(id);
-        if (!ticket) throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+        if (!ticket || !ownedBy(ticket, request.ownerScope)) {
+          throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+        }
         if (ticket.status !== 'AWAITING_CUSTOMER') {
           throw new AppError(
             'CONFLICT',

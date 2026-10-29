@@ -53,6 +53,14 @@ export interface RouteRequest {
   body: unknown;
   /** Authenticated actor (host-resolved); modules must prefer it over body input. */
   actor?: string;
+  /** Host-resolved stable id of the caller; modules store it as `owner_id`. */
+  actorId?: string;
+  /**
+   * When set, the caller may only see and act on records whose `owner_id`
+   * equals this value (e.g. a customer). Modules must filter by it and answer
+   * 404 — not 403 — for anything else, so ids cannot be probed.
+   */
+  ownerScope?: string;
   /** Request headers (lower-cased by the host) for signature/auth checks. */
   headers?: Record<string, string>;
   /** Raw request body when the host captured it (webhook signature checks). */

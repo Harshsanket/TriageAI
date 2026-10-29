@@ -5,5 +5,8 @@ global:
 scrape_configs:
   - job_name: triageai-api
     metrics_path: /metrics
+    # With AUTH_MODE=required, /metrics needs METRICS_TOKEN as a bearer token:
+    # authorization:
+    #   credentials: <same value as METRICS_TOKEN>
     static_configs:
       - targets: ['api:3000']

@@ -21,7 +21,6 @@ const ANY: Role[] = ['customer', 'agent', 'admin'];
 export const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/healthz', roles: 'public' },
   { method: 'GET', pattern: '/readyz', roles: 'public' },
-  { method: 'GET', pattern: '/metrics', roles: 'public' },
   { method: 'POST', pattern: '/api/v1/auth/login', roles: 'public' },
   { method: 'POST', pattern: '/api/v1/auth/register', roles: 'public' },
   { method: 'POST', pattern: '/api/v1/auth/refresh', roles: 'public' },
@@ -62,6 +61,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'PATCH', pattern: '/api/v1/system/candidates/:id', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/system/audit', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/system/hw', roles: ADMIN },
+  // Scrapers authenticate with METRICS_TOKEN instead (see auth guard).
+  { method: 'GET', pattern: '/metrics', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/datasets', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/datasets/:id', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/datasets/:id/export', roles: AGENT },

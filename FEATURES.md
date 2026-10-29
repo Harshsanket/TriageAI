@@ -52,7 +52,7 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 | KB-grounded auto-reply with validation                                     |   ✅   |
 | Per-category auto-reply policy (no deploy to flip)                         |   ✅   |
 | Customer confirmation ("solved" / "still need help") + repeat-answer guard |   ✅   |
-| Customer can only see their own tickets                                    |   🟡   |
+| Customer can only see their own tickets (internal notes/events hidden)     |   ✅   |
 | Email in/out for tickets                                                   |   🗺️   |
 
 ### Knowledge base — `kb`
@@ -71,7 +71,7 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 | ------------------------------------------------- | :----: |
 | Conversations + messages                          |   ✅   |
 | Grounded answers with citations, explicit refusal |   ✅   |
-| Per-user conversation ownership                   |   🟡   |
+| Per-user conversation ownership                   |   ✅   |
 | Streaming responses, memory/summary               |   🗺️   |
 
 ### Doc assistant — `doc-assistant`
@@ -111,18 +111,18 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 
 ## 5. Operations & security
 
-| Feature                                                                |            Status            |
-| ---------------------------------------------------------------------- | :--------------------------: |
-| Docker Compose profiles: core, ai, llm, queue, observ, train           |              ✅              |
-| Loopback-only port binding by default (`TRIAGEAI_BIND`)                |              ✅              |
-| Auth: argon2id, short JWT + rotating refresh tokens, replay revocation |              ✅              |
-| RBAC matrix (public / customer / agent / admin, deny by default)       |              ✅              |
-| Rate limiting, CORS allowlist, log/config secret redaction             |              ✅              |
-| Ownership ACLs (customer sees only their own data)                     |              🟡              |
-| Prometheus `/metrics`, Grafana, hardware monitor, k6 load suites       |              ✅              |
-| Backup/restore scripts, retention scheduler                            |              ✅              |
-| Multi-tenant enforcement, attachments                                  | 🗺️ (designed: ADR-0022/0023) |
-| First-run setup wizard at `/config`                                    |              🗺️              |
+| Feature                                                                                     |            Status            |
+| ------------------------------------------------------------------------------------------- | :--------------------------: |
+| Docker Compose profiles: core, ai, llm, queue, observ, train                                |              ✅              |
+| Loopback-only port binding by default (`TRIAGEAI_BIND`)                                     |              ✅              |
+| Auth: argon2id, short JWT + rotating refresh tokens, replay revocation                      |              ✅              |
+| RBAC matrix (public / customer / agent / admin, deny by default)                            |              ✅              |
+| Rate limiting, CORS allowlist, log/config secret redaction                                  |              ✅              |
+| Ownership ACLs (customer sees only their own data)                                          |              ✅              |
+| Prometheus `/metrics` (admin or `METRICS_TOKEN`), Grafana, hardware monitor, k6 load suites |              ✅              |
+| Backup/restore scripts, retention scheduler                                                 |              ✅              |
+| Multi-tenant enforcement, attachments                                                       | 🗺️ (designed: ADR-0022/0023) |
+| First-run setup wizard at `/config`                                                         |              🗺️              |
 
 ## 6. Web UI routes
 

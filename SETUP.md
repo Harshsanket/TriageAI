@@ -144,26 +144,27 @@ pnpm seed:demo                          # after /readyz is green; TOKEN=... when
 
 ### API (`apps/api/.env`)
 
-| Variable                      | Default                                       | Purpose                                                      |
-| ----------------------------- | --------------------------------------------- | ------------------------------------------------------------ |
-| `DATABASE_URL`                | — (required)                                  | Postgres connection string                                   |
-| `PORT`                        | `3000`                                        | API port                                                     |
-| `NODE_ENV`                    | `development`                                 | `production` makes `AUTH_MODE` default to `required`         |
-| `TRIAGEAI_CONFIG`             | `./triage.config.json`                        | Which module/capability config to load                       |
-| `AI_SERVICE_URL`              | `http://localhost:8000`                       | Python ai-service base URL                                   |
-| `TRIAGEAI_GENERATOR_BASE_URL` | from config                                   | Override the LLM endpoint                                    |
-| `AUTH_MODE`                   | `disabled` (dev) / `required` (prod)          | Identity + RBAC on/off                                       |
-| `AUTH_JWT_SECRET`             | —                                             | ≥ 32 chars; required when auth is on                         |
-| `AUTH_ACCESS_TTL_SECONDS`     | `900`                                         | Access token lifetime                                        |
-| `AUTH_REFRESH_TTL_SECONDS`    | `2592000`                                     | Refresh token lifetime                                       |
-| `CORS_ORIGINS`                | `http://localhost:5173,http://127.0.0.1:5173` | Browser origins allowed to call the API (`*` = any; unsafe)  |
-| `RATE_LIMIT_MAX` / `_WINDOW`  | `300` / `1 minute`                            | Global per-IP rate limit                                     |
-| `TRIAGEAI_ENABLE_MODULES`     | —                                             | Comma list; force-enable modules over the config file        |
-| `TRIAGEAI_DISABLE_MODULES`    | —                                             | Comma list; force-disable modules                            |
-| `TRIAGEAI_QUEUE_ADAPTER`      | from config                                   | `pg-queue` (default) or `inline` (`bullmq` is not built yet) |
-| `GITHUB_TOKEN`                | —                                             | GitHub integration (comma-separate for rotation)             |
-| `GITHUB_WEBHOOK_SECRET`       | —                                             | Verifies `X-Hub-Signature-256`                               |
-| `SLACK_WEBHOOK_URL`           | —                                             | Slack integration                                            |
+| Variable                      | Default                                       | Purpose                                                         |
+| ----------------------------- | --------------------------------------------- | --------------------------------------------------------------- |
+| `DATABASE_URL`                | — (required)                                  | Postgres connection string                                      |
+| `PORT`                        | `3000`                                        | API port                                                        |
+| `NODE_ENV`                    | `development`                                 | `production` makes `AUTH_MODE` default to `required`            |
+| `TRIAGEAI_CONFIG`             | `./triage.config.json`                        | Which module/capability config to load                          |
+| `AI_SERVICE_URL`              | `http://localhost:8000`                       | Python ai-service base URL                                      |
+| `TRIAGEAI_GENERATOR_BASE_URL` | from config                                   | Override the LLM endpoint                                       |
+| `AUTH_MODE`                   | `disabled` (dev) / `required` (prod)          | Identity + RBAC on/off                                          |
+| `AUTH_JWT_SECRET`             | —                                             | ≥ 32 chars; required when auth is on                            |
+| `AUTH_ACCESS_TTL_SECONDS`     | `900`                                         | Access token lifetime                                           |
+| `AUTH_REFRESH_TTL_SECONDS`    | `2592000`                                     | Refresh token lifetime                                          |
+| `METRICS_TOKEN`               | —                                             | Bearer token Prometheus uses for `GET /metrics` when auth is on |
+| `CORS_ORIGINS`                | `http://localhost:5173,http://127.0.0.1:5173` | Browser origins allowed to call the API (`*` = any; unsafe)     |
+| `RATE_LIMIT_MAX` / `_WINDOW`  | `300` / `1 minute`                            | Global per-IP rate limit                                        |
+| `TRIAGEAI_ENABLE_MODULES`     | —                                             | Comma list; force-enable modules over the config file           |
+| `TRIAGEAI_DISABLE_MODULES`    | —                                             | Comma list; force-disable modules                               |
+| `TRIAGEAI_QUEUE_ADAPTER`      | from config                                   | `pg-queue` (default) or `inline` (`bullmq` is not built yet)    |
+| `GITHUB_TOKEN`                | —                                             | GitHub integration (comma-separate for rotation)                |
+| `GITHUB_WEBHOOK_SECRET`       | —                                             | Verifies `X-Hub-Signature-256`                                  |
+| `SLACK_WEBHOOK_URL`           | —                                             | Slack integration                                               |
 
 ### ai-service (`apps/ai-service/.env`)
 

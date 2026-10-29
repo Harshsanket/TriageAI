@@ -5,7 +5,6 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().default('redis://localhost:6379'),
   AI_SERVICE_URL: z.string().url().default('http://localhost:8000'),
   AUTH_MODE: z.enum(['disabled', 'required']).optional(),
   AUTH_JWT_SECRET: z.string().optional(),
@@ -20,6 +19,14 @@ const envSchema = z.object({
     .positive()
     .default(30 * 24 * 60 * 60),
   CORS_ORIGINS: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
+  // Compose passes an empty string when unset; treat that as "no token".
+  METRICS_TOKEN: z
+    .string()
+    .optional()
+    .transform((value) => value || undefined)
+    .refine((value) => value === undefined || value.length >= 16, {
+      message: 'METRICS_TOKEN must be at least 16 characters',
+    }),
   RATE_LIMIT_MAX: z.coerce.number().int().nonnegative().default(300),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
   RATE_LIMIT_DISABLED: z
@@ -46,7 +53,6 @@ export const config = {
   port: env.PORT,
   logLevel: env.LOG_LEVEL,
   databaseUrl: env.DATABASE_URL,
-  redisUrl: env.REDIS_URL,
   aiServiceUrl: env.AI_SERVICE_URL,
   authMode,
   authJwtSecret: env.AUTH_JWT_SECRET ?? 'development-only-insecure-secret-change-me',
@@ -56,6 +62,7 @@ export const config = {
   corsOrigins: env.CORS_ORIGINS.split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
+  metricsToken: env.METRICS_TOKEN,
   rateLimitMax: env.RATE_LIMIT_DISABLED ? 0 : env.RATE_LIMIT_MAX,
   rateLimitWindow: env.RATE_LIMIT_WINDOW,
 } as const;

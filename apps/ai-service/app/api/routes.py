@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.api.schemas import ClassifyRequest, ClassifyResponse, EmbedRequest, EmbedResponse, HealthResponse
-from app.modules import classification, embeddings, generation, retrieval
+from app.modules import classification, embeddings
 
 router = APIRouter(prefix="/ai/v1")
 
@@ -38,10 +38,9 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
 
 @router.get("/modules")
 async def modules() -> dict[str, str]:
-    """Introspection: proves the three AI modules are separate and loadable."""
+    """Introspection: what this service serves. Retrieval and generation live in
+    the API host (pgvector + Generator adapters), not here."""
     return {
         "classification": classification.describe(),
         "embedding_model": embeddings.model_version(),
-        "retrieval": retrieval.describe(),
-        "generation": generation.describe(),
     }

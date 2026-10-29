@@ -2,6 +2,8 @@
  * Auth wiring for the API host: public endpoints plus the global guard that
  * authenticates bearer tokens and enforces the RBAC matrix.
  */
+import { timingSafeEqual } from 'node:crypto';
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -27,6 +29,22 @@ declare module 'fastify' {
 export interface AuthGuardOptions {
   mode: 'disabled' | 'required';
   jwtSecret: string;
+  /** Static bearer token a Prometheus scraper may present for GET /metrics. */
+  metricsToken?: string;
+}
+
+const METRICS_SCRAPER: Principal = {
+  userId: 'metrics-scraper',
+  email: 'metrics@triageai.dev',
+  role: 'agent',
+  sessionId: null,
+  authenticated: false,
+};
+
+function tokenEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 const LOCAL_DEVELOPER: Principal = {
@@ -63,6 +81,16 @@ export function createAuthGuard(options: AuthGuardOptions) {
       }
       reply.header('www-authenticate', 'Bearer');
       throw new AppError('auth.UNAUTHENTICATED', 'missing bearer token', undefined, 401);
+    }
+
+    if (
+      options.metricsToken &&
+      request.method === 'GET' &&
+      path === '/metrics' &&
+      tokenEquals(token, options.metricsToken)
+    ) {
+      request.principal = METRICS_SCRAPER;
+      return;
     }
 
     const claims = await verifyAccessToken(token, { secret: options.jwtSecret });
