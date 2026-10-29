@@ -36,9 +36,14 @@ describe('config', () => {
     expect(cfg.queue.adapter).toBe('inline');
   });
 
-  it('loadConfigFile defaults quietly when missing', () => {
-    const cfg = loadConfigFile('nope/missing.json');
-    expect(cfg.profile).toBe('core');
+  it('loadConfigFile fails when an explicit path is missing', () => {
+    expect(() => loadConfigFile('nope/missing.json')).toThrow(/not found/);
+  });
+
+  it('loadConfigFile resolves an explicit preset path from the repo root', () => {
+    // Workspace scripts run in packages/*, two levels below the root.
+    const cfg = loadConfigFile('config/presets/support.json');
+    expect(cfg.profile).toBe('support');
   });
 
   it('defaults retention windows to disabled/null', () => {

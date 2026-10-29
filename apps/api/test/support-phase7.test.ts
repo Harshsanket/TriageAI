@@ -10,7 +10,7 @@ import { PostgresDatabase } from '@triageai/kernel';
 import { buildApp } from '../src/app.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
-const SUPPORT_CONFIG = path.resolve(process.cwd(), '../../triage.config.support.json');
+const SUPPORT_CONFIG = path.resolve(process.cwd(), '../../config/presets/support.json');
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai';
 

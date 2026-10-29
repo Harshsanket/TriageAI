@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { VectorMatch, VectorStore } from '@triageai/kernel';
 
-import { PgRetriever } from '../src/platform/capabilities.js';
+import { PgRetriever } from '../src/services/capabilities.js';
 
 const embedder = {
   embed: async (texts: string[]) => ({

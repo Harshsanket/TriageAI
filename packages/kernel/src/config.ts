@@ -81,31 +81,40 @@ export function parseConfigFile(raw: unknown): z.infer<typeof getSchema> {
   return result.data;
 }
 
+/**
+ * Load the config file. An explicit path (argument or `TRIAGEAI_CONFIG`) is
+ * resolved against the cwd, then the repo root (workspace scripts run from
+ * `apps/*`), and a missing explicit file fails boot — silently booting the
+ * default module set instead of the one asked for hides misconfiguration.
+ * Without an explicit path, `triage.config.json` in the cwd or repo root is
+ * used, else kernel defaults.
+ */
 export function loadConfigFile(
   path?: string,
   logger?: { warn(u: unknown, m?: string): void },
 ): z.infer<typeof getSchema> {
-  const candidates = [
-    path,
-    process.env.TRIAGEAI_CONFIG,
-    resolve(process.cwd(), 'triage.config.json'),
-    resolve(process.cwd(), '../../triage.config.json'),
-  ].filter((p): p is string => Boolean(p));
+  const explicit = path ?? process.env.TRIAGEAI_CONFIG;
+  const roots = [process.cwd(), resolve(process.cwd(), '../..')];
+  const candidates = explicit
+    ? roots.map((root) => resolve(root, explicit))
+    : roots.map((root) => resolve(root, 'triage.config.json'));
 
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    try {
-      const raw = JSON.parse(readFileSync(candidate, 'utf8')) as unknown;
-      return parseConfigFile(raw);
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        throw configInvalid(`Config file ${candidate} is not valid JSON: ${err.message}`);
-      }
-      throw err;
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (!found) {
+    if (explicit) {
+      throw configInvalid(`Config file ${explicit} not found (looked in ${candidates.join(', ')})`);
     }
+    logger?.warn({ candidates }, 'no triage.config.json found; using defaults');
+    return defaults;
   }
-  logger?.warn({ candidates }, 'no triage.config.json found; using defaults');
-  return defaults;
+  try {
+    return parseConfigFile(JSON.parse(readFileSync(found, 'utf8')) as unknown);
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw configInvalid(`Config file ${found} is not valid JSON: ${err.message}`);
+    }
+    throw err;
+  }
 }
 
 /** Merge presets + file + env overrides into the kernel config. */

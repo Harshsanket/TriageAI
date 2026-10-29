@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ActiveModelAsset, ModelRegistry } from '@triageai/kernel';
 
-import { HttpClassifier } from '../src/platform/capabilities.js';
+import { HttpClassifier } from '../src/services/capabilities.js';
 
 function registry(asset: ActiveModelAsset | null): ModelRegistry {
   return { active: async () => asset };

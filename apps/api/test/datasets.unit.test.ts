@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { hashExample, labelOf, planDataset, stableStringify } from '../src/platform/datasets.js';
-import type { BuildableExample } from '../src/platform/datasets.js';
+import { hashExample, labelOf, planDataset, stableStringify } from '../src/services/datasets.js';
+import type { BuildableExample } from '../src/services/datasets.js';
 
 function example(
   id: string,

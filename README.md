@@ -1,4 +1,5 @@
 # TriageAI
+
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
 TriageAI combines classification, retrieval, generation, validation, and human review into composable workflows. Capabilities are replaceable independently, every decision is inspectable, and inference stays local.
@@ -9,7 +10,7 @@ TriageAI combines classification, retrieval, generation, validation, and human r
 - **`assistant`** — KB-grounded chat and a doc-assistant that answers from this repository's `docs/**` with file-path citations.
 - **`full`** — Support + chat + KB + doc-assistant in one process (the easiest way to see everything).
 - **`core`** — Minimal kernel and application hosts for custom workflows.
-- **`integrations`** — Support plus optional GitHub/Slack outward actions (`triage.config.integrations.json`); enable/disable and credentials stay config/env-only.
+- **`integrations`** — Support plus optional GitHub/Slack outward actions (`config/presets/integrations.json`); enable/disable and credentials stay config/env-only.
 
 ## Repository Layout
 
@@ -18,6 +19,7 @@ packages/
   kernel/        # Boot, config, module graph, events, workflows, queues, decision records
   contracts/     # Shared Zod DTOs (feedback/datasets/models included) → JSON Schema
   rag/           # Prompt boundaries, chunking, grounding, deterministic validation
+  integrations-core/  # Audited action rows + approve/reject/retry routes for integrations
 apps/
   web/           # React host (module pages, inspector, /feedback review queue)
   api/           # Fastify host (system, inspector, datasets, model registry API)
@@ -27,6 +29,8 @@ modules/         # Replaceable first-party modules
   integrations-slack/   # slack-message OutputChannel, routing/batching/dedupe
   support/ · kb/ · chat/ · ai-pipeline/ · doc-assistant/ · echo/
 perf/k6/          # ingest/drain + Phase-8 burst, fairness, hot-swap suites
+config/presets/   # Starting configs: support, support-autoreply, assistant, full, integrations
+scripts/          # backup/restore, demo seed, new-module scaffold
 ```
 
 Step-by-step setup (every profile, env var, and troubleshooting tip): [SETUP.md](./SETUP.md). Feature inventory: [FEATURES.md](./FEATURES.md).
@@ -78,7 +82,7 @@ docker exec triageai-ollama ollama pull qwen2.5:1.5b
 uv --directory apps/ai-service run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 # 3. API + web with every module enabled
-TRIAGEAI_CONFIG=triage.config.full.json pnpm dev
+TRIAGEAI_CONFIG=config/presets/full.json pnpm dev
 ```
 
 Open:
@@ -99,12 +103,12 @@ Assistant profile (KB + retrieval + local generation): first download a model in
 ```bash
 docker compose --profile llm up -d
 docker exec triageai-ollama ollama pull qwen2.5:1.5b
-TRIAGEAI_CONFIG=/app/triage.config.assistant.json docker compose --profile core up --build
+TRIAGEAI_CONFIG=/app/config/presets/assistant.json docker compose --profile core up --build
 ```
 
-Open `/kb` to add and approve documents, then `/chat` to ask grounded questions (answers cite their sources). `TRIAGEAI_CONFIG=/app/triage.config.assistant.json` points the API at the assistant module set; without it the default core profile runs.
+Open `/kb` to add and approve documents, then `/chat` to ask grounded questions (answers cite their sources). `TRIAGEAI_CONFIG=/app/config/presets/assistant.json` points the API at the assistant module set; without it the default core profile runs.
 
-Run everything together (support + chat + KB + doc-assistant) with `TRIAGEAI_CONFIG=/app/triage.config.full.json`; the chat is grounded, so questions without an approved KB source are refused by design.
+Run everything together (support + chat + KB + doc-assistant) with `TRIAGEAI_CONFIG=/app/config/presets/full.json`; the chat is grounded, so questions without an approved KB source are refused by design.
 
 Generator address: configs point at `http://localhost:11434` for host-run dev. The API container defaults to `http://ollama:11434`; set `TRIAGEAI_GENERATOR_BASE_URL` to override (e.g. `http://host.docker.internal:11434` for an Ollama on the host, or any remote runtime).
 
@@ -113,7 +117,7 @@ Support profile (classification + routing, **no LLM**): start the AI service and
 ```bash
 docker compose --profile core --profile ai up --build
 # or, with a host ai-service:
-TRIAGEAI_CONFIG=/app/triage.config.support.json AI_SERVICE_URL=http://host.docker.internal:8000 \
+TRIAGEAI_CONFIG=/app/config/presets/support.json AI_SERVICE_URL=http://host.docker.internal:8000 \
   docker compose --profile core up --build
 ```
 
@@ -124,7 +128,7 @@ Support auto-reply profile (classification + routing + KB + local generation): s
 ```bash
 docker compose --profile llm up -d
 docker exec triageai-ollama ollama pull qwen2.5:1.5b
-TRIAGEAI_CONFIG=/app/triage.config.support-autoreply.json docker compose --profile core up --build
+TRIAGEAI_CONFIG=/app/config/presets/support-autoreply.json docker compose --profile core up --build
 ```
 
 Auto-reply is per-category and versioned (`GET/PUT /api/v1/support/auto-reply-policies`): disable it for a category and the **next** ticket escalates without a deploy. Replies move the ticket to `AWAITING_CUSTOMER`; `POST /api/v1/support/tickets/:id/confirmation` with `{ "solved": true | false }` resolves or escalates, and identical failed answers are never re-sent. `POST /api/v1/support/tickets/:id/auto-reply` re-dispatches a run for an agent; the same hash guard applies.
@@ -141,13 +145,13 @@ Open `/feedback` (or use the API) to run the improvement loop:
 
 ## Integrations (GitHub + Slack)
 
-Enable the modules in `triage.config.integrations.json` (or copy their `modules.*` entries into your own config) and provide credentials through the environment — never the config file:
+Enable the modules in `config/presets/integrations.json` (or copy their `modules.*` entries into your own config) and provide credentials through the environment — never the config file:
 
 ```bash
 export GITHUB_TOKEN=ghp_...            # comma-separate multiple tokens for rotation
 export GITHUB_WEBHOOK_SECRET=...       # signs X-Hub-Signature-256 webhooks
 export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-TRIAGEAI_CONFIG=triage.config.integrations.json pnpm dev
+TRIAGEAI_CONFIG=config/presets/integrations.json pnpm dev
 ```
 
 - **GitHub**: routed tickets create one issue (search marker prevents duplicates); `requireApproval` / `approvalCategories` hold actions until an admin approves. Configure the webhook to `POST /api/v1/integrations/github/webhook`; closing the issue resolves the linked ticket, while reopening a resolved ticket is recorded as a conflict instead of an illegal transition.

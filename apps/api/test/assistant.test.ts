@@ -9,10 +9,10 @@ import type { Capabilities, Generator, VectorStore } from '@triageai/kernel';
 import { PostgresDatabase } from '@triageai/kernel';
 
 import { buildApp } from '../src/app.js';
-import { PgRetriever, PgVectorStore, type HttpEmbedder } from '../src/platform/capabilities.js';
+import { PgRetriever, PgVectorStore, type HttpEmbedder } from '../src/services/capabilities.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
-const BASE_CONFIG = path.resolve(process.cwd(), '../../triage.config.assistant.json');
+const BASE_CONFIG = path.resolve(process.cwd(), '../../config/presets/assistant.json');
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai';
 const DIMENSIONS = 64;

@@ -35,14 +35,14 @@ Apple Silicon and x86-64 are both supported (images build for arm64 and amd64).
 TriageAI is one kernel plus modules you turn on in a JSON config. Choose a
 config file and point `TRIAGEAI_CONFIG` at it:
 
-| Config file                            | What you get                                       | Needs ai-service | Needs LLM |
-| -------------------------------------- | -------------------------------------------------- | :--------------: | :-------: |
-| `triage.config.json` (default)         | Kernel + `echo` demo module                        |        –         |     –     |
-| `triage.config.support.json`           | Ticket classification + routing + human review     |        ✓         |     –     |
-| `triage.config.support-autoreply.json` | Support + KB-grounded, validated auto-replies      |        ✓         |     ✓     |
-| `triage.config.assistant.json`         | Grounded chat over your KB + doc-assistant         |        ✓         |     ✓     |
-| `triage.config.integrations.json`      | Support + GitHub issues + Slack notifications      |        ✓         | optional  |
-| `triage.config.full.json`              | Support + chat + KB + doc-assistant in one process |        ✓         |     ✓     |
+| Config file                             | What you get                                       | Needs ai-service | Needs LLM |
+| --------------------------------------- | -------------------------------------------------- | :--------------: | :-------: |
+| `triage.config.json` (default)          | Kernel + `echo` demo module                        |        –         |     –     |
+| `config/presets/support.json`           | Ticket classification + routing + human review     |        ✓         |     –     |
+| `config/presets/support-autoreply.json` | Support + KB-grounded, validated auto-replies      |        ✓         |     ✓     |
+| `config/presets/assistant.json`         | Grounded chat over your KB + doc-assistant         |        ✓         |     ✓     |
+| `config/presets/integrations.json`      | Support + GitHub issues + Slack notifications      |        ✓         | optional  |
+| `config/presets/full.json`              | Support + chat + KB + doc-assistant in one process |        ✓         |     ✓     |
 
 Enabling or disabling a module is a config change plus a restart — the web UI
 only shows modules the API reports as enabled.
@@ -65,12 +65,12 @@ Add services with more profiles:
 docker compose --profile core --profile ai up --build    # + ai-service (embeddings/classifier)
 docker compose --profile llm up -d                        # + Ollama
 docker exec triageai-ollama ollama pull qwen2.5:1.5b      # download a model once
-TRIAGEAI_CONFIG=/app/triage.config.full.json docker compose --profile core --profile llm up --build
+TRIAGEAI_CONFIG=/app/config/presets/full.json docker compose --profile core --profile llm up --build
 docker compose --profile observ up -d                     # Prometheus :9090, Grafana :3310
 docker compose --profile train run --rm trainer ...       # optional classifier trainer
 ```
 
-Inside the containers config paths are `/app/triage.config.*.json`.
+Inside the containers the presets live at `/app/config/presets/*.json`; your own `triage.config.json` is `/app/triage.config.json`. A `TRIAGEAI_CONFIG` path is resolved from the repo root, and boot fails if it doesn't exist.
 
 ### Network exposure (read this before sharing a machine)
 
@@ -103,7 +103,7 @@ pnpm dev                               # api :3000 + web :5173 with hot reload
 ```
 
 The Vite dev server proxies `/api` to `localhost:3000`. Pick a profile with
-`TRIAGEAI_CONFIG=triage.config.full.json pnpm dev`.
+`TRIAGEAI_CONFIG=config/presets/full.json pnpm dev`.
 
 ### AI service (embeddings + classification)
 

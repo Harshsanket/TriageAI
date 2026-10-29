@@ -22,8 +22,8 @@ import {
   PostgresDatabase,
 } from '@triageai/kernel';
 
-import { candidateText } from '../src/platform/candidates.js';
-import { labelOf, stableStringify } from '../src/platform/datasets.js';
+import { candidateText } from '../src/services/candidates.js';
+import { labelOf, stableStringify } from '../src/services/datasets.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT = path.resolve(HERE, '../../ai-service/eval/blessed');

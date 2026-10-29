@@ -15,8 +15,11 @@ You are working on **TriageAI**: a modular, self-hosted AI automation platform (
 packages/kernel/     # the only framework-level code: boot, config, module graph,
                      # migrations, workflow engine, decision records, queue/db/eventbus
 packages/contracts/  # Zod DTO schemas shared by TS/Python (source of truth for shapes)
-packages/shared/     # legacy shared schemas (health response); candidates to merge later
+packages/rag/        # prompt boundaries, chunking, grounding, deterministic validation
+packages/integrations-core/  # audited action rows + approve/reject/retry routes for integrations
 apps/api/            # Fastify host: boots the kernel, mounts module routes, /api/v1/system/*
+                     #   src/platform (config, logger, errors, auth) · src/services · src/routes
+config/presets/      # shipped starting configs (support, assistant, full, …); root triage.config.json is yours
 apps/web/            # React host: fetches system manifest, renders ONLY enabled modules
 apps/ai-service/     # Python FastAPI inference service (optional, profile [ai])
 modules/             # first-party feature modules (echo = reference implementation)
@@ -69,7 +72,7 @@ Tests are colocated (`test/` dirs), use vitest for TS, pytest for Python, RTL + 
 
 ## Working agreement
 
-- Small, horizontal-capable changes; keep module surface uniform by copying `modules/echo` as the reference (stage handlers, workflow def, routes, manifest, migration, options schema).
+- Small, horizontal-capable changes; keep module surface uniform: scaffold with `scripts/new-module.sh <name>` and follow the layout in `docs/contracts/module-contract.md` §6 (`modules/support` is the split-file reference, `modules/echo` the minimal one). Every new route needs an RBAC rule (`apps/api/test/rbac-coverage.test.ts` enforces it).
 - TypeScript: strict, NodeNext `.js` import suffixes, zod at boundaries, no default exports in libraries (React components exempt).
 - Commit messages: imperative, concise, matching repo style. Stage files deliberately — this repo often has deliberately uncommitted docs while a phase is in review; **do not stage or commit files you were not asked to commit**.
 - When blocked by environment (Docker not up, DB missing), say so — don't silently skip DB tests and call it green.

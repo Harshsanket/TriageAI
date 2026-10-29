@@ -26,16 +26,18 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 
 ## 2. AI capabilities (swappable adapters)
 
-| Capability     | Adapters                                                                        | Status |
-| -------------- | ------------------------------------------------------------------------------- | :----: |
-| Embedder       | ai-service (sentence-transformers, MiniLM default)                              |   ✅   |
-| Classifier     | ai-service similarity baseline; trained linear probe via the model registry     |   ✅   |
-| Vector store   | pgvector                                                                        |   ✅   |
-| Retriever      | pgvector with per-collection threshold + margin sufficiency gate                |   ✅   |
-| Generator      | Ollama, LM Studio, any OpenAI-compatible local server                           |   ✅   |
-| Validator      | Format, grounding, citations, prompt-injection, PII, forbidden topics           |   ✅   |
-| Model registry | Versioned assets, eval-gated promote, audited rollback, hot-swap without deploy |   ✅   |
-| Model catalog  | Hugging Face search filtered by your hardware, one-click download               |   🗺️   |
+| Capability               | Adapters                                                                                                  | Status |
+| ------------------------ | --------------------------------------------------------------------------------------------------------- | :----: |
+| Embedder                 | ai-service (sentence-transformers, MiniLM default)                                                        |   ✅   |
+| Classifier               | ai-service similarity baseline; trained linear probe via the model registry                               |   ✅   |
+| Vector store             | pgvector                                                                                                  |   ✅   |
+| Retriever                | pgvector with per-collection threshold + margin sufficiency gate                                          |   ✅   |
+| Generator                | Ollama, LM Studio, any OpenAI-compatible local server                                                     |   ✅   |
+| Validator                | Format, grounding, citations, prompt-injection, PII, forbidden topics                                     |   ✅   |
+| Model registry           | Versioned assets, eval-gated promote, audited rollback, hot-swap without deploy                           |   ✅   |
+| Model catalog            | Hugging Face search filtered by your hardware, one-click download                                         |   🗺️   |
+| Hosted LLM APIs          | Anthropic, OpenAI, Google, any OpenAI-compatible host — opt-in with egress classes, redaction and budgets |   🗺️   |
+| ChatModel (tool calling) | One chat + tools interface over every local and hosted adapter                                            |   🗺️   |
 
 ## 3. Modules (feature plugins)
 
@@ -99,7 +101,41 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 | `public-api` | API keys + OpenAI-compatible `/v1/chat/completions` and a REST/MCP surface so other agent apps can use TriageAI |   🗺️   |
 | `emailer`    | IMAP/SMTP (or provider webhook) inbound mail → tickets, validated replies out                                   |   🗺️   |
 
-## 4. Improvement loop (host)
+## 4. Agents, tools and skills (planned, Phases 15–17)
+
+| Feature                                                                                                                                       | Status |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | :----: |
+| Tool registry (module tools, allowlisted HTTP) with approval for write/external tools                                                         |   🗺️   |
+| MCP client: connect external MCP servers as tools                                                                                             |   🗺️   |
+| Skills in Agent Skills format, sha-pinned sources, loaded on demand — starting with [mattpocock/skills](https://github.com/mattpocock/skills) |   🗺️   |
+| Import Claude Code / Cursor plugin packs (e.g. [pstack](https://github.com/cursor/plugins/tree/main/pstack)) as skills + agent profiles       |   🗺️   |
+| Agents with per-step checkpointed state that resume after a crash                                                                             |   🗺️   |
+| Context budgets: retrieval packed to a fixed share of the model's window, pointers for the rest                                               |   🗺️   |
+| Capped, structured handoffs between agents (no transcript dumps)                                                                              |   🗺️   |
+| Per-run local workspace (handoff, log, decisions, plans) mirrored from the DB                                                                 |   🗺️   |
+| Long-term memory across runs: short sourced entries, deduped, capped, reviewable, user-erasable                                               |   🗺️   |
+| Teams with any model mix: api + local, api + api, local + local                                                                               |   🗺️   |
+| `/agents` monitor, watchdog agent, external agents reporting via the public API                                                               |   🗺️   |
+| Agent setup from [docs-internal](https://github.com/Harshsanket/docs-internal) conventions                                                    |   🗺️   |
+
+### Running agents safely (planned, Phase 18)
+
+| Feature                                                                                                                         | Status |
+| ------------------------------------------------------------------------------------------------------------------------------- | :----: |
+| Continuous self-evaluation: sampled online scoring, nightly regression evals, drift alerts                                      |   🗺️   |
+| Improvements proposed as diffs, applied only after eval gate + approval (no silent self-modification)                           |   🗺️   |
+| Opt-in auto-rollback of a version that falls below its quality floor                                                            |   🗺️   |
+| One resumable state model for workflows, agents and teams, with pinned versions per run                                         |   🗺️   |
+| Concurrency limits, priority lanes, backpressure, durable scheduler and event outbox                                            |   🗺️   |
+| Traces across model, tool and agent calls; token/cost/eval metrics; alerting                                                    |   🗺️   |
+| Kill switches (pause agents, disable hosted models, read-only, freeze plugins), egress allowlist, tamper-evident audit          |   🗺️   |
+| Every setting on `/config` with a one-line explanation, versioned and revertible                                                |   🗺️   |
+| `WORKFLOW.md`: short committed project map (design, contracts, routing, observability, model strategy, cost) kept in sync by CI |   🗺️   |
+| Cost-aware model routing: cheapest model that meets each task's measured quality floor                                          |   🗺️   |
+| Cost ledger per call, budgets, forecasts; caching, batching and coordination-overhead tracking                                  |   🗺️   |
+| `/dashboard`: health, activity, quality, cost, efficiency, context, agents, security on one page                                |   🗺️   |
+
+## 5. Improvement loop (host)
 
 | Feature                                                              | Status |
 | -------------------------------------------------------------------- | :----: |
@@ -109,7 +145,7 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 | Linear-probe trainer (CPU), merged eval reports, gated promotion     |   ✅   |
 | Eval harnesses: classification, retrieval, generation, merged report |   ✅   |
 
-## 5. Operations & security
+## 6. Operations & security
 
 | Feature                                                                                     |            Status            |
 | ------------------------------------------------------------------------------------------- | :--------------------------: |
@@ -124,7 +160,7 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 | Multi-tenant enforcement, attachments                                                       | 🗺️ (designed: ADR-0022/0023) |
 | First-run setup wizard at `/config`                                                         |              🗺️              |
 
-## 6. Web UI routes
+## 7. Web UI routes
 
 | Path                                          | Shown when                  |
 | --------------------------------------------- | --------------------------- |

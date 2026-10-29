@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@triageai/contracts": "workspace:*",
-    "@triageai/shared": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

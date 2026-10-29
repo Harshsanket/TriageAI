@@ -8,7 +8,6 @@ WORKDIR /app
 
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY packages/shared/package.json packages/shared/package.json
 COPY apps/web/package.json apps/web/package.json
 
 RUN pnpm install --frozen-lockfile --filter @triageai/web... && pnpm store prune

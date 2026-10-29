@@ -29,7 +29,6 @@
     "@triageai/module-kb": "workspace:*",
     "@triageai/module-support": "workspace:*",
     "@triageai/rag": "workspace:*",
-    "@triageai/shared": "workspace:*",
     "fastify": "^5.6.1",
     "jose": "^6.2.13",
     "pino": "^9.13.1",

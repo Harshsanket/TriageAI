@@ -8,12 +8,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 
-import {
-  IntegrationActionDtoSchema,
-  IntegrationApprovalRequestSchema,
-  TicketPriorityCodeSchema,
-} from '@triageai/contracts';
-import { AppError } from '@triageai/kernel';
+import { IntegrationActionDtoSchema, TicketPriorityCodeSchema } from '@triageai/contracts';
+import { createActionStore, registerActionRoutes } from '@triageai/integrations-core';
 import type { KernelContext, TriageModule } from '@triageai/kernel';
 
 import { createSlackChannel } from './channel.js';
@@ -178,26 +174,13 @@ export const integrationsSlackModule: TriageModule = {
       createSlackChannel({ webhookUrl, channel: options.channel }),
     );
 
-    const audit = async (
-      action: string,
-      subject: string | null,
-      payload: Record<string, unknown>,
-      actor = 'system',
-    ): Promise<void> => {
-      await ctx.database.query(
-        `INSERT INTO audit_events (id, actor, action, subject, payload)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [ulid(), actor, action, subject, payload],
-      );
-    };
-
-    const loadAction = async (id: string): Promise<ActionRow | undefined> => {
-      const rows = await ctx.database.query<ActionRow>(
-        `SELECT * FROM integration_slack_actions WHERE id = $1`,
-        [id],
-      );
-      return rows[0];
-    };
+    const actions = createActionStore<ActionRow>(
+      ctx.database,
+      'slack',
+      'integration_slack_actions',
+    );
+    const audit = actions.audit;
+    const loadAction = actions.load;
 
     const dispatch = async (actionId: string): Promise<{ runId: string | null }> => {
       const rows = await ctx.database.query<ActionRow>(
@@ -538,102 +521,13 @@ export const integrationsSlackModule: TriageModule = {
       flushTimer.unref?.();
     }
 
-    ctx.registerRoute({
-      method: 'GET',
-      url: '/api/v1/integrations/slack/actions',
-      handler: async (request) => {
-        const status = request.query.status;
-        const rows = await ctx.database.query<ActionRow>(
-          `SELECT * FROM integration_slack_actions
-           WHERE ($1::text IS NULL OR status = $1)
-           ORDER BY created_at DESC LIMIT 100`,
-          [status ?? null],
-        );
-        return rows.map(actionDto);
-      },
-    });
-
-    const transitionAction = async (
-      id: string,
-      from: string[],
-      to: string,
-      actor: string,
-      action: string,
-      note?: string,
-    ): Promise<ActionRow> => {
-      const current = await loadAction(id);
-      if (!current) throw new AppError('NOT_FOUND', `slack action ${id} not found`);
-      if (!from.includes(current.status)) {
-        if (current.status === to) return current;
-        throw new AppError(
-          'CONFLICT',
-          `slack action ${id} is ${current.status}; expected ${from.join('|')}`,
-        );
-      }
-      const rows = await ctx.database.query<ActionRow>(
-        `UPDATE integration_slack_actions
-            SET status = $2, reason = $3, updated_at = now()
-          WHERE id = $1 AND status = ANY($4::text[])
-          RETURNING *`,
-        [id, to, note ?? null, from],
-      );
-      const updated = rows[0];
-      if (!updated) throw new AppError('CONFLICT', `slack action ${id} changed concurrently`);
-      await audit(action, updated.ticket_id, { actionId: id, note: note ?? null }, actor);
-      return updated;
-    };
-
-    ctx.registerRoute({
-      method: 'POST',
-      url: '/api/v1/integrations/slack/actions/:id/approve',
-      handler: async (request) => {
-        const body = IntegrationApprovalRequestSchema.parse(request.body ?? {});
-        const action = await transitionAction(
-          request.params.id as string,
-          ['pending_approval', 'failed'],
-          'approved',
-          request.actor ?? body.actor,
-          'integration.slack.approved',
-          body.note,
-        );
-        await dispatch(action.id);
-        return actionDto((await loadAction(action.id)) ?? action);
-      },
-    });
-
-    ctx.registerRoute({
-      method: 'POST',
-      url: '/api/v1/integrations/slack/actions/:id/reject',
-      handler: async (request) => {
-        const body = IntegrationApprovalRequestSchema.parse(request.body ?? {});
-        const action = await transitionAction(
-          request.params.id as string,
-          ['pending_approval', 'approved', 'failed', 'batched'],
-          'rejected',
-          request.actor ?? body.actor,
-          'integration.slack.rejected',
-          body.note,
-        );
-        return actionDto(action);
-      },
-    });
-
-    ctx.registerRoute({
-      method: 'POST',
-      url: '/api/v1/integrations/slack/actions/:id/retry',
-      handler: async (request) => {
-        const body = IntegrationApprovalRequestSchema.parse(request.body ?? {});
-        const action = await transitionAction(
-          request.params.id as string,
-          ['failed'],
-          'approved',
-          request.actor ?? body.actor,
-          'integration.slack.retried',
-          body.note,
-        );
-        await dispatch(action.id);
-        return actionDto((await loadAction(action.id)) ?? action);
-      },
+    registerActionRoutes(ctx, {
+      provider: 'slack',
+      table: 'integration_slack_actions',
+      store: actions,
+      rejectableStatuses: ['pending_approval', 'approved', 'failed', 'batched'],
+      toDto: actionDto,
+      dispatch,
     });
   },
 };

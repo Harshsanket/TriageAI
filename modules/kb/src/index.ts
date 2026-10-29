@@ -9,6 +9,12 @@ import { createHash } from 'node:crypto';
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
+import {
+  KbDocumentCreateRequestSchema,
+  KbDocumentDtoSchema,
+  KbSearchRequestSchema,
+  KbSearchResponseSchema,
+} from '@triageai/contracts';
 import { chunkText } from '@triageai/rag';
 import { AppError } from '@triageai/kernel';
 import type { TriageModule } from '@triageai/kernel';
@@ -63,16 +69,17 @@ interface DocumentRow {
   updated_at: Date | string;
 }
 
-const docDto = (row: DocumentRow) => ({
-  id: row.id,
-  title: row.title,
-  source: row.source,
-  approved: row.approved,
-  version: row.version,
-  sha256: row.sha256,
-  createdAt: new Date(row.created_at).toISOString(),
-  updatedAt: new Date(row.updated_at).toISOString(),
-});
+const docDto = (row: DocumentRow) =>
+  KbDocumentDtoSchema.parse({
+    id: row.id,
+    title: row.title,
+    source: row.source,
+    approved: row.approved,
+    version: row.version,
+    sha256: row.sha256,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  });
 
 export const kbModule: TriageModule = {
   id: 'kb',
@@ -169,13 +176,7 @@ export const kbModule: TriageModule = {
       method: 'POST',
       url: '/api/v1/kb/documents',
       handler: async (request) => {
-        const body = z
-          .object({
-            title: z.string().min(1).max(300),
-            body: z.string().min(1).max(200_000),
-            source: z.string().min(1).max(300).default('manual'),
-          })
-          .parse(request.body);
+        const body = KbDocumentCreateRequestSchema.parse(request.body);
         const id = ulid();
         await ctx.database.query(
           `INSERT INTO kb_documents (id, title, body, source, approved) VALUES ($1, $2, $3, $4, false)`,
@@ -256,17 +257,12 @@ export const kbModule: TriageModule = {
       handler: async (request) => {
         const retriever = ctx.capabilities.retriever;
         if (!retriever) throw new Error('retriever capability is not configured');
-        const body = z
-          .object({
-            query: z.string().min(1).max(2000),
-            limit: z.number().int().positive().max(20).default(4),
-          })
-          .parse(request.body);
+        const body = KbSearchRequestSchema.parse(request.body);
         const result = await retriever.search(collection, body.query, {
           limit: body.limit,
           filter: { approved: true },
         });
-        return {
+        return KbSearchResponseSchema.parse({
           chunks: result.chunks.map((chunk) => ({
             id: chunk.id,
             documentId: chunk.documentId,
@@ -275,7 +271,7 @@ export const kbModule: TriageModule = {
             metadata: chunk.metadata,
           })),
           gate: result.gate,
-        };
+        });
       },
     });
   },

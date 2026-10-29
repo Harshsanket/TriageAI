@@ -13,8 +13,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { evalReportMarkdown, mergeEvalSuites } from '../src/platform/evalReports.js';
-import type { SuiteInput } from '../src/platform/evalReports.js';
+import { evalReportMarkdown, mergeEvalSuites } from '../src/services/evalReports.js';
+import type { SuiteInput } from '../src/services/evalReports.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const API_ROOT = path.resolve(HERE, '..');

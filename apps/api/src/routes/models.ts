@@ -17,9 +17,9 @@ import {
 import type { EvalReportDto, ModelAssetDto, ModelStatus } from '@triageai/contracts';
 import type { Database, Kernel } from '@triageai/kernel';
 
-import { writeAudit } from '../platform/audit.js';
+import { writeAudit } from '../services/audit.js';
 import { AppError } from '../platform/errors.js';
-import { DbModelRegistry, evaluatePromotion, modelDto } from '../platform/modelRegistry.js';
+import { DbModelRegistry, evaluatePromotion, modelDto } from '../services/modelRegistry.js';
 
 interface ModelRow {
   [key: string]: unknown;

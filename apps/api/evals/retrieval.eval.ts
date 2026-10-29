@@ -17,7 +17,7 @@ import {
 } from '@triageai/kernel';
 import { chunkText } from '@triageai/rag';
 
-import { HttpEmbedder, PgRetriever, PgVectorStore } from '../src/platform/capabilities.js';
+import { HttpEmbedder, PgRetriever, PgVectorStore } from '../src/services/capabilities.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COLLECTION = 'eval_kb_docs';

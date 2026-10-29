@@ -12,7 +12,7 @@ import {
 import type { DatasetSplitName } from '@triageai/contracts';
 import type { Kernel } from '@triageai/kernel';
 
-import { buildDataset, datasetDto } from '../platform/datasets.js';
+import { buildDataset, datasetDto } from '../services/datasets.js';
 import { AppError } from '../platform/errors.js';
 
 interface DatasetRow {

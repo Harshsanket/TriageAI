@@ -1,5 +1,5 @@
 {
-  "name": "@triageai/shared",
+  "name": "@triageai/integrations-core",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -10,12 +10,15 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^3.25.76"
+    "@triageai/contracts": "workspace:*",
+    "@triageai/kernel": "workspace:*",
+    "ulid": "^3.0.1"
   },
   "devDependencies": {
+    "@types/node": "^22.18.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }

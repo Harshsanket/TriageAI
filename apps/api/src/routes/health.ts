@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 
-import { HealthResponse } from '@triageai/shared';
+import { HealthResponseSchema } from '@triageai/contracts';
 
 export const API_VERSION = '0.0.1';
 
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
   app.get('/healthz', async () => {
-    return HealthResponse.parse({ status: 'ok', service: 'api', version: API_VERSION });
+    return HealthResponseSchema.parse({ status: 'ok', service: 'api', version: API_VERSION });
   });
 
   app.get('/readyz', async (_request, reply) => {

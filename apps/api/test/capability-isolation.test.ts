@@ -6,7 +6,7 @@ import type { Capabilities, ClassificationResult } from '@triageai/kernel';
 import { buildApp } from '../src/app.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
-const SUPPORT_CONFIG = resolve(process.cwd(), '../../triage.config.support.json');
+const SUPPORT_CONFIG = resolve(process.cwd(), '../../config/presets/support.json');
 
 // `buildApp` used to write the host's model registry into the caller's
 // capabilities object. Reusing that object across boots left the second app

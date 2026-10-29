@@ -104,15 +104,19 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
+/** The first matching rule, or undefined when only deny-by-default applies. */
+export function explicitRuleFor(method: string, path: string): RouteRule | undefined {
+  const upper = method.toUpperCase();
+  return ROUTE_RULES.find(
+    (rule) => rule.method === upper && patternToRegex(rule.pattern).test(path),
+  );
+}
+
 export function ruleFor(method: string, path: string): RouteRule {
   const upper = method.toUpperCase();
   // CORS preflight carries no credentials by design.
   if (upper === 'OPTIONS') return { method: upper, pattern: path, roles: 'public' };
-  for (const rule of ROUTE_RULES) {
-    if (rule.method !== upper) continue;
-    if (patternToRegex(rule.pattern).test(path)) return rule;
-  }
-  return { method: upper, pattern: path, roles: ADMIN };
+  return explicitRuleFor(upper, path) ?? { method: upper, pattern: path, roles: ADMIN };
 }
 
 export function isAllowed(role: Role, method: string, path: string): boolean {

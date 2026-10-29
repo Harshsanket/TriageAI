@@ -7,7 +7,7 @@ import { ulid } from 'ulid';
 
 import type { Database, TxDatabase } from '@triageai/kernel';
 
-import { writeAudit } from '../audit.js';
+import { writeAudit } from '../../services/audit.js';
 import { AppError } from '../errors.js';
 import { hashPassword, verifyPassword } from './password.js';
 import {

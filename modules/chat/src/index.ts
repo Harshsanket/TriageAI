@@ -7,6 +7,12 @@
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
+import {
+  ChatConversationCreateRequestSchema,
+  ChatConversationSummarySchema,
+  ChatMessageDtoSchema,
+  ChatSendMessageRequestSchema,
+} from '@triageai/contracts';
 import { AppError } from '@triageai/kernel';
 import type { TriageModule } from '@triageai/kernel';
 
@@ -62,14 +68,15 @@ interface MessageRow {
   created_at: Date | string;
 }
 
-const messageDto = (row: MessageRow) => ({
-  id: row.id,
-  conversationId: row.conversation_id,
-  role: row.role,
-  content: row.content,
-  citations: row.citations ?? [],
-  createdAt: new Date(row.created_at).toISOString(),
-});
+const messageDto = (row: MessageRow) =>
+  ChatMessageDtoSchema.parse({
+    id: row.id,
+    conversationId: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    citations: row.citations ?? [],
+    createdAt: new Date(row.created_at).toISOString(),
+  });
 
 export const chatModule: TriageModule = {
   id: 'chat',
@@ -285,7 +292,7 @@ export const chatModule: TriageModule = {
       method: 'POST',
       url: '/api/v1/chat/conversations',
       handler: async (request) => {
-        const body = z.object({ title: z.string().max(200).optional() }).parse(request.body ?? {});
+        const body = ChatConversationCreateRequestSchema.parse(request.body ?? {});
         const id = ulid();
         await ctx.database.query(
           `INSERT INTO chat_conversations (id, title, owner_id) VALUES ($1, $2, $3)`,
@@ -305,12 +312,14 @@ export const chatModule: TriageModule = {
            ORDER BY updated_at DESC LIMIT 50`,
           [request.ownerScope ?? null],
         );
-        return rows.map((row) => ({
-          id: row.id,
-          title: row.title,
-          createdAt: new Date(row.created_at as string).toISOString(),
-          updatedAt: new Date(row.updated_at as string).toISOString(),
-        }));
+        return rows.map((row) =>
+          ChatConversationSummarySchema.parse({
+            id: row.id,
+            title: row.title,
+            createdAt: new Date(row.created_at as string).toISOString(),
+            updatedAt: new Date(row.updated_at as string).toISOString(),
+          }),
+        );
       },
     });
 
@@ -332,12 +341,7 @@ export const chatModule: TriageModule = {
       method: 'POST',
       url: '/api/v1/chat/messages',
       handler: async (request) => {
-        const body = z
-          .object({
-            conversationId: z.string().optional(),
-            text: z.string().min(1).max(20_000),
-          })
-          .parse(request.body);
+        const body = ChatSendMessageRequestSchema.parse(request.body);
 
         let conversationId = body.conversationId;
         if (conversationId) {

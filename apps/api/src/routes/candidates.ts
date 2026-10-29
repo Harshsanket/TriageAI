@@ -15,9 +15,9 @@ import {
 } from '@triageai/contracts';
 import type { Kernel } from '@triageai/kernel';
 
-import { writeAudit } from '../platform/audit.js';
-import { candidateText } from '../platform/candidates.js';
-import { labelOf } from '../platform/datasets.js';
+import { writeAudit } from '../services/audit.js';
+import { candidateText } from '../services/candidates.js';
+import { labelOf } from '../services/datasets.js';
 import { AppError } from '../platform/errors.js';
 
 interface CandidateRow {

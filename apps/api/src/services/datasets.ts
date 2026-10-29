@@ -13,7 +13,7 @@ import { ulid } from 'ulid';
 import type { DatasetDto, DatasetSplitCounts, DatasetSplitName } from '@triageai/contracts';
 import type { Database } from '@triageai/kernel';
 
-import { AppError } from './errors.js';
+import { AppError } from '../platform/errors.js';
 import { writeAudit } from './audit.js';
 
 export interface BuildableExample {

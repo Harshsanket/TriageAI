@@ -2,8 +2,11 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import * as ai from './ai.js';
+import * as chat from './chat.js';
 import * as feedback from './feedback.js';
+import * as health from './health.js';
 import * as integrations from './integrations.js';
+import * as kb from './kb.js';
 import * as dto from './manifest.js';
 import * as support from './support.js';
 
@@ -22,12 +25,23 @@ export function exportJsonSchemas(): Record<string, unknown> {
     RunDto: zodToJsonSchema(dto.RunDtoSchema),
     DecisionRecordDto: zodToJsonSchema(dto.DecisionRecordDtoSchema),
     HealthReport: zodToJsonSchema(dto.HealthReportSchema),
+    HealthResponse: zodToJsonSchema(health.HealthResponseSchema),
     AiEmbedRequest: zodToJsonSchema(ai.AiEmbedRequestSchema),
     AiEmbedResponse: zodToJsonSchema(ai.AiEmbedResponseSchema),
     AiClassifyRequest: zodToJsonSchema(ai.AiClassifyRequestSchema),
     AiClassifyModel: zodToJsonSchema(ai.AiClassifyModelSchema),
     AiCategoryScore: zodToJsonSchema(ai.AiCategoryScoreSchema),
     AiClassifyResponse: zodToJsonSchema(ai.AiClassifyResponseSchema),
+    KbDocumentDto: zodToJsonSchema(kb.KbDocumentDtoSchema),
+    KbDocumentCreateRequest: zodToJsonSchema(kb.KbDocumentCreateRequestSchema),
+    KbDocumentWriteResponse: zodToJsonSchema(kb.KbDocumentWriteResponseSchema),
+    KbSearchRequest: zodToJsonSchema(kb.KbSearchRequestSchema),
+    KbSearchResponse: zodToJsonSchema(kb.KbSearchResponseSchema),
+    ChatConversationCreateRequest: zodToJsonSchema(chat.ChatConversationCreateRequestSchema),
+    ChatConversationSummary: zodToJsonSchema(chat.ChatConversationSummarySchema),
+    ChatConversationDto: zodToJsonSchema(chat.ChatConversationDtoSchema),
+    ChatSendMessageRequest: zodToJsonSchema(chat.ChatSendMessageRequestSchema),
+    ChatSendMessageResponse: zodToJsonSchema(chat.ChatSendMessageResponseSchema),
     AutoReplyPolicyDto: zodToJsonSchema(support.AutoReplyPolicyDtoSchema),
     AutoReplyPolicyUpdate: zodToJsonSchema(support.AutoReplyPolicyUpdateSchema),
     TicketTriagePolicyDto: zodToJsonSchema(support.TicketTriagePolicyDtoSchema),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { evalReportMarkdown, mergeEvalSuites } from '../src/platform/evalReports.js';
-import { evaluatePromotion } from '../src/platform/modelRegistry.js';
+import { evalReportMarkdown, mergeEvalSuites } from '../src/services/evalReports.js';
+import { evaluatePromotion } from '../src/services/modelRegistry.js';
 
 describe('merged eval report format', () => {
   it('merges suite metrics into one report and passes only when every suite passes', () => {

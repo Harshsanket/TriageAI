@@ -51,7 +51,7 @@ describe.skipIf(!enabled)('ai-service contract', () => {
 });
 
 // Host-side capability adapters must satisfy the same wire contract.
-import { HttpClassifier, HttpEmbedder } from '../src/platform/capabilities.js';
+import { HttpClassifier, HttpEmbedder } from '../src/services/capabilities.js';
 
 describe.skipIf(!enabled)('capability adapters (host)', () => {
   it('embedder + classifier adapters parse the live service responses', async () => {

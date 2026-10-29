@@ -5,7 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import { ZodError } from 'zod';
 
 import { bootKernel, buildKernelConfig, loadConfigFile, PostgresDatabase } from '@triageai/kernel';
-import type { Kernel, KernelLogger, RouteRequest } from '@triageai/kernel';
+import type { Kernel, KernelLogger, RouteRequest, TriageModule } from '@triageai/kernel';
 import { aiPipelineModule } from '@triageai/module-ai-pipeline';
 import { chatModule } from '@triageai/module-chat';
 import { docAssistantModule } from '@triageai/module-doc-assistant';
@@ -15,23 +15,27 @@ import { integrationsSlackModule } from '@triageai/module-integrations-slack';
 import { kbModule } from '@triageai/module-kb';
 import { supportModule } from '@triageai/module-support';
 
-import { registerHealthRoutes } from './modules/health/routes.js';
-import { registerAuditRoutes } from './system/audit.js';
-import { registerCandidateRoutes } from './system/candidates.js';
-import { registerDatasetRoutes } from './system/datasets.js';
-import { registerHardwareRoute } from './system/hardware.js';
-import { registerModelRoutes } from './system/models.js';
-import { registerMetricsRoute } from './system/metrics.js';
-import { registerRetentionRoutes } from './system/retention.js';
-import { registerRunRoutes } from './system/runs.js';
-import { createCapabilities } from './platform/capabilities.js';
-import { DbModelRegistry } from './platform/modelRegistry.js';
+import { registerHealthRoutes } from './routes/health.js';
+import { registerHostRoutes } from './routes/index.js';
+import { createCapabilities } from './services/capabilities.js';
+import { DbModelRegistry } from './services/modelRegistry.js';
 import { AppError } from './platform/errors.js';
 import { logger } from './platform/logger.js';
 import { config } from './platform/config.js';
 import { createAuthGuard, registerAuthRoutes } from './platform/auth/index.js';
 import { AuthService } from './platform/auth/service.js';
-import { redactValue } from './platform/redact.js';
+
+/** Every first-party module the host can boot; config decides which are enabled. */
+export const MODULES: Record<string, TriageModule> = {
+  echo: echoModule,
+  chat: chatModule,
+  support: supportModule,
+  'ai-pipeline': aiPipelineModule,
+  kb: kbModule,
+  'doc-assistant': docAssistantModule,
+  'integrations-github': integrationsGitHubModule,
+  'integrations-slack': integrationsSlackModule,
+};
 
 export interface BuildAppOptions {
   /** Disable pretty logging in tests. */
@@ -177,16 +181,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       database,
       logger: kernelLogger,
       capabilities,
-      modules: {
-        echo: echoModule,
-        chat: chatModule,
-        support: supportModule,
-        'ai-pipeline': aiPipelineModule,
-        kb: kbModule,
-        'doc-assistant': docAssistantModule,
-        'integrations-github': integrationsGitHubModule,
-        'integrations-slack': integrationsSlackModule,
-      },
+      modules: MODULES,
     });
     app.decorate('kernel', kernel);
 
@@ -205,46 +200,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       retentionTimer.unref();
     }
 
-    registerSystemRoutes(app, kernel);
-    registerRunRoutes(app, kernel);
-    registerMetricsRoute(app, kernel);
-    registerAuditRoutes(app, kernel);
-    registerCandidateRoutes(app, kernel);
-    registerDatasetRoutes(app, kernel);
-    registerModelRoutes(app, kernel, activeRegistry);
-    registerHardwareRoute(app, kernel);
-    registerRetentionRoutes(app, kernel);
-    for (const route of kernel.routes()) {
-      app.route({
-        method: route.method,
-        url: route.url,
-        handler: async (request) =>
-          route.handler({
-            method: request.method,
-            url: request.url.split('?')[0] ?? request.url,
-            params: (request.params ?? {}) as Record<string, string>,
-            query: Object.fromEntries(
-              Object.entries((request.query ?? {}) as Record<string, unknown>).map(([k, v]) => [
-                k,
-                typeof v === 'string' ? v : String(v ?? ''),
-              ]),
-            ),
-            body: request.body,
-            actor: request.principal?.email,
-            actorId: request.principal?.userId,
-            // Customers only ever see their own records (ADR-0020 amendment).
-            ownerScope:
-              request.principal?.role === 'customer' ? request.principal.userId : undefined,
-            headers: Object.fromEntries(
-              Object.entries(request.headers).map(([key, value]) => [
-                key,
-                Array.isArray(value) ? value.join(',') : String(value ?? ''),
-              ]),
-            ),
-            rawBody: request.rawBody,
-          }),
-      });
-    }
+    registerHostRoutes(app, kernel, { modelRegistry: activeRegistry });
 
     app.addHook('onClose', async () => {
       if (retentionTimer) clearInterval(retentionTimer);
@@ -254,26 +210,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   return app;
-}
-
-function registerSystemRoutes(app: FastifyInstance, kernel: Kernel): void {
-  app.get('/api/v1/system/manifest', async () => kernel.manifest());
-  app.get('/api/v1/system/modules', async () => kernel.infos());
-  app.get('/api/v1/system/modules/health', async () => kernel.health());
-  app.get('/api/v1/system/config', async () =>
-    redactValue({
-      profile: kernel.config.profile,
-      queue: kernel.config.queue,
-      modules: kernel.config.modules,
-      capabilities: kernel.config.capabilities,
-      authMode: config.authMode,
-      rateLimit: { max: config.rateLimitMax, window: config.rateLimitWindow },
-    }),
-  );
-  app.post('/api/v1/system/modules/:id/uninstall', async (request) => {
-    const { id } = request.params as { id: string };
-    return kernel.uninstallModule(id);
-  });
 }
 
 export type { Kernel, RouteRequest };
