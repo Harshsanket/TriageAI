@@ -1,14 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SetupAnswersSchema } from '@triageai/contracts';
+import { SetupAnswersSchema, type HardwareProfile } from '@triageai/contracts';
 import { parseConfigFile } from '@triageai/kernel';
 
 import { MODULES } from '../src/app.js';
-import { fitFor, quantOf, SEARCH_QUERY } from '../src/setup/catalog.js';
+import { fitFor, quantOf, searchHuggingFace, SEARCH_QUERY } from '../src/setup/catalog.js';
 import { modelBudget } from '../src/setup/hardware.js';
 import { planSetup } from '../src/setup/plan.js';
 
 const GIB = 1024 ** 3;
+const HARDWARE: HardwareProfile = {
+  platform: 'darwin',
+  arch: 'arm64',
+  cpuModel: 'Apple M2',
+  cpuCores: 8,
+  memoryTotalBytes: 16 * GIB,
+  memoryFreeBytes: 8 * GIB,
+  appleSilicon: true,
+  gpu: null,
+  diskFreeBytes: 200 * GIB,
+  modelBudgetBytes: 8 * GIB,
+  tier: 'medium',
+  services: { aiService: false, ollama: false },
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 const plan = (answers: unknown, env: NodeJS.ProcessEnv = {}) =>
   planSetup(SetupAnswersSchema.parse(answers), parseConfigFile({}), MODULES, env);
 
@@ -74,6 +92,64 @@ describe('model catalog helpers', () => {
     expect(quantOf('Model-IQ3_XS.gguf')).toBe('IQ3_XS');
     expect(quantOf('model-f16.gguf')).toBe('F16');
     expect(quantOf('README.md')).toBeNull();
+  });
+
+  it('turns HF search hits into GGUF-only catalog rows with a fit verdict', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        if (url.includes('?search=')) {
+          return new Response(
+            JSON.stringify([{ id: 'acme/good' }, { id: 'acme/split' }, { id: 'bad id' }]),
+          );
+        }
+        if (url.includes('/acme/good?')) {
+          return new Response(
+            JSON.stringify({
+              id: 'acme/good',
+              downloads: 1234,
+              gated: false,
+              tags: ['license:apache-2.0'],
+              gguf: { context_length: 32768 },
+              siblings: [
+                { rfilename: 'good-Q8_0.gguf', size: 4 * GIB },
+                { rfilename: 'good-Q4_K_M.gguf', size: 2 * GIB },
+                { rfilename: 'good-00001-of-00002.gguf', size: 1 * GIB },
+              ],
+            }),
+          );
+        }
+        if (url.includes('/acme/split?')) {
+          return new Response(
+            JSON.stringify({
+              id: 'acme/split',
+              siblings: [{ rfilename: 'split-00001-of-00002.gguf', size: 1 * GIB }],
+            }),
+          );
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }),
+    );
+
+    const results = await searchHuggingFace('qwen instruct', 'generation', HARDWARE);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      id: 'acme/good',
+      runtimeModel: 'hf.co/acme/good:Q4_K_M',
+      sizeBytes: 2 * GIB,
+      fit: 'fits',
+      license: 'apache-2.0',
+      gated: false,
+      downloads: 1234,
+      contextLength: 32768,
+      source: 'huggingface',
+    });
+    expect(calls.every((url) => url.startsWith('https://huggingface.co/api/models'))).toBe(true);
+    expect(calls[0]).toContain('filter=gguf');
+    expect(calls[0]).toContain('pipeline_tag=text-generation');
   });
 
   it('labels fit against the memory budget', () => {
