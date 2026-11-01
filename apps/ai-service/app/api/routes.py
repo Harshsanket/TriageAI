@@ -32,10 +32,7 @@ async def classify(request: ClassifyRequest) -> ClassifyResponse:
     try:
         return classification.classify(request.text, request.model)
     except Exception as exc:  # noqa: BLE001 - surfaced as a typed 503, never a stack trace
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "MODEL_UNAVAILABLE", "title": "MODEL_UNAVAILABLE", "detail": str(exc)},
-        ) from None
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.post("/embed", response_model=EmbedResponse)
@@ -43,10 +40,7 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
     try:
         return classification.embed(request.texts)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "MODEL_UNAVAILABLE", "title": "MODEL_UNAVAILABLE", "detail": str(exc)},
-        ) from None
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.get("/modules")

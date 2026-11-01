@@ -49,6 +49,9 @@ const fakeGenerator: Generator = {
     if (question.includes('cite yourself')) {
       return { text: `Answer from the docs [${sources[0]?.ref}].`, modelVersion: 'fake-llm' };
     }
+    if (question.includes('zebra')) {
+      return { text: 'No verified information.', modelVersion: 'fake-llm' };
+    }
     // Real small models often answer correctly but omit the citation.
     return { text: sources[0]?.text ?? '', modelVersion: 'fake-llm' };
   },
@@ -123,13 +126,13 @@ describeIfDb('assistant profile (phase 4)', () => {
     await rm(docsDir, { recursive: true, force: true });
   });
 
-  it('ingests KB docs and gates retrieval on approval', async () => {
+  it('ingests KB docs and makes them retrievable immediately', async () => {
     const created = await app.inject({
       method: 'POST',
       url: '/api/v1/kb/documents',
       payload: {
         title: 'Refund policy test',
-        body: 'Refunds are processed within five business days. Contact billing for refund questions.',
+        body: `Refunds are processed within five business days. Contact billing for refund questions. (run ${Date.now()})`,
       },
     });
     expect(created.statusCode).toBe(200);
@@ -138,19 +141,7 @@ describeIfDb('assistant profile (phase 4)', () => {
       ingest: { chunks: number };
     };
     expect(createdBody.ingest.chunks).toBeGreaterThan(0);
-    expect(createdBody.document.approved).toBe(false);
-
-    const before = await app.inject({
-      method: 'POST',
-      url: '/api/v1/kb/search',
-      payload: { query: 'how long do refunds take' },
-    });
-    expect((before.json() as { chunks: unknown[] }).chunks).toHaveLength(0);
-
-    await app.inject({
-      method: 'POST',
-      url: `/api/v1/kb/documents/${createdBody.document.id}/approve`,
-    });
+    expect(createdBody.document.approved).toBe(true);
     const after = await app.inject({
       method: 'POST',
       url: '/api/v1/kb/search',
@@ -186,7 +177,7 @@ describeIfDb('assistant profile (phase 4)', () => {
     expect(assistant.citations).toEqual([]);
   }, 30_000);
 
-  it('refuses when retrieval is insufficient', async () => {
+  it('answers generally when retrieval is insufficient (prefer mode)', async () => {
     const sent = await app.inject({
       method: 'POST',
       url: '/api/v1/chat/messages',
@@ -194,7 +185,7 @@ describeIfDb('assistant profile (phase 4)', () => {
     });
     const { conversationId } = sent.json() as { conversationId: string };
     const assistant = await waitForAssistantMessage(app, conversationId);
-    expect(assistant.content).toContain('could not verify');
+    expect(assistant.content).toContain('No verified information.');
     expect(assistant.citations).toEqual([]);
   }, 30_000);
 

@@ -6,3 +6,4 @@ apps/ai-service/.venv
 apps/ai-service/uv.lock
 *.tsbuildinfo
 CHANGELOG.md
+WORKFLOW.md

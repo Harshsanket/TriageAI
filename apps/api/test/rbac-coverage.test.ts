@@ -46,12 +46,20 @@ describe('RBAC coverage', () => {
     ) as unknown as FastifyInstance;
 
     const moduleRoutes: KernelRouteDef[] = [];
+    const routesByModule = new Map<string, KernelRouteDef[]>();
     for (const module of Object.values(MODULES)) {
+      const routesForModule: KernelRouteDef[] = [];
+      routesByModule.set(module.id, routesForModule);
       const ctx = new Proxy({} as Record<string, unknown>, {
         get: (_target, key) => {
-          if (key === 'registerRoute') return (route: KernelRouteDef) => moduleRoutes.push(route);
+          if (key === 'registerRoute')
+            return (route: KernelRouteDef) => {
+              moduleRoutes.push(route);
+              routesForModule.push(route);
+            };
           if (key === 'moduleOptions' || key === 'then') return undefined;
           if (key === 'env') return {};
+          if (key === 'enabledModules') return [];
           return inert();
         },
       }) as unknown as KernelContext;
@@ -66,10 +74,32 @@ describe('RBAC coverage', () => {
     registerHostRoutes(fakeApp, fakeKernel, {
       modelRegistry: inert() as DbModelRegistry,
       setup: inert() as SetupRouteDeps,
+      plugins: inert() as never,
     });
 
     expect(moduleRoutes.length).toBeGreaterThan(30);
+    // Module routes are dispatched by the `/api/v1/*` generation router, not
+    // mounted one by one (Phase 12), so check their declarations directly.
+    const moduleUnruled = moduleRoutes
+      .filter((route) => !explicitRuleFor(route.method, route.url))
+      .map((route) => `${route.method} ${route.url}`);
+    expect(moduleUnruled).toEqual([]);
+
+    // The manifest is the grant source of truth (ADR-0054 §2): every route a
+    // module registers is declared in its permissions.
+    for (const module of Object.values(MODULES)) {
+      if (!module.permissions) continue;
+      const declared = new Set(
+        module.permissions.routes.map((route) => `${route.method} ${route.path}`),
+      );
+      const undeclared = (routesByModule.get(module.id) ?? [])
+        .map((route) => `${route.method} ${route.url}`)
+        .filter((route) => !declared.has(route));
+      expect({ module: module.id, undeclared }).toEqual({ module: module.id, undeclared: [] });
+    }
+
     const unruled = mounted
+      .filter(({ url }) => !url.endsWith('/*'))
       .filter(({ method, url }) => !explicitRuleFor(method, url))
       .map(({ method, url }) => `${method} ${url}`);
     expect(unruled).toEqual([]);

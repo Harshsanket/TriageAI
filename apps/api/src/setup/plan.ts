@@ -4,6 +4,8 @@
  * same kernel resolver the boot uses, so a plan that passes here boots.
  */
 import type { ParsedSetupAnswers, SetupPlan } from '@triageai/contracts';
+
+import { agentDefaults } from './agents.js';
 import {
   applyConfigOverlay,
   buildKernelConfig,
@@ -40,6 +42,144 @@ export const SECRET_ENV = {
   slackWebhookUrl: 'SLACK_WEBHOOK_URL',
 } as const;
 
+/** Interface → module set (the single source used by plan/add/remove). */
+export function interfaceModuleSet(
+  interfaces: Iterable<string>,
+  opts: { ticketAutoReply?: boolean } = {},
+): Set<string> {
+  const wants = new Set(interfaces);
+  const enable = new Set<string>();
+  if (wants.has('chatbot')) ['chat', 'kb', 'ai-pipeline'].forEach((id) => enable.add(id));
+  if (wants.has('ticket-solver')) ['support', 'ai-pipeline'].forEach((id) => enable.add(id));
+  if (wants.has('doc-assistant')) enable.add('doc-assistant');
+  if (wants.has('notifications-github')) enable.add('integrations-github');
+  if (wants.has('notifications-slack')) enable.add('integrations-slack');
+  if (wants.has('emailer')) ['emailer', 'support', 'ai-pipeline'].forEach((id) => enable.add(id));
+  if (wants.has('public-api')) ['public-api', 'ai-pipeline'].forEach((id) => enable.add(id));
+  void opts;
+  return enable;
+}
+
+const BUILT_IN_CAPABILITIES = new Set([
+  'storage',
+  'queue',
+  'eventBus',
+  'outputChannel',
+  'embedder',
+  'classifier',
+  'vectorStore',
+  'retriever',
+  'generator',
+  'validator',
+  'chatModel',
+  'modelRegistry',
+  'blobStore',
+  'egress',
+  'cache',
+]);
+
+function addDependencyClosure(enable: Set<string>, modules: Record<string, TriageModule>): void {
+  const providers = new Map<string, string>();
+  for (const [id, mod] of Object.entries(modules)) {
+    for (const capability of mod.permissions?.capabilities.provide ?? []) {
+      providers.set(capability, id);
+    }
+  }
+  for (const id of [...enable]) {
+    for (const capability of modules[id]?.permissions?.capabilities.consume ?? []) {
+      if (BUILT_IN_CAPABILITIES.has(capability)) continue;
+      const provider = providers.get(capability);
+      if (provider && !enable.has(provider)) enable.add(provider);
+    }
+  }
+}
+
+/**
+ * Merge "Add to setup" / "remove interfaces" into an existing overlay. Only
+ * interface-owned modules change; unrelated options, capabilities and agents
+ * are preserved. The caller still validates the result with the planner.
+ */
+export function mergeInterfacesOverlay(
+  baseOverlay: Record<string, unknown>,
+  add: string[],
+  remove: string[],
+  modules: Record<string, TriageModule>,
+): {
+  overlay: Record<string, unknown>;
+  enabledModules: string[];
+  agents: Array<{ interface: string; displayName: string; color: string }>;
+  problems: string[];
+} {
+  const base = baseOverlay as {
+    interfaces?: string[];
+    modules?: Record<string, { enabled?: boolean; options?: unknown }>;
+    capabilities?: Record<string, unknown>;
+    agents?: Record<string, { displayName: string; color: string }>;
+  };
+  const current = new Set(base.interfaces ?? []);
+  for (const key of add) current.add(key);
+  for (const key of remove) current.delete(key);
+  const enable = interfaceModuleSet(current);
+  addDependencyClosure(enable, modules);
+
+  const problems: string[] = [];
+  const overlayModules: Record<string, unknown> = {};
+  for (const id of Object.keys(modules)) {
+    overlayModules[id] = {
+      enabled: enable.has(id),
+      ...(enable.has(id) && base.modules?.[id]?.options
+        ? { options: base.modules[id]?.options }
+        : {}),
+    };
+  }
+  const capabilities: Record<string, Record<string, unknown>> = {
+    ...((base.capabilities ?? {}) as Record<string, Record<string, unknown>>),
+  };
+  if (enable.has('ai-pipeline') || enable.has('kb') || enable.has('doc-assistant')) {
+    capabilities.embedder = { adapter: 'ai-service', ...(capabilities.embedder ?? {}) };
+  }
+  if (enable.has('support')) {
+    capabilities.classifier = { adapter: 'ai-service', ...(capabilities.classifier ?? {}) };
+  }
+  if (enable.has('kb') || enable.has('doc-assistant')) {
+    capabilities.vectorStore = { adapter: 'pgvector', ...(capabilities.vectorStore ?? {}) };
+    capabilities.retriever = {
+      adapter: 'pgvector',
+      threshold: 0.35,
+      margin: 0.05,
+      ...(capabilities.retriever ?? {}),
+    };
+  }
+  const keptAgents = Object.entries(base.agents ?? {}).filter(([key]) => current.has(key));
+  const missing = [...current].filter((key) => !keptAgents.some(([agentKey]) => agentKey === key));
+  const generated = agentDefaults(
+    missing,
+    keptAgents.map(([, agent]) => agent.displayName),
+    keptAgents.map(([, agent]) => agent.color),
+  );
+  const agents = [
+    ...keptAgents.map(([key, agent]) => ({ interface: key, ...agent })),
+    ...generated,
+  ];
+  const overlay: Record<string, unknown> = {
+    ...baseOverlay,
+    interfaces: [...current],
+    modules: overlayModules,
+    capabilities,
+    ...(agents.length > 0
+      ? {
+          agents: Object.fromEntries(
+            agents.map((agent) => [
+              agent.interface,
+              { displayName: agent.displayName, color: agent.color },
+            ]),
+          ),
+        }
+      : { agents: {} }),
+  };
+  return { overlay, enabledModules: [...enable].sort(), agents, problems };
+}
+
 export function planSetup(
   answers: ParsedSetupAnswers,
   file: ConfigFile,
@@ -56,16 +196,17 @@ export function planSetup(
     wants.has('doc-assistant') ||
     (wants.has('ticket-solver') && answers.ticketSolver.autoReply && hasLlm);
 
-  if (wants.has('chatbot')) ['chat', 'kb', 'ai-pipeline'].forEach((id) => enable.add(id));
-  if (wants.has('ticket-solver')) ['support', 'ai-pipeline'].forEach((id) => enable.add(id));
-  if (wants.has('doc-assistant')) enable.add('doc-assistant');
-  if (wants.has('notifications-github')) enable.add('integrations-github');
-  if (wants.has('notifications-slack')) enable.add('integrations-slack');
+  for (const id of interfaceModuleSet(wants, { ticketAutoReply: answers.ticketSolver.autoReply })) {
+    enable.add(id);
+  }
   if (needsRetrieval) enable.add('kb');
+  // Strict scoping: include the dependency closure declared by every selected
+  // module so the manifest equals the planner output for every combination.
+  addDependencyClosure(enable, modules);
 
   if (
     (wants.has('notifications-github') || wants.has('notifications-slack')) &&
-    !enable.has('support')
+    !wants.has('ticket-solver')
   ) {
     problems.push('Notifications send ticket updates, so they need the ticket solver too.');
   }
@@ -111,7 +252,44 @@ export function planSetup(
     };
   }
   const profile = enable.has('support') ? 'support' : enable.has('chat') ? 'assistant' : 'core';
-  const overlay = { profile, modules: overlayModules, capabilities };
+  const chosen = [...wants];
+  const providedAgents = (answers.agents ?? []).filter((agent) =>
+    chosen.includes(agent.interface as (typeof chosen)[number]),
+  );
+  const missing = chosen.filter((key) => !providedAgents.some((agent) => agent.interface === key));
+  const generated =
+    missing.length > 0
+      ? agentDefaults(
+          missing,
+          providedAgents.map((agent) => agent.displayName),
+          providedAgents.map((agent) => agent.color),
+        )
+      : [];
+  const agents = [...providedAgents, ...generated];
+  const seenNames = new Set<string>();
+  for (const agent of agents) {
+    const normalized = agent.displayName.trim().toLowerCase();
+    if (seenNames.has(normalized)) {
+      problems.push(`agent name "${agent.displayName}" is used more than once`);
+    }
+    seenNames.add(normalized);
+  }
+  const overlay = {
+    profile,
+    interfaces: chosen,
+    modules: overlayModules,
+    capabilities,
+    ...(agents.length > 0
+      ? {
+          agents: Object.fromEntries(
+            agents.map((agent) => [
+              agent.interface,
+              { displayName: agent.displayName, color: agent.color },
+            ]),
+          ),
+        }
+      : {}),
+  };
 
   const secrets: string[] = [];
   if (answers.integrations.githubToken) secrets.push(SECRET_ENV.githubToken);
@@ -153,6 +331,7 @@ export function planSetup(
   return {
     overlay,
     enabledModules: [...enable].sort(),
+    agents,
     problems,
     warnings,
     secrets,

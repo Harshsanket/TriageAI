@@ -40,6 +40,12 @@ describe('deterministic validation stack', () => {
 
     const noSources = runValidation({ text: 'anything' });
     expect(failedChecks(noSources)).toContain('grounding');
+
+    const general = runValidation(
+      { text: 'The moon is made of edible cheese.', sources },
+      { allowUngrounded: true },
+    );
+    expect(failedChecks(general)).not.toContain('grounding');
   });
 
   it('fails empty, oversized, and source-marker-leaking outputs', () => {

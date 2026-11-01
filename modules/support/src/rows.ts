@@ -20,6 +20,10 @@ export interface TicketRow {
   triage: Record<string, unknown> | null;
   auto_reply: Record<string, unknown> | null;
   owner_id?: string | null;
+  sla_due_at?: Date | string | null;
+  sla_breached_at?: Date | string | null;
+  assignee_id?: string | null;
+  csat_score?: number | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -71,6 +75,10 @@ export const ticketDto = (row: TicketRow) => ({
   routing: row.routing,
   triage: row.triage ?? null,
   autoReply: row.auto_reply ?? null,
+  slaDueAt: row.sla_due_at ? new Date(row.sla_due_at).toISOString() : null,
+  slaBreachedAt: row.sla_breached_at ? new Date(row.sla_breached_at).toISOString() : null,
+  assigneeId: row.assignee_id ?? null,
+  csatScore: row.csat_score ?? null,
   createdAt: new Date(row.created_at).toISOString(),
   updatedAt: new Date(row.updated_at).toISOString(),
 });

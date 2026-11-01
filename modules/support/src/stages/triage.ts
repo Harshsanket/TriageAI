@@ -2,6 +2,7 @@
 import { ulid } from 'ulid';
 
 import type { TicketPriorityCode } from '@triageai/contracts';
+import { invalid, notFound } from '@triageai/kernel';
 import type { KernelContext } from '@triageai/kernel';
 
 import { assertTransition } from '../state.js';
@@ -15,13 +16,13 @@ export function registerTriageStages(ctx: KernelContext, options: SupportOptions
   ctx.registerStageHandler('support.ticket.load', {
     execute: async (stage) => {
       const input = stage.input as { ticketId?: string };
-      if (!input.ticketId) throw new Error('support.ticket.load requires ticketId');
+      if (!input.ticketId) throw invalid('support.ticket.load requires ticketId');
       const rows = await ctx.database.query<TicketRow>(
         `SELECT * FROM support_tickets WHERE id = $1`,
         [input.ticketId],
       );
       const ticket = rows[0];
-      if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
+      if (!ticket) throw notFound(`ticket ${input.ticketId} not found`);
       return {
         output: {
           ticketId: ticket.id,
@@ -139,14 +140,14 @@ export function registerTriageStages(ctx: KernelContext, options: SupportOptions
         teamAmbiguous?: boolean;
         teamReasons?: string[];
       };
-      if (!input.ticketId) throw new Error('support.ticket.apply requires ticketId');
+      if (!input.ticketId) throw invalid('support.ticket.apply requires ticketId');
 
       const rows = await ctx.database.query<TicketRow>(
         `SELECT * FROM support_tickets WHERE id = $1`,
         [input.ticketId],
       );
       const ticket = rows[0];
-      if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
+      if (!ticket) throw notFound(`ticket ${input.ticketId} not found`);
 
       const triageAmbiguous = Boolean(input.priorityAmbiguous) || Boolean(input.teamAmbiguous);
       const nextStatus: TicketStatus =
@@ -184,11 +185,16 @@ export function registerTriageStages(ctx: KernelContext, options: SupportOptions
         teamReasons: input.teamReasons ?? [],
       };
 
+      const slaHours =
+        options.triage.slaHours[(input.priorityCode as 'P0' | 'P1' | 'P2' | 'P3' | null) ?? 'P3'] ??
+        options.triage.slaHours.P3;
+      const slaDueAt = new Date(Date.now() + slaHours * 60 * 60 * 1000);
       await ctx.database.query(
         `UPDATE support_tickets
            SET status = $2, category = $3, confidence = $4, margin = $5,
                priority = $6, team = $7, classification = $8, routing = $9,
-               priority_code = $10, team_id = $11, triage = $12, updated_at = now()
+               priority_code = $10, team_id = $11, triage = $12,
+               sla_due_at = COALESCE(sla_due_at, $13), updated_at = now()
          WHERE id = $1`,
         [
           input.ticketId,
@@ -203,6 +209,7 @@ export function registerTriageStages(ctx: KernelContext, options: SupportOptions
           triage.priorityCode,
           triage.teamId,
           triage,
+          slaDueAt.toISOString(),
         ],
       );
       await ctx.database.query(

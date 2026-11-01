@@ -4,11 +4,15 @@
  */
 import type { ZodSchema } from 'zod';
 
-import type { ModuleManifest } from '@triageai/contracts';
+import type { ErrorCategory, ModuleManifest, ModulePermissions } from '@triageai/contracts';
+import type { ToolDefinition } from './tools/types.js';
+
+import type { StructuredError } from './errors.js';
 
 export type { ModuleManifest } from '@triageai/contracts';
 
 import type { EventBus } from './eventbus.js';
+import type { KnowledgeSource, KnowledgeSourceRegistry } from './sources/registry.js';
 
 export type CapabilityId =
   | 'storage'
@@ -22,13 +26,10 @@ export type CapabilityId =
   | 'validator'
   | 'memory'
   | 'outputChannel'
-  | 'modelRegistry';
-
-export interface ModuleDependency {
-  id: string;
-  version: string; // semver subset: exact, `>=x.y.z`, `^x.y.z`
-  optional?: boolean;
-}
+  | 'modelRegistry'
+  | 'blobStore'
+  | 'egress'
+  | 'systemStatus';
 
 export interface CapabilityDependency {
   capability: CapabilityId | (string & {});
@@ -55,6 +56,8 @@ export interface RouteRequest {
   actor?: string;
   /** Host-resolved stable id of the caller; modules store it as `owner_id`. */
   actorId?: string;
+  /** Host-resolved role (admin/agent/customer) for owner-or-admin rules. */
+  role?: string;
   /**
    * When set, the caller may only see and act on records whose `owner_id`
    * equals this value (e.g. a customer). Modules must filter by it and answer
@@ -68,6 +71,20 @@ export interface RouteRequest {
 }
 
 export type RouteHandler = (request: RouteRequest) => Promise<unknown>;
+
+/** Generic, use-case-free job progress (Phase 20.1, ADR-0051 companion). */
+export type JobStatus = 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled' | 'awaiting';
+
+export interface JobProgressUpdate {
+  done?: number;
+  total?: number;
+  unit?: string;
+  stage?: string;
+  status?: JobStatus;
+  error?: string | null;
+  title?: string;
+  detail?: Record<string, unknown>;
+}
 
 export interface StageHandlerContext {
   runId: string;
@@ -85,6 +102,12 @@ export interface StageHandlerContext {
   queue: QueueCapability;
   /** Aborted on timeout or run cancellation — adapters must honour it. */
   signal: AbortSignal;
+  /**
+   * Durable progress for long-running work (Phase 20.1). The engine stores it
+   * in `job_progress`, publishes `run.progress` and marks the job terminal
+   * when the run finishes.
+   */
+  reportProgress(update: JobProgressUpdate): Promise<void>;
 }
 
 export interface StageHandlerDef {
@@ -147,9 +170,21 @@ export interface VectorStore {
   search(
     collection: string,
     embedding: number[],
-    opts?: { limit?: number; filter?: Record<string, unknown> },
+    opts?: {
+      limit?: number;
+      filter?: Record<string, unknown>;
+      text?: string;
+      /** `public` also matches legacy chunks with no audience metadata. */
+      audience?: 'public' | 'operator';
+    },
   ): Promise<VectorMatch[]>;
   deleteByDocument(collection: string, documentId: string): Promise<void>;
+  /** Merge metadata without re-embedding (approval/source on-off). */
+  updateMetadata?(
+    collection: string,
+    documentId: string,
+    patch: Record<string, unknown>,
+  ): Promise<void>;
 }
 
 export interface RetrievalGate {
@@ -169,8 +204,14 @@ export interface Retriever {
   search(
     collection: string,
     query: string,
-    opts?: { limit?: number; filter?: Record<string, unknown> },
+    opts?: {
+      limit?: number;
+      filter?: Record<string, unknown>;
+      audience?: 'public' | 'operator';
+    },
   ): Promise<RetrievalResult>;
+  /** Drop cached results after a source/approval change (Phase 20.2). */
+  invalidate?(): void;
 }
 
 /**
@@ -295,14 +336,103 @@ export interface ModelRegistry {
 }
 
 /** Resolvable capability adapters (Phase 4/5: embedder, classifier, vector store, retriever, generator, validator). */
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  toolCallId?: string;
+}
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+}
+export interface ChatRequest {
+  messages: ChatMessage[];
+  tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+  toolChoice?: 'auto' | 'none' | { name: string };
+  maxTokens: number;
+  temperature?: number;
+  signal?: AbortSignal;
+  stream?: boolean;
+}
+export interface ChatResponse {
+  message: ChatMessage;
+  toolCalls: ToolCall[];
+  usage: { inputTokens: number; outputTokens: number; cachedTokens?: number };
+  stopReason: 'end' | 'max_tokens' | 'tool_use' | 'content_filter' | 'error';
+  modelVersion: string;
+}
+export interface ChatModel {
+  chat(req: ChatRequest): Promise<ChatResponse>;
+  describe(): {
+    provider: string;
+    model: string;
+    hosted: boolean;
+    contextWindow: number;
+    maxOutput: number;
+    supportsTools: boolean;
+    supportsStreaming: boolean;
+  };
+}
+
+export interface HostedConfig {
+  enabled: boolean;
+  allowedProviders: string[];
+  budgets?: Record<string, { dailyTokens?: number; dailyCurrency?: number }>;
+  currency?: string;
+}
+
+/** Outbound HTTP seam with an allowlist and audit (Phase 18.5). */
+export interface EgressCapability {
+  allows(url: string): boolean;
+  fetch(
+    url: string,
+    init: RequestInit,
+    context: { actor?: string | null; purpose: string },
+  ): Promise<Response>;
+}
+
+/**
+ * Read-only operational facts (ADR-0057). The host implements this from the
+ * same dashboard read service the tools use; modules never read host tables.
+ */
+export interface SystemStatusReads {
+  status(): Promise<Record<string, unknown>>;
+  uptime(): Promise<Record<string, unknown>>;
+  storage(): Promise<Record<string, unknown>>;
+}
+
+export interface SkillInstruction {
+  name: string;
+  version: number;
+  content: string;
+}
+
+export interface SkillCapture {
+  kind: 'explicit' | 'suggestion' | 'none';
+  added: boolean;
+  name: string | null;
+  notice: string | null;
+}
+
+export interface SkillReadApi {
+  enabled(ownerId: string | null): Promise<SkillInstruction[]>;
+  capture(ownerId: string | null, text: string, actor?: string | null): Promise<SkillCapture>;
+}
+
 export interface Capabilities {
   embedder?: { embed(texts: string[]): Promise<EmbedResult> };
+  chatModel?: ChatModel;
+  cache?: import('./storage/cache.js').Cache;
+  blobStore?: import('./storage/blob.js').BlobStore;
+  egress?: EgressCapability;
   classifier?: { classify(text: string): Promise<ClassificationResult> };
   vectorStore?: VectorStore;
   retriever?: Retriever;
   generator?: Generator;
   validator?: Validator;
   modelRegistry?: ModelRegistry;
+  systemStatus?: SystemStatusReads;
   /** Always supplied by the kernel; integration modules register adapters. */
   outputChannel?: OutputChannelRegistry;
 }
@@ -311,15 +441,147 @@ export interface Capabilities {
  * The only way modules touch anything outside themselves (ADR-0001 §DI).
  * Capabilities are validated against the module's declared `dependsOn`.
  */
+/**
+ * Core read APIs (ADR-0054 §3): modules never read kernel tables directly.
+ * `runs` replaces raw `workflow_runs`/`stage_runs` queries; `audit` stamps the
+ * calling module automatically.
+ */
+export interface RunReadFilter {
+  workflowId?: string;
+  status?: string[];
+  /** Exact JSONB containment on the run input (`input @> inputMatch`). */
+  inputMatch?: Record<string, string>;
+  ownerId?: string;
+  limit?: number;
+}
+
+export interface RunWithStages {
+  run: import('@triageai/contracts').RunDto;
+  stages: import('@triageai/contracts').StageRunDto[];
+}
+
+export interface RunReadApi {
+  get(id: string): Promise<RunWithStages | null>;
+  list(filter?: RunReadFilter): Promise<RunWithStages[]>;
+}
+
+export interface AuditAppendInput {
+  action: string;
+  subject?: string | null;
+  payload?: Record<string, unknown>;
+  actor?: string | null;
+}
+
+export interface CostLedgerEntry {
+  runId?: string | null;
+  stageId?: string | null;
+  agentId?: string | null;
+  task: string;
+  provider: string;
+  model: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  tokensCached?: number;
+  estCost?: number;
+  actualCost?: number | null;
+  currency?: string;
+}
+
+export interface ModelTraceRecord {
+  traceId: string;
+  runId: string;
+  task: string;
+  trace: unknown;
+}
+
+export interface KnowledgeStats {
+  documents: number;
+  approvedDocuments: number;
+  chunks: number;
+}
+
+export interface KnowledgeStorageStats {
+  chunks: number;
+  textBytes: number;
+  vectorBytes: number;
+}
+
+export interface KnowledgeReadApi {
+  collectionHasRows(collection: string): Promise<boolean>;
+  deleteCollection(collection: string): Promise<void>;
+  documentStats(collection: string): Promise<KnowledgeStats>;
+  dailyCounts(collection: string, days: number): Promise<Array<{ bucket: string; count: number }>>;
+  /** Bytes stored for a collection: chunk text + pgvector columns (Phase 23.4). */
+  storageStats(collection: string): Promise<KnowledgeStorageStats>;
+}
+
+export interface FeedbackProposal {
+  source: string;
+  sourceRunId?: string | null;
+  input: Record<string, unknown>;
+  gold: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+  actor?: string | null;
+}
+
 export interface KernelContext {
   moduleOptions: Record<string, unknown>;
   capabilities: Capabilities;
   database: Database;
   events: EventBus;
   queue: QueueCapability;
+  /** Core read APIs (ADR-0054 §3). */
+  runs: RunReadApi;
+  audit: { append(entry: AuditAppendInput): Promise<void> };
+  settings: { get<T = unknown>(key: string): Promise<T | null> };
+  /** User skills (ADR-0060): enabled instructions and deterministic capture. */
+  skills: SkillReadApi;
+  costLedger: {
+    record(entry: CostLedgerEntry): Promise<void>;
+    tokensToday(provider?: string): Promise<number>;
+  };
+  traces: { record(entry: ModelTraceRecord): Promise<void> };
+  knowledge: KnowledgeReadApi;
+  feedback: { propose(entry: FeedbackProposal): Promise<{ id: string }> };
+  /** Agent work items (ADR-0031/ADR-0055 task.*); core-owned state. */
+  tasks: {
+    create(args: {
+      workspaceId: string;
+      rootRunId: string;
+      title: string;
+      doneWhen: string;
+      inputRefs?: string[];
+    }): Promise<unknown>;
+    get(id: string): Promise<unknown | null>;
+    claim(id: string, agentId: string, leaseMs?: number): Promise<unknown>;
+    review(
+      id: string,
+      checkerId: string,
+      args: { pass: boolean; proofRefs?: string[]; failed?: string; saw?: string; fix?: string },
+    ): Promise<unknown>;
+  };
   logger: KernelLogger;
+  /**
+   * Provide a capability implementation (ADR-0054 §4). Consumers ask for the
+   * capability id; config selects which module (or the host) serves it.
+   */
+  provideCapability(id: CapabilityId | (string & {}), impl: unknown): void;
+  /** Register the schema for an event this module publishes (ADR-0055 §4). */
+  registerEventSchema(event: string, schema: ZodSchema): void;
   registerRoute(routeDef: KernelRouteDef): void;
   registerStageHandler(kind: string, def: StageHandlerDef): void;
+  /** Register a tool under the mandatory tool contract (Phase 15). */
+  registerTool(def: ToolDefinition<unknown, unknown>): void;
+  /** Durable job progress for a run (Phase 20.1); safe before/after the run. */
+  reportProgress(runId: string, update: JobProgressUpdate): Promise<void>;
+  /** Register a source plugin (Phase 20.2); it only fetches items. */
+  registerKnowledgeSource(source: KnowledgeSource): void;
+  /** Contribute dashboard data without the host reading module tables (R13). */
+  registerDashboardProvider(provider: DashboardProvider): void;
+  /** Contribute Prometheus metrics without the host reading module tables (R13). */
+  registerMetricsProvider(provider: MetricsProvider): void;
+  /** Every registered knowledge source, including plugins. */
+  knowledgeSources: KnowledgeSourceRegistry;
   /** Register a concrete OutputChannel adapter (one id per module/provider). */
   registerOutputChannel(channel: string, adapter: OutputChannel): void;
   /**
@@ -329,6 +591,10 @@ export interface KernelContext {
   registerRetentionTask(task: RetentionTask): void;
   /** Read-only process environment (secrets stay in env, never config/logs). */
   env: Readonly<Record<string, string | undefined>>;
+  /** IDs of every module enabled in this kernel generation. */
+  enabledModules: readonly string[];
+  /** Effective kernel config (read-only; no secrets). */
+  config: KernelConfig;
 }
 
 export interface RetentionCutoffs {
@@ -338,6 +604,16 @@ export interface RetentionCutoffs {
   candidates: Date | null;
   messages: Date | null;
   deadletters: Date | null;
+}
+
+export interface DashboardProvider {
+  id: string;
+  read(context: { database: Database }): Promise<Record<string, unknown>>;
+}
+
+export interface MetricsProvider {
+  id: string;
+  read(context: { database: Database }): Promise<Record<string, number>>;
 }
 
 export interface RetentionTask {
@@ -371,7 +647,19 @@ export interface QueueCapability {
   startWorkflow(
     workflowId: string,
     input: unknown,
-    opts?: { idempotencyKey?: string; orgId?: string | null; trigger?: string },
+    opts?: {
+      idempotencyKey?: string;
+      orgId?: string | null;
+      trigger?: string;
+      /** Owner for the jobs tray; defaults to the workflow's declared scope. */
+      ownerId?: string | null;
+      /** Human title for the jobs tray (no use-case vocabulary in the kernel). */
+      title?: string;
+      total?: number;
+      unit?: string;
+      /** Await terminal completion up to this many ms (interactive ingestion). */
+      waitMs?: number;
+    },
   ): Promise<QueueStartResult>;
   /** Deferred module work outside workflows (rare in Phase 1). */
   registerWorker(
@@ -387,6 +675,8 @@ export interface KernelRouteDef {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   url: string;
   handler: RouteHandler;
+  /** Streaming routes set the response type (e.g. `text/event-stream`). */
+  contentType?: string;
 }
 
 export interface WorkflowDef {
@@ -403,7 +693,12 @@ export interface WorkflowDef {
     /** Skip-condition (grammar: docs/contracts/workflow-contract.md §3). */
     when?: string;
     /** Per-stage retries (total attempts = attempts). */
-    retry?: { attempts: number; backoffMs?: number[] };
+    retry?: {
+      attempts: number;
+      backoffMs?: number[];
+      /** Categories to retry instead of the error's own retryable flag (per-stage override). */
+      retryOn?: ErrorCategory[];
+    };
     /** Per-attempt timeout; aborts the handler signal. */
     timeoutMs?: number;
     /** Failure behavior: halt the run (default) or hand over to the fallback policy. */
@@ -418,18 +713,32 @@ export interface Migration {
   migrations?: Migration[];
 }
 
+export type ModuleRunMode = 'in-process' | 'worker' | 'container';
+
 export interface TriageModule {
   id: string;
   version: string;
   capabilities: CapabilityId[]; // consumed capabilities (declared access)
+  /**
+   * Permission manifest enforced by the kernel (ADR-0054 §2). First-party
+   * in-process modules may omit it (the process is the trust boundary);
+   * third-party plugins must declare it, and an absent manifest denies all.
+   */
+  permissions?: ModulePermissions;
+  /** True for packages loaded from a signed plugin archive (default deny). */
+  thirdParty?: boolean;
+  /** How the supervisor should run the module (ADR-0054 §6). */
+  runMode?: ModuleRunMode;
   dependsOn: {
-    modules?: ModuleDependency[];
+    /** Capability requirements only; module-to-module edges were removed in Phase 22. */
     capabilities?: CapabilityDependency[];
   };
   configSchema?: ZodSchema;
   manifest: ModuleManifest;
   migrations?: Migration[];
   tables?: string[];
+  /** Phase 12: where the host loads the web bundle (`/plugins/<id>/<version>/web.js`). */
+  bundleUrl?: string;
 
   lifecycle: {
     onInstall?(): Promise<void>;
@@ -447,6 +756,7 @@ export interface KernelLogger {
   info(obj: unknown, msg?: string): void;
   warn(obj: unknown, msg?: string): void;
   error(obj: unknown, msg?: string): void;
+  fatal?(obj: unknown, msg?: string): void;
 }
 
 export interface Database {
@@ -467,10 +777,12 @@ export interface QueueOptions {
 }
 
 export interface DeadLetterEntry {
+  id: string;
   queue: string;
   payload: unknown;
   attempts: number;
   error: string;
+  errorDetails?: StructuredError;
   createdAt: string;
 }
 
@@ -491,6 +803,11 @@ export interface KernelConfig {
   modules: Record<string, { enabled: boolean; options?: unknown }>;
   capabilities: Record<string, { adapter: string; [key: string]: unknown }>;
   retention?: RetentionConfig;
+  hosted?: HostedConfig;
+  /** Host allowlist for every outbound HTTP call (18.5). */
+  egress?: {
+    allowlist: Array<{ host: string; dataClass: 'public' | 'internal' | 'restricted' | 'secret' }>;
+  };
 }
 
 export interface KernelOptions {

@@ -37,3 +37,35 @@ describeIfDb('pg-queue adapter', () => {
     };
   });
 });
+
+import { expect, it } from 'vitest';
+
+describeIfDb('pg-queue stuck leases (phase 21)', () => {
+  it('dead-letters a crashed job once it has used all attempts', async () => {
+    const database = new PostgresDatabase(DATABASE_URL);
+    await database.query(MIGRATIONS_TABLE_SQL);
+    await new MigrationRunner(database, noopLogger).apply('kernel', CORE_MIGRATIONS);
+    await database.query(`DELETE FROM queue_jobs WHERE queue = 't.lease'`);
+    await database.query(`DELETE FROM queue_deadletters WHERE queue = 't.lease'`);
+    await database.query(
+      `INSERT INTO queue_jobs (id, queue, payload, status, attempts, max_attempts, ready_at, lease_expires_at)
+       VALUES ('lease-crash-1', 't.lease', '{"n":1}', 'processing', 4, 4, now(), now() - interval '1 minute')`,
+    );
+    const queue = new PgQueue(database, noopLogger);
+    const subscription = queue.subscribe('t.lease', async () => undefined, {
+      pollIntervalMs: 50,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await subscription.stop();
+    const jobs = await database.query<{ id: string }>(
+      `SELECT id FROM queue_jobs WHERE id = 'lease-crash-1'`,
+    );
+    const dead = await database.query<{ id: string; attempts: number }>(
+      `SELECT id, attempts FROM queue_deadletters WHERE id = 'lease-crash-1'`,
+    );
+    expect(jobs).toHaveLength(0);
+    expect(dead[0]?.attempts).toBe(4);
+    await database.query(`DELETE FROM queue_deadletters WHERE queue = 't.lease'`);
+    await database.close();
+  });
+});

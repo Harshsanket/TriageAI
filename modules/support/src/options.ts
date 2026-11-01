@@ -27,6 +27,14 @@ export const triageConfigSchema = z
     // Policy default for tickets with no signal. Set to null for a strict
     // profile where every unmatched ticket goes to manual triage.
     fallbackPriorityCode: TicketPriorityCodeSchema.nullable().default('P3'),
+    slaHours: z
+      .object({
+        P0: z.number().positive().default(1),
+        P1: z.number().positive().default(4),
+        P2: z.number().positive().default(24),
+        P3: z.number().positive().default(72),
+      })
+      .default({ P0: 1, P1: 4, P2: 24, P3: 72 }),
   })
   .default({});
 

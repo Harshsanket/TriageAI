@@ -40,6 +40,8 @@ export const ManifestModuleSchema = z.object({
   id: z.string(),
   version: z.string(),
   manifest: ModuleManifestSchema,
+  /** Phase 12: ESM bundle served from the plugin volume; absent for in-host bundles. */
+  bundleUrl: z.string().optional(),
 });
 export type ManifestModule = z.infer<typeof ManifestModuleSchema>;
 

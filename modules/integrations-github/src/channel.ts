@@ -6,6 +6,7 @@
 import {
   HttpOutputChannel,
   TokenRotator,
+  invalid,
   type DeliveryContext,
   type OutboundIntent,
   type OutboundMatch,
@@ -76,7 +77,7 @@ export function createGitHubChannel(options: GitHubChannelOptions): OutputChanne
       if (op === 'close' || op === 'comment') {
         const issueNumber = intent.metadata?.issueNumber;
         if (typeof issueNumber !== 'number') {
-          throw new Error(`${op} requires metadata.issueNumber`);
+          throw invalid(`${op} requires metadata.issueNumber`);
         }
         if (op === 'close') {
           return {

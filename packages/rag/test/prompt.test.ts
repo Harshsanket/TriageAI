@@ -23,6 +23,17 @@ describe('rag prompts', () => {
     expect(prompt.match(/<<<END SOURCE 1>>>/g)).toHaveLength(1);
   });
 
+  it('answers general questions without source boundaries or citations', () => {
+    const prompt = buildRagPrompt({
+      question: 'What is 2 + 2?',
+      chunks: [],
+      mode: 'general',
+    });
+    expect(prompt).toContain('NOT grounded in the user');
+    expect(prompt).not.toContain('<<<SOURCE');
+    expect(prompt).not.toContain('cite them as');
+  });
+
   it('keeps injection text inside the source boundary', () => {
     const prompt = buildRagPrompt({
       question: 'q',

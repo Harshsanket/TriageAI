@@ -6,6 +6,8 @@ import type { FastifyInstance } from 'fastify';
 
 import type { Kernel } from '@triageai/kernel';
 
+import { verifyAuditChain } from '../services/auditChain.js';
+
 interface AuditRow {
   [key: string]: unknown;
   id: string;
@@ -38,4 +40,6 @@ export function registerAuditRoutes(app: FastifyInstance, kernel: Kernel): void 
       createdAt: new Date(row.created_at).toISOString(),
     }));
   });
+
+  app.get('/api/v1/system/audit/verify', async () => verifyAuditChain(kernel.database));
 }

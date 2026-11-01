@@ -42,6 +42,11 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((value) => value === '1' || value === 'true'),
+  TRIAGEAI_PLUGINS_DIR: z.string().optional(),
+  TRIAGEAI_PLUGIN_REGISTRY: z.string().optional(),
+  TRIAGEAI_PLUGIN_PUBLIC_KEYS: z.string().optional(),
+  TRIAGEAI_SKILLS_DIR: z.string().optional(),
+  TRIAGEAI_TRUST_PROXY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -69,6 +74,13 @@ export const config = {
   secretKey: env.TRIAGEAI_SECRET_KEY,
   setupEnabled: env.TRIAGEAI_SETUP !== 'off',
   restartOnApply: env.TRIAGEAI_RESTART_ON_APPLY,
+  /** Fastify trustProxy: false, true, or a comma-separated CIDR list. */
+  trustProxy:
+    env.TRIAGEAI_TRUST_PROXY === undefined || env.TRIAGEAI_TRUST_PROXY === ''
+      ? false
+      : env.TRIAGEAI_TRUST_PROXY === '1' || env.TRIAGEAI_TRUST_PROXY === 'true'
+        ? true
+        : env.TRIAGEAI_TRUST_PROXY,
   authAccessTtlSeconds: env.AUTH_ACCESS_TTL_SECONDS,
   authRefreshTtlSeconds: env.AUTH_REFRESH_TTL_SECONDS,
   /** Explicit browser origins; `*` opts back into reflecting any origin. */
@@ -78,6 +90,11 @@ export const config = {
   metricsToken: env.METRICS_TOKEN,
   rateLimitMax: env.RATE_LIMIT_DISABLED ? 0 : env.RATE_LIMIT_MAX,
   rateLimitWindow: env.RATE_LIMIT_WINDOW,
+  /** Phase 12: plugin volume, registry URL/`off`, and pinned ed25519 keys. */
+  pluginsRoot: env.TRIAGEAI_PLUGINS_DIR ?? '.triageai-plugins',
+  pluginRegistryUrl: env.TRIAGEAI_PLUGIN_REGISTRY ?? 'off',
+  pluginPublicKeys: env.TRIAGEAI_PLUGIN_PUBLIC_KEYS,
+  skillsRoot: env.TRIAGEAI_SKILLS_DIR ?? '.triageai-skills',
 } as const;
 
 export type AppConfig = typeof config;

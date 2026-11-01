@@ -1,11 +1,15 @@
 /**
- * Authenticated fetch for the web host. When auth is disabled the server never
- * asks for a token; when it is required the access token is attached and a
- * single refresh is attempted on 401 (FR-11.1).
+ * Authenticated fetch for the web host. Every failure is typed with the shared
+ * error envelope (10C): callers branch on `ok`, and a failed request is never
+ * mistaken for an empty list.
  */
+import { ErrorEnvelopeSchema } from '@triageai/contracts';
+import type { ErrorEnvelope } from '@triageai/contracts';
+
 export interface StoredSession {
   accessToken: string;
-  refreshToken: string;
+  /** Optional only for tests; the browser refresh token is an HttpOnly cookie. */
+  refreshToken?: string;
   accessExpiresAt: string;
   refreshExpiresAt: string;
   user: { id: string; email: string; name: string; role: 'customer' | 'agent' | 'admin' };
@@ -23,7 +27,9 @@ export function getSession(): StoredSession | null {
 }
 
 export function setSession(session: StoredSession): void {
-  globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(session));
+  // Never persist the long-lived refresh token: it lives in the HttpOnly cookie (R10).
+  const { refreshToken: _refreshToken, ...safe } = session;
+  globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(safe));
 }
 
 export function clearSession(): void {
@@ -34,14 +40,15 @@ let refreshInFlight: Promise<StoredSession | null> | null = null;
 
 async function refreshSession(): Promise<StoredSession | null> {
   const session = getSession();
-  if (!session?.refreshToken) return null;
+  if (!session) return null;
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
         const res = await fetch('/api/v1/auth/refresh', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ refreshToken: session.refreshToken }),
+          body: JSON.stringify({}),
+          credentials: 'same-origin',
         });
         if (!res.ok) return null;
         const next = (await res.json()) as StoredSession;
@@ -63,20 +70,126 @@ function withAuthorization(init: RequestInit | undefined, token: string): Reques
   return { ...init, headers };
 }
 
-export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const session = getSession();
-  const first = session?.accessToken
-    ? await fetch(input, withAuthorization(init, session.accessToken))
-    : await fetch(input, init);
-  if (first.status !== 401 || !session?.refreshToken) return first;
+export interface ApiFailure {
+  status: number;
+  envelope: ErrorEnvelope;
+}
 
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  if (url.includes('/api/v1/auth/')) return first;
+export type ApiResult<T> =
+  { ok: true; data: T; response: Response } | { ok: false; error: ApiFailure };
 
-  const refreshed = await refreshSession();
-  if (!refreshed) {
-    clearSession();
-    return first;
+function categoryForStatus(status: number): ErrorEnvelope['category'] {
+  if (status === 0) return 'dependency_unavailable';
+  if (status === 400 || status === 422) return 'validation';
+  if (status === 401) return 'unauthenticated';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 409) return 'conflict';
+  if (status === 429) return 'rate_limited';
+  if (status === 503) return 'dependency_unavailable';
+  if (status === 504) return 'timeout';
+  return status >= 500 ? 'internal' : 'validation';
+}
+
+function fallbackEnvelope(status: number, correlationId: string): ErrorEnvelope {
+  const category = categoryForStatus(status);
+  const userMessage =
+    status === 429
+      ? 'Too many requests. Wait a moment and try again.'
+      : status === 401
+        ? 'Please sign in again.'
+        : status === 0
+          ? 'You appear to be offline. Check your connection and retry.'
+          : 'The request failed. Try again.';
+  return {
+    type: `https://triageai.dev/errors/HTTP_${status}`,
+    title: `HTTP_${status}`,
+    status,
+    code: `HTTP_${status}`,
+    category,
+    retryable: category === 'rate_limited' || category === 'dependency_unavailable',
+    userMessage,
+    correlationId,
+  };
+}
+
+async function readEnvelope(response: Response): Promise<ErrorEnvelope> {
+  const correlationId =
+    response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? 'unknown';
+  try {
+    const body = (await response.clone().json()) as unknown;
+    return ErrorEnvelopeSchema.parse(body);
+  } catch {
+    return fallbackEnvelope(response.status, correlationId);
   }
-  return fetch(input, withAuthorization(init, refreshed.accessToken));
+}
+
+function urlOf(input: RequestInfo | URL): string {
+  return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+}
+
+function signedOut(): void {
+  clearSession();
+  globalThis.dispatchEvent?.(new Event('triageai:signed-out'));
+}
+
+export async function apiFetch<T = unknown>(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<ApiResult<T>> {
+  const session = getSession();
+  let response: Response;
+  try {
+    response = session?.accessToken
+      ? await fetch(input, withAuthorization(init, session.accessToken))
+      : await fetch(input, init);
+  } catch {
+    return { ok: false, error: { status: 0, envelope: fallbackEnvelope(0, 'offline') } };
+  }
+
+  if (response.status === 401 && session && !urlOf(input).includes('/api/v1/auth/')) {
+    const refreshed = await refreshSession();
+    if (!refreshed) {
+      signedOut();
+    } else {
+      try {
+        response = await fetch(input, withAuthorization(init, refreshed.accessToken));
+      } catch {
+        return { ok: false, error: { status: 0, envelope: fallbackEnvelope(0, 'offline') } };
+      }
+    }
+  } else if (response.status === 401) {
+    signedOut();
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: { status: response.status, envelope: await readEnvelope(response) },
+    };
+  }
+
+  const text = await response.text();
+  let data: unknown = undefined;
+  if (text.length > 0) {
+    try {
+      data = JSON.parse(text) as unknown;
+    } catch {
+      return {
+        ok: false,
+        error: {
+          status: response.status,
+          envelope: {
+            ...fallbackEnvelope(502, 'invalid-response'),
+            code: 'HTTP_INVALID_RESPONSE',
+            title: 'HTTP_INVALID_RESPONSE',
+            category: 'dependency_unavailable',
+            retryable: true,
+            userMessage: 'The server returned an unreadable response.',
+          },
+        },
+      };
+    }
+  }
+  return { ok: true, data: data as T, response };
 }

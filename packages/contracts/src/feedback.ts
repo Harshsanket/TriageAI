@@ -237,3 +237,61 @@ export const EvalReportDtoSchema = z.object({
   createdAt: z.string(),
 });
 export type EvalReportDto = z.infer<typeof EvalReportDtoSchema>;
+
+/** Phase 23.5: feedback provenance, processing timeline and graphs. */
+export const FeedbackTimelineStepSchema = z.object({
+  step: z.enum(['received', 'triaged', 'reviewed', 'added_to_dataset', 'used_in_eval', 'outcome']),
+  at: z.string(),
+  detail: z.string().nullable(),
+  href: z.string().nullable(),
+  status: z.enum(['done', 'pending', 'rejected']),
+});
+export type FeedbackTimelineStep = z.infer<typeof FeedbackTimelineStepSchema>;
+
+export const FeedbackInsightItemSchema = z.object({
+  id: z.string(),
+  source: z.string(),
+  status: z.string(),
+  rating: z.enum(['positive', 'negative', 'neutral']),
+  reason: z.string().nullable(),
+  text: z.string(),
+  answer: z.string().nullable(),
+  citations: z.array(z.string()).default([]),
+  module: z.string().nullable(),
+  agent: z.string().nullable(),
+  conversationId: z.string().nullable(),
+  ticketId: z.string().nullable(),
+  model: z.string().nullable(),
+  promptVersion: z.string().nullable(),
+  createdAt: z.string(),
+  timeline: z.array(FeedbackTimelineStepSchema),
+});
+export type FeedbackInsightItem = z.infer<typeof FeedbackInsightItemSchema>;
+
+export const FeedbackInsightsSchema = z.object({
+  items: z.array(FeedbackInsightItemSchema),
+  graphs: z.object({
+    volume: z.array(
+      z.object({
+        bucket: z.string(),
+        bySource: z.record(z.number().int().nonnegative()),
+      }),
+    ),
+    sentiment: z.array(
+      z.object({
+        bucket: z.string(),
+        positive: z.number().int().nonnegative(),
+        negative: z.number().int().nonnegative(),
+      }),
+    ),
+    topReasons: z.array(z.object({ reason: z.string(), count: z.number().int().nonnegative() })),
+    funnel: z.object({
+      received: z.number().int().nonnegative(),
+      reviewed: z.number().int().nonnegative(),
+      accepted: z.number().int().nonnegative(),
+      used: z.number().int().nonnegative(),
+    }),
+    avgReviewHours: z.number().nonnegative().nullable(),
+  }),
+});
+export type FeedbackInsights = z.infer<typeof FeedbackInsightsSchema>;

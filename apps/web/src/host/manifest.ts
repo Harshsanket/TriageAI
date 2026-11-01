@@ -20,18 +20,25 @@ export function useSystemManifest(): ManifestState {
 
   useEffect(() => {
     let disposed = false;
+    const signOut = () => setState({ phase: 'unauthenticated' });
+    globalThis.addEventListener?.('triageai:signed-out', signOut);
     const load = async () => {
-      try {
-        const res = await apiFetch('/api/v1/system/manifest');
-        if (res.status === 401) {
-          if (!disposed) setState({ phase: 'unauthenticated' });
+      const res = await apiFetch<SystemManifest>('/api/v1/system/manifest');
+      if (!res.ok) {
+        if (
+          !disposed &&
+          (res.error.status === 401 || res.error.envelope.category === 'unauthenticated')
+        ) {
+          setState({ phase: 'unauthenticated' });
           return;
         }
-        if (!res.ok) throw new Error(`manifest fetch failed: ${res.status}`);
-        const parsed = SystemManifestSchema.parse(await res.json());
-        if (!disposed) setState({ phase: 'ready', manifest: parsed });
-      } catch (err) {
-        if (!disposed) setState({ phase: 'error', message: (err as Error).message });
+        if (!disposed) setState({ phase: 'error', message: res.error.envelope.userMessage });
+        return;
+      }
+      const parsed = SystemManifestSchema.safeParse(res.data);
+      if (!disposed) {
+        if (parsed.success) setState({ phase: 'ready', manifest: parsed.data });
+        else setState({ phase: 'error', message: 'The module manifest has an unexpected shape.' });
       }
     };
     void load();
@@ -39,6 +46,7 @@ export function useSystemManifest(): ManifestState {
     return () => {
       disposed = true;
       clearInterval(timer);
+      globalThis.removeEventListener?.('triageai:signed-out', signOut);
     };
   }, []);
 

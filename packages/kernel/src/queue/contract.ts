@@ -139,7 +139,14 @@ export function queueContractSuite(
       await tick(700);
       const dlq = await queue.deadLetter('t.dlq');
       expect(dlq.length).toBe(1);
+      expect(dlq[0].id.length).toBeGreaterThan(0);
       expect(dlq[0].error).toContain('always broken');
+      expect(dlq[0].errorDetails).toMatchObject({
+        code: 'INTERNAL_ERROR',
+        category: 'internal',
+        retryable: false,
+        message: 'always broken',
+      });
       expect(dlq[0].attempts).toBeGreaterThanOrEqual(2);
     } finally {
       await Promise.all(subs.map((s) => s.stop()));

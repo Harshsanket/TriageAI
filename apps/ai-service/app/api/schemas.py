@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,7 +51,7 @@ class ClassifyResponse(BaseModel):
 
 
 class EmbedRequest(BaseModel):
-    texts: list[str] = Field(min_length=1, max_length=64)
+    texts: list[Annotated[str, Field(max_length=20_000)]] = Field(min_length=1, max_length=64)
 
 
 class EmbedResponse(BaseModel):
@@ -61,9 +61,33 @@ class EmbedResponse(BaseModel):
     model_version: str = Field(alias="modelVersion")
 
 
-class ErrorBody(BaseModel):
-    """Typed error shape returned by non-2xx responses."""
+ErrorCategory = Literal[
+    "validation",
+    "unauthenticated",
+    "forbidden",
+    "not_found",
+    "conflict",
+    "rate_limited",
+    "dependency_unavailable",
+    "timeout",
+    "budget_exceeded",
+    "policy_blocked",
+    "internal",
+]
 
+
+class ErrorEnvelope(BaseModel):
+    """The shared error contract (packages/contracts/src/errors.ts)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: str
     title: str
-    detail: str
+    status: int = Field(ge=400, le=599)
     code: str
+    category: ErrorCategory
+    retryable: bool
+    retry_after_ms: int | None = Field(default=None, alias="retryAfterMs", ge=0)
+    user_message: str = Field(alias="userMessage", min_length=1)
+    detail: str | None = None
+    correlation_id: str = Field(alias="correlationId", min_length=1)

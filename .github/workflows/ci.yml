@@ -35,8 +35,70 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
+      - run: pnpm docs:workflow:check
       - run: pnpm typecheck
       - run: pnpm test:ts
+
+  serialized-transport:
+    name: Serialized in-process MP1 transport
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: triageai
+          POSTGRES_PASSWORD: triageai
+          POSTGRES_DB: triageai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triageai -d triageai"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://triageai:triageai@localhost:5432/triageai
+      TRIAGEAI_MODULE_TRANSPORT: serialized
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:ts
+
+  auth-required:
+    name: Auth-required key/route matrix
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: triageai
+          POSTGRES_PASSWORD: triageai
+          POSTGRES_DB: triageai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triageai -d triageai"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://triageai:triageai@localhost:5432/triageai
+      AUTH_MODE: required
+      AUTH_JWT_SECRET: ci-only-secret-value-at-least-32-chars
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @triageai/api exec vitest run test/auth-hardening.test.ts
 
   ai-contract:
     name: Node/Python AI contract

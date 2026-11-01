@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { ulid } from 'ulid';
 
+import { notFound } from '@triageai/kernel';
 import type { KernelContext } from '@triageai/kernel';
 
 import { assertTransition, canTransition } from './state.js';
@@ -28,7 +29,7 @@ export function createSupportServices(ctx: KernelContext) {
     checks?: unknown;
   }): Promise<{ escalated: boolean; status: string; reasons: string[] }> => {
     const ticket = await loadTicketRow(args.ticketId);
-    if (!ticket) throw new Error(`ticket ${args.ticketId} not found`);
+    if (!ticket) throw notFound(`ticket ${args.ticketId} not found`);
     if (ticket.status === 'HUMAN_REVIEW') {
       return { escalated: false, status: ticket.status, reasons: args.reasons };
     }
@@ -84,7 +85,7 @@ export function createSupportServices(ctx: KernelContext) {
       [id],
     );
     const ticket = rows[0];
-    if (!ticket) throw Object.assign(new Error(`ticket ${id} not found`), { statusCode: 404 });
+    if (!ticket) throw notFound(`ticket ${id} not found`);
     assertTransition(ticket.status, to);
     await ctx.database.query(
       `UPDATE support_tickets SET status = $2, updated_at = now() WHERE id = $1`,

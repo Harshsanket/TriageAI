@@ -8,7 +8,7 @@ import { ulid } from 'ulid';
 
 import { IntegrationApprovalRequestSchema } from '@triageai/contracts';
 import { AppError } from '@triageai/kernel';
-import type { Database, KernelContext } from '@triageai/kernel';
+import type { AuditAppendInput, Database, KernelContext } from '@triageai/kernel';
 
 /** Columns every provider action table has. */
 export interface ActionRowBase {
@@ -46,12 +46,17 @@ export function createActionStore<Row extends ActionRowBase>(
   database: Database,
   provider: string,
   table: string,
+  appendAudit?: (entry: AuditAppendInput) => Promise<void>,
 ): ActionStore<Row> {
   // The table name is module-declared, never request input, but it is
   // interpolated into SQL, so refuse anything that is not a plain identifier.
   if (!TABLE_NAME.test(table)) throw new Error(`invalid action table name: ${table}`);
 
   const audit: ActionStore<Row>['audit'] = async (action, subject, payload, actor = 'system') => {
+    if (appendAudit) {
+      await appendAudit({ action, subject, payload, actor });
+      return;
+    }
     await database.query(
       `INSERT INTO audit_events (id, actor, action, subject, payload) VALUES ($1, $2, $3, $4, $5)`,
       [ulid(), actor, action, subject, payload],

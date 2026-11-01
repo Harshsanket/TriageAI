@@ -4,6 +4,8 @@
  */
 import { z } from 'zod';
 
+import { AgentPreferenceSchema } from './agents.js';
+
 export const SetupStateSchema = z.enum(['pending', 'applied', 'complete']);
 export type SetupState = z.infer<typeof SetupStateSchema>;
 
@@ -26,6 +28,8 @@ export const SetupInterfaceSchema = z.enum([
   'doc-assistant',
   'notifications-github',
   'notifications-slack',
+  'emailer',
+  'public-api',
 ]);
 export type SetupInterface = z.infer<typeof SetupInterfaceSchema>;
 
@@ -39,10 +43,12 @@ export const SetupDocumentSchema = z.object({
 });
 
 export const SetupAnswersSchema = z.object({
-  interfaces: z.array(SetupInterfaceSchema).min(1).max(5),
+  interfaces: z.array(SetupInterfaceSchema).min(1).max(7),
+  /** One named, coloured agent per interface (Phase 20.6). */
+  agents: z.array(AgentPreferenceSchema).max(20).default([]),
   knowledge: z
     .object({
-      autoApprove: z.boolean().default(false),
+      autoApprove: z.boolean().default(true),
       documents: z.array(SetupDocumentSchema).max(50).default([]),
     })
     .default({}),
@@ -88,6 +94,7 @@ export type ParsedSetupAnswers = z.infer<typeof SetupAnswersSchema>;
 export const SetupPlanSchema = z.object({
   overlay: z.record(z.unknown()),
   enabledModules: z.array(z.string()),
+  agents: z.array(AgentPreferenceSchema).default([]),
   /** Blocking: the config would not boot. */
   problems: z.array(z.string()),
   /** Non-blocking: worth reading before applying. */

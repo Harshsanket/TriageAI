@@ -5,6 +5,8 @@
  */
 import { ulid } from 'ulid';
 
+import { toStructuredError } from '../errors.js';
+import type { StructuredError } from '../errors.js';
 import type { Database, DeadLetterEntry, KernelLogger, QueueOptions } from '../types.js';
 
 import type {
@@ -17,6 +19,25 @@ import type {
 import { backoffFor } from './types.js';
 
 const DEFAULT_LEASE_SECONDS = 60;
+
+function parseStructuredError(value: string | null): StructuredError | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<StructuredError>;
+    if (
+      typeof parsed.code === 'string' &&
+      typeof parsed.category === 'string' &&
+      typeof parsed.retryable === 'boolean' &&
+      typeof parsed.message === 'string' &&
+      typeof parsed.attempt === 'number'
+    ) {
+      return parsed as StructuredError;
+    }
+  } catch {
+    // Legacy rows stored a plain message.
+  }
+  return undefined;
+}
 
 interface SubscriptionState {
   timer: ReturnType<typeof setInterval>;
@@ -65,10 +86,29 @@ export class PgQueue implements Queue {
     const poll = async (): Promise<void> => {
       if (state.stopped) return;
       try {
-        // Stuck-lease reaper: crashed or too-slow workers release their claims.
-        await this.database.query(
-          `UPDATE queue_jobs SET status = 'pending' WHERE status = 'processing' AND lease_expires_at < now()`,
-        );
+        // Stuck-lease reaper: a crashed worker's claim is retried, but a job
+        // that already reached max_attempts is dead-lettered instead of
+        // looping forever (R11).
+        await this.database.transaction(async (tx) => {
+          await tx.query(
+            `INSERT INTO queue_deadletters (id, queue, payload, attempts, error)
+             SELECT id, queue, payload, attempts,
+                    '{"code":"LEASE_EXPIRED","category":"dependency_unavailable","retryable":false,"message":"worker lease expired after max attempts"}'
+               FROM queue_jobs
+              WHERE status = 'processing' AND lease_expires_at < now()
+                AND attempts >= max_attempts
+             ON CONFLICT (id) DO NOTHING`,
+          );
+          await tx.query(
+            `DELETE FROM queue_jobs
+              WHERE status = 'processing' AND lease_expires_at < now()
+                AND attempts >= max_attempts`,
+          );
+          await tx.query(
+            `UPDATE queue_jobs SET status = 'pending'
+              WHERE status = 'processing' AND lease_expires_at < now()`,
+          );
+        });
         for (let i = 0; i < concurrency; i++) {
           if (state.stopped) break;
           const claimed = await this.claimOne(queue);
@@ -130,24 +170,30 @@ export class PgQueue implements Queue {
 
   async deadLetter(queue?: string): Promise<DeadLetterEntry[]> {
     const rows = await this.database.query<{
+      id: string;
       queue: string;
       payload: string;
       attempts: number;
       error: string | null;
       created_at: string;
     }>(
-      `SELECT queue, payload::text AS payload, attempts, error, created_at
+      `SELECT id, queue, payload::text AS payload, attempts, error, created_at
        FROM queue_deadletters ${queue ? 'WHERE queue = $1' : ''}
        ORDER BY created_at DESC LIMIT 100`,
       queue ? [queue] : undefined,
     );
-    return rows.map((r) => ({
-      queue: r.queue,
-      payload: JSON.parse(r.payload) as unknown,
-      attempts: r.attempts,
-      error: r.error ?? '',
-      createdAt: r.created_at,
-    }));
+    return rows.map((r) => {
+      const details = parseStructuredError(r.error);
+      return {
+        id: r.id,
+        queue: r.queue,
+        payload: JSON.parse(r.payload) as unknown,
+        attempts: r.attempts,
+        error: details?.message ?? r.error ?? '',
+        ...(details ? { errorDetails: details } : {}),
+        createdAt: r.created_at,
+      };
+    });
   }
 
   private async claimOne(queue: string): Promise<{
@@ -200,14 +246,14 @@ export class PgQueue implements Queue {
         [job.id],
       );
     } catch (err) {
-      const message = (err as Error).message;
-      this.logger.warn({ jobId: job.id, err: message }, 'queue job failed');
+      const structured = toStructuredError(err, job.attempts);
+      this.logger.warn({ jobId: job.id, err: structured.message }, 'queue job failed');
       if (job.attempts >= job.max_attempts) {
         await this.database.transaction(async (tx) => {
           await tx.query(
             `INSERT INTO queue_deadletters (id, queue, payload, attempts, error)
              VALUES ($1, $2, $3, $4, $5)`,
-            [ulid(), job.queue, job.payload, job.attempts, message],
+            [ulid(), job.queue, job.payload, job.attempts, JSON.stringify(structured)],
           );
           await tx.query(`DELETE FROM queue_jobs WHERE id = $1`, [job.id]);
         });
@@ -219,7 +265,7 @@ export class PgQueue implements Queue {
            ready_at = now() + make_interval(secs => $2::double precision / 1000.0),
            error = $3, updated_at = now()
          WHERE id = $1`,
-        [job.id, delayMs, message],
+        [job.id, delayMs, JSON.stringify(structured)],
       );
     }
   }

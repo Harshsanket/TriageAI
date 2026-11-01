@@ -7,7 +7,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { AiClassifyResponseSchema, AiEmbedResponseSchema } from '@triageai/contracts';
+import {
+  AiClassifyResponseSchema,
+  AiEmbedResponseSchema,
+  ErrorEnvelopeSchema,
+} from '@triageai/contracts';
 
 const enabled = process.env.RUN_AI_CONTRACT_TESTS === '1';
 const baseUrl = process.env.AI_SERVICE_URL ?? 'http://localhost:8000';
@@ -40,13 +44,16 @@ describe.skipIf(!enabled)('ai-service contract', () => {
     expect(typeof parsed.modelVersion).toBe('string');
   }, 60_000);
 
-  it('rejects empty text with a 422', async () => {
+  it('rejects empty text with the shared error envelope', async () => {
     const res = await fetch(`${baseUrl}/ai/v1/classify`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '' }),
     });
     expect(res.status).toBe(422);
+    const parsed = ErrorEnvelopeSchema.parse(await res.json());
+    expect(parsed).toMatchObject({ category: 'validation', retryable: false, status: 422 });
+    expect(parsed.correlationId.length).toBeGreaterThan(0);
   });
 });
 

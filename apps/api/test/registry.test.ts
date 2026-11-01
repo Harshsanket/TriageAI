@@ -31,7 +31,7 @@ async function clean(database: PostgresDatabase): Promise<void> {
   await database.query(`DELETE FROM datasets`);
   await database.query(`DELETE FROM candidate_examples`);
   await database.query(`DELETE FROM audit_events`);
-  await database.query(`DELETE FROM support_tickets`);
+  await database.query(`DELETE FROM mod_support.support_tickets`);
   await database.query(
     `DELETE FROM workflow_runs WHERE workflow_id IN ('support.triage','support.auto_reply')`,
   );

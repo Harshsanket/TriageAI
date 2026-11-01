@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { PostgresDatabase } from '../src/storage.js';
+import type { CircuitBreakerOptions } from '../src/circuitBreaker.js';
+import { dependencyUnavailable, invalid, rateLimited } from '../src/errors.js';
+import { CORE_MIGRATIONS } from '../src/migrations.js';
+import { MigrationRunner, PostgresDatabase } from '../src/storage.js';
 import { WorkflowEngine } from '../src/workflow.js';
 import type { KernelLogger, WorkflowDef } from '../src/types.js';
 
@@ -16,9 +19,11 @@ const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describ
 
 async function withEngine(
   fn: (engine: WorkflowEngine, database: PostgresDatabase) => Promise<void>,
+  breakerOptions: CircuitBreakerOptions = {},
 ): Promise<void> {
   const database = new PostgresDatabase(DATABASE_URL);
-  const engine = new WorkflowEngine(database, noopLogger);
+  await new MigrationRunner(database, noopLogger).apply('kernel', CORE_MIGRATIONS);
+  const engine = new WorkflowEngine(database, noopLogger, undefined, undefined, breakerOptions);
   try {
     await fn(engine, database);
   } finally {
@@ -47,8 +52,13 @@ async function stagesOf(database: PostgresDatabase, runId: string) {
 }
 
 async function decisionsOf(database: PostgresDatabase, runId: string) {
-  return database.query<{ stage_run_id: string; fallback: unknown; outcome: unknown }>(
-    `SELECT stage_run_id, fallback, outcome FROM decision_records WHERE run_id = $1 ORDER BY created_at`,
+  return database.query<{
+    stage_run_id: string;
+    fallback: unknown;
+    outcome: unknown;
+    error: unknown;
+  }>(
+    `SELECT stage_run_id, fallback, outcome, error FROM decision_records WHERE run_id = $1 ORDER BY created_at`,
     [runId],
   );
 }
@@ -153,7 +163,7 @@ describeIfDb('workflow engine (phase 2)', () => {
       engine.registerStageHandler('t.flaky', {
         execute: async () => {
           calls += 1;
-          if (calls < 2) throw new Error('transient');
+          if (calls < 2) throw dependencyUnavailable('transient');
           return { output: { ok: true } };
         },
       });
@@ -263,6 +273,179 @@ describeIfDb('workflow engine (phase 2)', () => {
     });
   });
 
+  it('2.5 does not retry a permanent error and records the structured failure', async () => {
+    await withEngine(async (engine, database) => {
+      let calls = 0;
+      engine.registerStageHandler('t.invalid', {
+        execute: async () => {
+          calls += 1;
+          throw invalid('bad input');
+        },
+      });
+      engine.register(
+        def('test.permanent', [
+          { id: 'a', kind: 't.invalid', retry: { attempts: 3, backoffMs: [1] } },
+        ]),
+        'test',
+        '0.1.0',
+      );
+      await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.permanent'`);
+
+      const { runId } = await engine.start('test.permanent', {});
+      await engine.processRun(runId);
+
+      expect(calls).toBe(1);
+      expect((await runOf(database, runId)).status).toBe('FAILED');
+      const decisions = await decisionsOf(database, runId);
+      expect(decisions[0]?.error).toMatchObject({
+        code: 'VALIDATION_ERROR',
+        category: 'validation',
+        retryable: false,
+        message: 'bad input',
+        attempt: 1,
+      });
+    });
+  });
+
+  it('2.5 records a structured error after retryable attempts are exhausted', async () => {
+    await withEngine(async (engine, database) => {
+      let calls = 0;
+      engine.registerStageHandler('t.down', {
+        execute: async () => {
+          calls += 1;
+          throw dependencyUnavailable('ai-service is down');
+        },
+      });
+      engine.register(
+        def('test.exhausted', [
+          { id: 'a', kind: 't.down', retry: { attempts: 2, backoffMs: [1] } },
+        ]),
+        'test',
+        '0.1.0',
+      );
+      await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.exhausted'`);
+
+      const { runId } = await engine.start('test.exhausted', {});
+      await engine.processRun(runId);
+
+      expect(calls).toBe(2);
+      const decisions = await decisionsOf(database, runId);
+      expect(decisions[0]?.error).toMatchObject({
+        code: 'DEPENDENCY_UNAVAILABLE',
+        category: 'dependency_unavailable',
+        retryable: true,
+        attempt: 2,
+      });
+    });
+  });
+
+  it('2.5 supports a per-stage retryOn override', async () => {
+    await withEngine(async (engine, database) => {
+      let calls = 0;
+      engine.registerStageHandler('t.override', {
+        execute: async () => {
+          calls += 1;
+          if (calls < 2) throw invalid('retry this validation error');
+          return { output: { ok: true } };
+        },
+      });
+      engine.register(
+        def('test.retry-on', [
+          {
+            id: 'a',
+            kind: 't.override',
+            retry: { attempts: 2, backoffMs: [1], retryOn: ['validation'] },
+          },
+        ]),
+        'test',
+        '0.1.0',
+      );
+      await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.retry-on'`);
+
+      const { runId } = await engine.start('test.retry-on', {});
+      await engine.processRun(runId);
+
+      expect(calls).toBe(2);
+      expect((await runOf(database, runId)).status).toBe('SUCCEEDED');
+    });
+  });
+
+  it('2.5 honours Retry-After when backing off', async () => {
+    await withEngine(async (engine, database) => {
+      let calls = 0;
+      engine.registerStageHandler('t.throttled', {
+        execute: async () => {
+          calls += 1;
+          if (calls < 2) throw rateLimited(80);
+          return { output: { ok: true } };
+        },
+      });
+      engine.register(
+        def('test.retry-after', [
+          { id: 'a', kind: 't.throttled', retry: { attempts: 2, backoffMs: [1] } },
+        ]),
+        'test',
+        '0.1.0',
+      );
+      await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.retry-after'`);
+
+      const started = Date.now();
+      const { runId } = await engine.start('test.retry-after', {});
+      await engine.processRun(runId);
+
+      expect(calls).toBe(2);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(70);
+      expect((await runOf(database, runId)).status).toBe('SUCCEEDED');
+    });
+  });
+
+  it('2.5 opens a circuit after repeated dependency failures and probes half-open', async () => {
+    let now = 0;
+    await withEngine(
+      async (engine, database) => {
+        let calls = 0;
+        engine.registerStageHandler('t.provider', {
+          execute: async () => {
+            calls += 1;
+            if (calls <= 2) throw dependencyUnavailable('provider down');
+            return { output: { ok: true } };
+          },
+        });
+        engine.register(
+          def('test.breaker', [{ id: 'a', kind: 't.provider', config: { breaker: 'provider-x' } }]),
+          'test',
+          '0.1.0',
+        );
+        await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.breaker'`);
+
+        for (let index = 0; index < 2; index += 1) {
+          const { runId } = await engine.start('test.breaker', {});
+          await engine.processRun(runId);
+        }
+        expect(calls).toBe(2);
+
+        const openRun = await engine.start('test.breaker', {});
+        await engine.processRun(openRun.runId);
+        expect(calls).toBe(2);
+        expect((await runOf(database, openRun.runId)).status).toBe('FAILED');
+        const openDecisions = await decisionsOf(database, openRun.runId);
+        expect(openDecisions[0]?.error).toMatchObject({
+          code: 'kernel.CIRCUIT_OPEN',
+          category: 'dependency_unavailable',
+          retryable: true,
+          attempt: 0,
+        });
+
+        now = 1_000;
+        const probe = await engine.start('test.breaker', {});
+        await engine.processRun(probe.runId);
+        expect(calls).toBe(3);
+        expect((await runOf(database, probe.runId)).status).toBe('SUCCEEDED');
+      },
+      { threshold: 2, cooldownMs: 1_000, now: () => now },
+    );
+  });
+
   it('2.4 return_uncertain parks the run in AWAITING and records the fallback', async () => {
     await withEngine(async (engine, database) => {
       engine.registerStageHandler('t.bad', {
@@ -316,6 +499,31 @@ describeIfDb('workflow engine (phase 2)', () => {
         /requires fallbackPolicyId/,
       );
       void database;
+    });
+  });
+});
+
+describeIfDb('pinned versions (phase 18.2)', () => {
+  it('records the config/model versions a run used', async () => {
+    await withEngine(async (engine, database) => {
+      engine.registerStageHandler('t.pin', {
+        execute: async () => ({ output: { ok: true } }),
+      });
+      engine.register(def('test.pinned', [{ id: 'a', kind: 't.pin' }]), 'test', '0.1.0');
+      await database.query(`DELETE FROM workflow_runs WHERE workflow_id = 'test.pinned'`);
+      const { runId } = await engine.start(
+        'test.pinned',
+        {},
+        { pinnedVersions: { configOverlayVersion: 3, generator: 'qwen2.5:1.5b' } },
+      );
+      const rows = await database.query<{ pinned_versions: Record<string, unknown> }>(
+        `SELECT pinned_versions FROM workflow_runs WHERE id = $1`,
+        [runId],
+      );
+      expect(rows[0]?.pinned_versions).toMatchObject({
+        configOverlayVersion: 3,
+        generator: 'qwen2.5:1.5b',
+      });
     });
   });
 });

@@ -6,24 +6,40 @@
 import { ModuleInfoSchema, SystemManifestSchema } from '@triageai/contracts';
 import type { ModuleInfo, SystemManifest } from '@triageai/contracts';
 
+import { appendAudit, createCoreContextApis } from './coreApis.js';
 import { AppError, bootValidationError, configInvalid } from './errors.js';
+import {
+  diffPermissions,
+  GrantsEngine,
+  GrantStore,
+  grantDenied,
+  permissionHash,
+  type GrantResource,
+} from './grants.js';
 import { createEventBus } from './eventbus.js';
+import { createOutboxEventBus, OutboxStore } from './outbox.js';
 import type { EventBus } from './eventbus.js';
 import { CORE_MIGRATIONS } from './migrations.js';
 import { createOutputChannelRegistry } from './outputChannel.js';
+import { CapabilityRouter } from './capabilityRouter.js';
+import { EventSchemaRegistry } from './typedEvents.js';
+import { mp1RoundTrip, serializedTransportEnabled } from './mp1/serialized.js';
+import { createKnowledgeSourceRegistry } from './sources/registry.js';
 import { InlineQueue } from './queue/inline.js';
 import { PgQueue } from './queue/pg.js';
 import type { Queue } from './queue/types.js';
-import { satisfiesRange } from './semver.js';
-import { MIGRATIONS_TABLE_SQL, MigrationRunner } from './storage.js';
+import { MIGRATIONS_TABLE_SQL, MigrationRunner, lintModuleMigration } from './storage.js';
+import { dropModuleStorage, provisionModuleStorage, type ModuleStorage } from './storageScope.js';
 import type {
   Capabilities,
+  DashboardProvider,
   Database,
   KernelConfig,
   KernelContext,
   KernelLogger,
   KernelOptions,
   KernelRouteDef,
+  MetricsProvider,
   QueueCapability,
   ResolvedModule,
   RetentionConfig,
@@ -35,8 +51,26 @@ import type {
   WorkflowDef,
 } from './types.js';
 import { WorkflowEngine } from './workflow.js';
+import { ToolRegistry } from './tools/registry.js';
+import { WorkItemStore } from './state/index.js';
 
 const ROUTE_URL_SCHEME = /^\/[a-z0-9/_:{}.$@-]*$/i;
+
+const TERMINAL_RUN_STATUS = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'AWAITING']);
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForRun(database: Database, runId: string, waitMs: number): Promise<void> {
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const rows = await database.query<{ status: string }>(
+      `SELECT status FROM workflow_runs WHERE id = $1`,
+      [runId],
+    );
+    if (!rows[0] || TERMINAL_RUN_STATUS.has(rows[0].status)) return;
+    await sleep(Date.now() - deadline > -2_000 ? 100 : 25);
+  }
+}
 
 export interface Kernel {
   readonly config: KernelConfig;
@@ -54,6 +88,14 @@ export interface Kernel {
   readonly queue: Queue;
   readonly events: EventBus;
   readonly database: Database;
+  /** Kernel-owned tool registry (Phase 15). */
+  readonly tools: ToolRegistry;
+  /** Persisted module grant approvals (ADR-0054 §2). */
+  readonly grantStore: GrantStore;
+  /** Read every dashboard provider registered by enabled modules (R13). */
+  readDashboardProviders(): Promise<Record<string, unknown>[]>;
+  /** Read every metrics provider registered by enabled modules (R13). */
+  readMetricsProviders(): Promise<Record<string, number>[]>;
 }
 
 function createKernelContext(
@@ -61,14 +103,23 @@ function createKernelContext(
   module: TriageModule,
   moduleOptions: Record<string, unknown>,
   capabilities: Capabilities,
+  router: CapabilityRouter,
+  eventSchemas: EventSchemaRegistry,
   engine: WorkflowEngine,
   routes: KernelRouteDef[],
   database: Database,
+  scopedDatabase: Database | null,
   events: EventBus,
   queue: Queue,
   logger: KernelLogger,
   retentionTasks: RetentionTask[],
+  dashboardProviders: DashboardProvider[],
+  metricsProviders: MetricsProvider[],
   env: Record<string, string | undefined>,
+  enabledModules: readonly string[],
+  config: KernelConfig,
+  tools: ToolRegistry,
+  knowledgeSources: ReturnType<typeof createKnowledgeSourceRegistry>,
 ): KernelContext {
   const queueCapability: QueueCapability = {
     start(def: WorkflowDef) {
@@ -96,6 +147,7 @@ function createKernelContext(
           throw err;
         }
       }
+      if (opts?.waitMs) await waitForRun(database, candidate.runId, Math.max(0, opts.waitMs));
       return candidate;
     },
     registerWorker: (queueName, handler, opts) => {
@@ -105,31 +157,242 @@ function createKernelContext(
   };
 
   const outputChannel = capabilities.outputChannel;
+  const coreApis = createCoreContextApis(database, moduleId);
+  const moduleDatabase = scopedDatabase ?? database;
+  const workItems = new WorkItemStore(database);
+  const serialize = serializedTransportEnabled(env);
+  const roundTrip = <T>(
+    op: Parameters<typeof mp1RoundTrip>[0]['op'],
+    schema: string,
+    payload: unknown,
+    execute: () => Promise<T>,
+  ): Promise<T> =>
+    serialize
+      ? mp1RoundTrip<T>(
+          { moduleId, moduleVersion: module.version, op, schema, payload },
+          async () => execute(),
+        )
+      : execute();
+  const moduleRuns: KernelContext['runs'] = {
+    get: (id) => roundTrip('runs.get', 'mp1.runs.get@1', { id }, () => coreApis.runs.get(id)),
+    list: (filter) =>
+      roundTrip('runs.list', 'mp1.runs.list@1', filter ?? {}, () => coreApis.runs.list(filter)),
+  };
+  const moduleAudit: KernelContext['audit'] = {
+    append: (entry) =>
+      roundTrip(
+        'audit.append',
+        'mp1.audit.append@1',
+        { action: entry.action, subject: entry.subject ?? null, payload: entry.payload ?? {} },
+        () => coreApis.audit.append(entry),
+      ),
+  };
+  const deny = (resource: GrantResource, name: string): void => {
+    void appendAudit(database, 'kernel', {
+      action: 'module.grant_denied',
+      subject: moduleId,
+      payload: { resource, name },
+    }).catch(() => undefined);
+    logger.warn({ module: moduleId, resource, name }, 'module grant denied');
+  };
+  const grants = new GrantsEngine(
+    moduleId,
+    module.permissions,
+    deny,
+    module.permissions === undefined && module.thirdParty !== true,
+  );
+
+  const grantedCapabilities = new Set(grants.permissions.capabilities.consume);
+  const egress = router.resolve('egress') as Capabilities['egress'];
+  const moduleCapabilities: Capabilities = { ...capabilities };
+  if (egress) {
+    moduleCapabilities.egress = {
+      allows(url: string) {
+        try {
+          grants.assertEgress(url);
+          return egress.allows(url);
+        } catch {
+          return false;
+        }
+      },
+      fetch(url: string, init: RequestInit, context: { actor?: string | null; purpose: string }) {
+        grants.assertEgress(url);
+        return egress.fetch(url, init, context);
+      },
+    };
+  }
+  const capabilitiesProxy = new Proxy(moduleCapabilities, {
+    get(target, key, receiver) {
+      if (typeof key === 'string') {
+        const known = key in target || router.providersFor(key).length > 0;
+        if (known && !grantedCapabilities.has(key)) {
+          if (!(module.permissions === undefined && module.thirdParty !== true)) {
+            deny('capability.consume', key);
+            throw grantDenied(moduleId, 'capability.consume', key);
+          }
+        }
+        if (key === 'egress') return target.egress;
+        if (router.providersFor(key).length > 0) return router.resolve(key);
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+
+  const grantedKnowledge: KernelContext['knowledge'] = {
+    async collectionHasRows(collection: string) {
+      grants.assertKnowledge(collection, 'read');
+      return roundTrip(
+        'knowledge.query',
+        'mp1.knowledge.query@1',
+        { collection, mode: 'read', operation: 'hasRows' },
+        () => coreApis.knowledge.collectionHasRows(collection),
+      );
+    },
+    async deleteCollection(collection: string) {
+      grants.assertKnowledge(collection, 'write');
+      return roundTrip(
+        'knowledge.query',
+        'mp1.knowledge.query@1',
+        { collection, mode: 'write', operation: 'delete' },
+        () => coreApis.knowledge.deleteCollection(collection),
+      );
+    },
+    async documentStats(collection: string) {
+      grants.assertKnowledge(collection, 'read');
+      return roundTrip(
+        'knowledge.query',
+        'mp1.knowledge.query@1',
+        { collection, mode: 'read', operation: 'stats' },
+        () => coreApis.knowledge.documentStats(collection),
+      );
+    },
+    async dailyCounts(collection: string, days: number) {
+      grants.assertKnowledge(collection, 'read');
+      return roundTrip(
+        'knowledge.query',
+        'mp1.knowledge.query@1',
+        { collection, mode: 'read', operation: 'dailyCounts', days },
+        () => coreApis.knowledge.dailyCounts(collection, days),
+      );
+    },
+    async storageStats(collection: string) {
+      grants.assertKnowledge(collection, 'read');
+      return roundTrip(
+        'knowledge.query',
+        'mp1.knowledge.query@1',
+        { collection, mode: 'read', operation: 'storageStats' },
+        () => coreApis.knowledge.storageStats(collection),
+      );
+    },
+  };
+
+  const moduleEvents = {
+    async publish(event: string, payload: unknown) {
+      grants.assertEventPublish(event);
+      eventSchemas.validate(event, payload, moduleId);
+      return roundTrip('event.publish', 'mp1.event.publish@1', { event, payload }, () =>
+        events.publish(event, payload),
+      );
+    },
+    subscribe(event: string, handler: (payload: unknown) => void | Promise<void>) {
+      grants.assertEventSubscribe(event);
+      events.subscribe(event, handler);
+    },
+  };
+
+  const moduleQueue: QueueCapability = {
+    ...queueCapability,
+    start(def: WorkflowDef) {
+      grants.assertWorkflow(def.id);
+      queueCapability.start(def);
+    },
+    async startWorkflow(workflowId, input, opts) {
+      grants.assertWorkflow(workflowId);
+      return queueCapability.startWorkflow(workflowId, input, opts);
+    },
+  };
+
   const context: KernelContext = {
     moduleOptions,
-    capabilities,
-    database,
-    events,
-    queue: queueCapability,
+    capabilities: capabilitiesProxy,
+    database: moduleDatabase,
+    events: moduleEvents,
+    queue: moduleQueue,
+    ...coreApis,
+    runs: moduleRuns,
+    audit: moduleAudit,
+    knowledge: grantedKnowledge,
+    tasks: {
+      create: (args) => workItems.create(args),
+      get: (id) => workItems.get(id),
+      claim: (id, agentId, leaseMs) => workItems.claim(id, agentId, leaseMs),
+      review: (id, checkerId, args) => workItems.review(id, checkerId, args),
+    },
     logger,
     env,
+    enabledModules,
+    config,
+    provideCapability(id, impl) {
+      grants.assertCapabilityProvide(id);
+      router.provide(moduleId, id, impl);
+    },
+    registerEventSchema(event, schema) {
+      if (!event.startsWith(`${grants.eventNamespace}.`)) {
+        throw grantDenied(
+          moduleId,
+          'event.publish',
+          `${event} (namespace is ${grants.eventNamespace}.*)`,
+        );
+      }
+      eventSchemas.register({ name: event, owner: moduleId, schema });
+    },
     registerRoute(def) {
       if (!ROUTE_URL_SCHEME.test(def.url)) {
         throw new Error(`module ${moduleId} registered invalid route url ${def.url}`);
       }
+      grants.assertRoute(def.method, def.url);
       routes.push(def);
     },
     registerStageHandler(kind: string, def: StageHandlerDef) {
-      engine.registerStageHandler(kind, def);
+      grants.assertStage(kind);
+      engine.registerStageHandler(kind, {
+        ...def,
+        execute: (stage) => def.execute({ ...stage, database: moduleDatabase }),
+      });
+    },
+    registerTool(def) {
+      grants.assertTool(def.name);
+      tools.register(def);
+    },
+    reportProgress: (runId, update) => engine.reportProgress(runId, update),
+    registerKnowledgeSource(source) {
+      knowledgeSources.register(source);
+    },
+    knowledgeSources,
+    registerDashboardProvider(provider) {
+      dashboardProviders.push({
+        ...provider,
+        read: () => provider.read({ database: moduleDatabase }),
+      });
+    },
+    registerMetricsProvider(provider) {
+      metricsProviders.push({
+        ...provider,
+        read: () => provider.read({ database: moduleDatabase }),
+      });
     },
     registerOutputChannel(channel, adapter) {
+      grants.assertCapabilityConsume('outputChannel');
       if (!outputChannel) {
         throw new Error('output channel registry is not available');
       }
       outputChannel.register(channel, adapter);
     },
     registerRetentionTask(task) {
-      retentionTasks.push(task);
+      retentionTasks.push({
+        ...task,
+        apply: (context) => task.apply({ ...context, database: moduleDatabase }),
+      });
     },
   };
   return context;
@@ -162,39 +425,52 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   if (resolution.error) throw bootValidationError('Boot validation failed', resolution.error);
   const ordered = resolution.ordered;
 
+  const grantStore = new GrantStore(database);
+  for (const resolved of ordered) {
+    const module = resolved.module;
+    if (module.permissions === undefined) continue; // trusted in-process first party
+    const existing = await grantStore.get(module.id);
+    if (!existing) {
+      if (module.thirdParty) {
+        throw bootValidationError('Boot validation failed', [
+          `third-party module "${module.id}" has no approved permission manifest`,
+        ]);
+      }
+      await grantStore.approve(module, 'kernel:first-party');
+      continue;
+    }
+    if (existing.manifestHash === permissionHash(module.permissions)) continue;
+    const diff = diffPermissions(
+      module.id,
+      existing.version,
+      module.version,
+      existing.permissions,
+      module.permissions,
+    );
+    if (module.thirdParty && diff.added.length > 0) {
+      throw bootValidationError('Boot validation failed', [
+        `module "${module.id}" upgrade widens grants and needs admin approval: ${diff.added.join(', ')}`,
+      ]);
+    }
+    await grantStore.approve(module, module.thirdParty ? null : 'kernel:first-party');
+  }
+
   const capabilities: Capabilities = {
     ...(options.capabilities ?? {}),
     outputChannel: options.capabilities?.outputChannel ?? createOutputChannelRegistry(),
   };
-  const capabilityProblems: string[] = [];
-  for (const resolved of ordered) {
-    for (const dep of resolved.module.dependsOn.capabilities ?? []) {
-      if (
-        dep.capability === 'storage' ||
-        dep.capability === 'queue' ||
-        dep.capability === 'eventBus' ||
-        dep.capability === 'outputChannel'
-      ) {
-        continue; // always present on KernelContext
-      }
-      if (dep.optional) continue;
-      if (
-        !(dep.capability in capabilities) ||
-        !capabilities[dep.capability as keyof Capabilities]
-      ) {
-        capabilityProblems.push(
-          `module "${resolved.module.id}" requires capability "${dep.capability}", but no adapter is configured for it`,
-        );
-      }
-    }
-  }
-  if (capabilityProblems.length > 0) {
-    throw bootValidationError('Boot validation failed', capabilityProblems);
-  }
+  const capabilityRouter = new CapabilityRouter(config, capabilities);
 
-  const events = createEventBus(logger);
   const queue: Queue =
     config.queue.adapter === 'inline' ? new InlineQueue(logger) : new PgQueue(database, logger);
+  const events = createOutboxEventBus({
+    database,
+    queue,
+    local: createEventBus(logger),
+    logger,
+  });
+
+  const eventSchemas = new EventSchemaRegistry();
 
   const enqueueRun = async (runId: string): Promise<void> => {
     await queue.enqueue('workflow.run', { runId }, { idempotencyKey: `run:${runId}` });
@@ -209,6 +485,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       if (!current) throw new Error('workflow engine is not initialized yet');
       const candidate = await current.start(workflowId, input, opts);
       if (!candidate.deduped) await enqueueRun(candidate.runId);
+      if (opts?.waitMs) await waitForRun(database, candidate.runId, Math.max(0, opts.waitMs));
       return candidate;
     },
     registerWorker(queueName, handler, opts) {
@@ -220,6 +497,10 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
   engineRef.current = engine;
   const routes: KernelRouteDef[] = [];
   const retentionTasks: RetentionTask[] = [];
+  const tools = new ToolRegistry();
+  const knowledgeSources = createKnowledgeSourceRegistry();
+  const dashboardProviders: DashboardProvider[] = [];
+  const metricsProviders: MetricsProvider[] = [];
 
   for (const resolved of ordered) {
     const module = resolved.module;
@@ -238,14 +519,34 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       parsedOptions = parsed.data as Record<string, unknown>;
     }
 
+    let storage: ModuleStorage | null = null;
+    try {
+      storage = await provisionModuleStorage(database, module);
+    } catch (err) {
+      throw bootValidationError(`Storage provisioning failed for module "${module.id}"`, [
+        (err as Error).message,
+      ]);
+    }
+
     if (module.migrations?.length) {
-      const moduleResult = await runner.apply(module.id, module.migrations);
+      const lintProblems = module.migrations.flatMap((migration) =>
+        lintModuleMigration(module.id, migration).map(
+          (finding) => `${migration.id}: ${finding.rule} (${finding.detail})`,
+        ),
+      );
+      if (lintProblems.length > 0) {
+        throw bootValidationError(`Migrations rejected for module "${module.id}"`, lintProblems);
+      }
+      const moduleResult = await runner.apply(module.id, module.migrations, {
+        ...(storage ? { schema: storage.schema } : {}),
+      });
       const moduleProblems = moduleResult.conflicts.map(
         (c) => `module "${module.id}" migration ${c.id}: ${c.reason}`,
       );
       if (moduleProblems.length > 0) {
         throw bootValidationError(`Migrations rejected for module "${module.id}"`, moduleProblems);
       }
+      if (storage) storage = await provisionModuleStorage(database, module);
     }
 
     const context = createKernelContext(
@@ -253,14 +554,23 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       module,
       parsedOptions,
       capabilities,
+      capabilityRouter,
+      eventSchemas,
       engine,
       routes,
       database,
+      storage?.database ?? null,
       events,
       queue,
       logger,
       retentionTasks,
+      dashboardProviders,
+      metricsProviders,
       options.env ?? process.env,
+      ordered.map((entry) => entry.module.id),
+      config,
+      tools,
+      knowledgeSources,
     );
     try {
       module.register(context);
@@ -272,6 +582,39 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
         (err as Error).message,
       ]);
     }
+  }
+
+  const capabilityProblems: string[] = [];
+  for (const resolved of ordered) {
+    for (const dep of resolved.module.dependsOn.capabilities ?? []) {
+      if (
+        dep.capability === 'storage' ||
+        dep.capability === 'queue' ||
+        dep.capability === 'eventBus' ||
+        dep.capability === 'outputChannel'
+      ) {
+        continue; // always present on KernelContext
+      }
+      if (dep.optional) continue;
+      if (!capabilityRouter.has(dep.capability)) {
+        capabilityProblems.push(
+          `module "${resolved.module.id}" requires capability "${dep.capability}", but no adapter or provider is configured for it`,
+        );
+      }
+    }
+  }
+  if (capabilityProblems.length > 0) {
+    throw bootValidationError('Boot validation failed', capabilityProblems);
+  }
+
+  // Replay events committed before a crash (outbox durability, 18.3).
+  const pending = await new OutboxStore(database).pending(200);
+  for (const event of pending) {
+    await queue.enqueue(
+      'outbox.deliver',
+      { id: event.id },
+      { idempotencyKey: `outbox:${event.id}` },
+    );
   }
 
   queue.subscribe(
@@ -297,6 +640,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
         id: r.module.id,
         version: r.module.version,
         manifest: r.module.manifest,
+        ...(r.module.bundleUrl ? { bundleUrl: r.module.bundleUrl } : {}),
       })),
     });
 
@@ -347,8 +691,9 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       }
       const target = options.modules[id];
       if (!target) throw new AppError('kernel.NOT_FOUND', `module "${id}" not known`);
+      const schemaDrops = await dropModuleStorage(database, target);
       const dropped = await runner.uninstall(id, target.migrations ?? []);
-      return { dropped };
+      return { dropped: [...schemaDrops, ...dropped] };
     },
     shutdown: async () => {
       // Stop the queue first: no new work may start while modules tear down.
@@ -368,6 +713,36 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
     queue,
     events,
     database,
+    tools,
+    grantStore,
+    readDashboardProviders: async () => {
+      const results: Record<string, unknown>[] = [];
+      for (const provider of dashboardProviders) {
+        try {
+          results.push(await provider.read({ database }));
+        } catch (err) {
+          logger.warn(
+            { provider: provider.id, err: (err as Error).message },
+            'dashboard provider failed',
+          );
+        }
+      }
+      return results;
+    },
+    readMetricsProviders: async () => {
+      const results: Record<string, number>[] = [];
+      for (const provider of metricsProviders) {
+        try {
+          results.push(await provider.read({ database }));
+        } catch (err) {
+          logger.warn(
+            { provider: provider.id, err: (err as Error).message },
+            'metrics provider failed',
+          );
+        }
+      }
+      return results;
+    },
   };
 }
 
@@ -392,27 +767,26 @@ export function resolveModules(
     selected.add(id);
   }
 
+  // ADR-0054 §4: modules depend only on capabilities and events. A module that
+  // provides a capability is ordered before every selected module consuming it.
+  const providerFor = new Map<string, string>();
   for (const id of selected) {
-    const mod = available[id];
-    for (const dep of mod.dependsOn.modules ?? []) {
-      if (!available[dep.id]) {
-        if (dep.optional) continue;
-        problems.push(`module "${id}" depends on "${dep.id}" which is not registered`);
-        continue;
-      }
-      if (!selected.has(dep.id)) {
-        if (dep.optional) continue;
-        problems.push(
-          `module "${id}" depends on "${dep.id}" which is registered but not enabled in profile "${config.profile}"`,
-        );
-        continue;
-      }
-      const check = satisfiesRange(available[dep.id].version, dep.version);
-      if (!check.ok) {
-        problems.push(`module "${id}" depends on "${dep.id}" ${dep.version}: ${check.reason}`);
-      }
+    for (const capability of available[id].permissions?.capabilities.provide ?? []) {
+      providerFor.set(capability, id);
     }
-    for (const dep of mod.dependsOn.capabilities ?? []) {
+  }
+  const dependencies = new Map<string, Set<string>>();
+  for (const id of selected) {
+    const deps = new Set<string>();
+    for (const capability of available[id].permissions?.capabilities.consume ?? []) {
+      const provider = providerFor.get(capability);
+      if (provider && provider !== id) deps.add(provider);
+    }
+    dependencies.set(id, deps);
+  }
+
+  for (const id of selected) {
+    for (const dep of available[id].dependsOn.capabilities ?? []) {
       if (dep.minSchema) {
         problems.push(`module "${id}": capability schema versioning is not implemented yet`);
       }
@@ -437,9 +811,7 @@ export function resolveModules(
     if (state.visited) return;
     states.set(id, { visiting: true, visited: false });
     stack.push(id);
-    for (const dep of available[id].dependsOn.modules ?? []) {
-      if (selected.has(dep.id)) visit(dep.id);
-    }
+    for (const dep of dependencies.get(id) ?? []) visit(dep);
     stack.pop();
     states.set(id, { visiting: false, visited: true });
     ordered.push({ module: available[id], options: config.modules[id].options });

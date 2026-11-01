@@ -19,6 +19,7 @@ describe('GitHub Issues OutputChannel adapter', () => {
     {
       channel: 'github-issue',
       supportsTokenRotation: true,
+      retriesServerErrors: false,
       successBody: { id: 42, number: 7, html_url: 'https://github.test/acme/app/issues/7' },
     },
   );

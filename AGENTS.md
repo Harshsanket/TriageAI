@@ -9,6 +9,8 @@ You are working on **TriageAI**: a modular, self-hosted AI automation platform (
 3. `docs/contracts/` — module contract, capability seams, workflow contract, decision-record contract, contract-testing policy.
 4. `AGENTS.md` (this file) is operational; `docs/` is the source of truth. When code and docs disagree, one of them is stale — fix it, don't ignore it.
 
+`docs/` is **local-only** (gitignored by the owner's choice). Work in the main checkout: git worktrees, fresh clones and cloud sessions don't receive it. If `docs/` is missing, stop and ask the owner for it; don't recreate it. Never stage or commit it.
+
 ## Layout
 
 ```

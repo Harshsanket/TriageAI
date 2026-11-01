@@ -4,17 +4,20 @@
  * setup they are admin-only like the rest of the system surface.
  */
 import { randomBytes } from 'node:crypto';
+import { resolve } from 'node:path';
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import {
+  AppearanceDefaultsUpdateSchema,
   SetupAnswersSchema,
+  SetupInterfaceSchema,
   type HardwareProfile,
   type ParsedSetupAnswers,
   type SetupPlan,
 } from '@triageai/contracts';
-import { AppError } from '@triageai/kernel';
+import { AppError, FilesystemBlobStore, parseConfigOverlay } from '@triageai/kernel';
 import type { ConfigFile, Kernel, TriageModule } from '@triageai/kernel';
 
 import { config } from '../platform/config.js';
@@ -29,7 +32,8 @@ import {
 } from './boot.js';
 import { presetModels, searchHuggingFace } from './catalog.js';
 import { probeHardware } from './hardware.js';
-import { planSetup, SECRET_ENV } from './plan.js';
+import { agentDefaults } from './agents.js';
+import { mergeInterfacesOverlay, planSetup, SECRET_ENV } from './plan.js';
 import { SecretStore } from './secrets.js';
 
 export interface SetupRouteDeps {
@@ -41,10 +45,47 @@ export interface SetupRouteDeps {
   authService: AuthService;
   /** Exit after apply so a supervisor (compose `restart:`) boots the new config. */
   restartOnApply: boolean;
+  /** Apply the latest overlay without a process restart (Phase 12 soft reload). */
+  reload?: (reason: string) => Promise<unknown>;
+  /** Trigger a process restart so a supervisor boots the latest overlay. */
+  restart?: () => void;
 }
 
 const MODEL_NAME = /^[\w.:/-]{1,200}$/;
 const HARDWARE_TTL_MS = 30_000;
+
+const ModelSettingsSchema = z
+  .object({
+    generator: z
+      .object({
+        adapter: z.enum(['ollama', 'lmstudio', 'openai_compatible_local']),
+        model: z.string().regex(MODEL_NAME),
+        baseUrl: z.string().url().optional(),
+        temperature: z.number().min(0).max(2).optional(),
+        maxTokens: z.number().int().positive().max(4096).optional(),
+        timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+      })
+      .partial()
+      .strict()
+      .optional(),
+    chat: z
+      .object({
+        maxAnswerTokens: z.number().int().positive().max(2048),
+        knowledgeMode: z.enum(['prefer', 'only']),
+      })
+      .partial()
+      .strict()
+      .optional(),
+    retriever: z
+      .object({
+        threshold: z.number().min(0).max(1),
+        margin: z.number().min(0).max(1),
+      })
+      .partial()
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 export function registerSetupRoutes(
   app: FastifyInstance,
@@ -190,6 +231,285 @@ export function registerSetupRoutes(
     }
   });
 
+  app.get('/api/v1/setup/model-settings', async () => {
+    const runningGenerator = (kernel.config.capabilities.generator ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const runningRetriever = (kernel.config.capabilities.retriever ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const runningChat = kernel.config.modules.chat?.options as
+      | {
+          maxAnswerTokens?: number;
+          collection?: string;
+          retrievalLimit?: number;
+          knowledgeMode?: 'prefer' | 'only';
+        }
+      | undefined;
+    const latest = await runtime.store.latestOverlay();
+    const overlay = (latest?.overlay ?? {}) as Record<string, unknown>;
+    const overlayCapabilities = (overlay.capabilities ?? {}) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const overlayModules = (overlay.modules ?? {}) as Record<
+      string,
+      { options?: Record<string, unknown> }
+    >;
+    const overlayChat = overlayModules.chat?.options ?? {};
+    const generator = { ...runningGenerator, ...(overlayCapabilities.generator ?? {}) };
+    const retriever = { ...runningRetriever, ...(overlayCapabilities.retriever ?? {}) };
+    const chat = { ...(runningChat ?? {}), ...overlayChat };
+    return {
+      generator: {
+        adapter: generator.adapter ?? 'ollama',
+        model: generator.model ?? '',
+        baseUrl: generator.baseUrl ?? '',
+        temperature: Number(generator.temperature ?? 0.2),
+        maxTokens: Number(generator.maxTokens ?? chat?.maxAnswerTokens ?? 384),
+        timeoutMs: Number(generator.timeoutMs ?? 120_000),
+      },
+      chat: {
+        maxAnswerTokens: chat?.maxAnswerTokens ?? 384,
+        knowledgeMode: chat?.knowledgeMode ?? 'prefer',
+      },
+      retriever: {
+        threshold: Number(retriever.threshold ?? 0.35),
+        margin: Number(retriever.margin ?? 0.05),
+      },
+      overlayVersion: runtime.bootedOverlayVersion,
+      latestOverlayVersion: latest?.version ?? null,
+      restartRequired:
+        runtime.state === 'applied' || (latest?.version ?? null) !== runtime.bootedOverlayVersion,
+    };
+  });
+
+  app.put('/api/v1/setup/model-settings', async (request) => {
+    const body = ModelSettingsSchema.parse(request.body ?? {});
+    const actor = actorOf(request);
+    const latest = await runtime.store.latestOverlay();
+    const base = (latest?.overlay ?? {}) as Record<string, unknown>;
+    const baseCapabilities = (base.capabilities ?? {}) as Record<string, Record<string, unknown>>;
+    const baseModules = (base.modules ?? {}) as Record<string, Record<string, unknown>>;
+    const overlay: Record<string, unknown> = { ...base };
+    if (body.generator) {
+      overlay.capabilities = {
+        ...baseCapabilities,
+        generator: { ...(baseCapabilities.generator ?? {}), ...body.generator },
+      };
+    }
+    if (body.retriever) {
+      overlay.capabilities = {
+        ...((overlay.capabilities as Record<string, unknown>) ?? baseCapabilities),
+        retriever: { ...(baseCapabilities.retriever ?? {}), ...body.retriever },
+      };
+    }
+    if (body.chat) {
+      overlay.modules = {
+        ...baseModules,
+        chat: {
+          ...(baseModules.chat ?? {}),
+          options: {
+            ...((baseModules.chat?.options as Record<string, unknown> | undefined) ?? {}),
+            ...body.chat,
+          },
+        },
+      };
+    }
+    parseConfigOverlay(overlay);
+    const version = await runtime.store.writeOverlay(
+      overlay,
+      actor,
+      'model and retrieval settings',
+    );
+    return {
+      saved: true,
+      version,
+      restartRequired: version !== runtime.bootedOverlayVersion,
+    };
+  });
+
+  // Model capabilities are built once per process, so they need a real
+  // restart, not the Phase-12 soft reload: exit and let the supervisor boot
+  // the latest overlay.
+  app.post('/api/v1/setup/restart', async () => {
+    if (runtime.state === 'pending') {
+      throw new AppError('setup.NOT_COMPLETE', 'finish first-run setup first', undefined, 409);
+    }
+    if (deps.restart) deps.restart();
+    else setTimeout(() => process.kill(process.pid, 'SIGTERM'), 500).unref();
+    return { restarted: false, restarting: true };
+  });
+
+  app.post('/api/v1/setup/reset', async (request) => {
+    const body = z
+      .object({ confirm: z.literal('RESET') })
+      .strict()
+      .parse(request.body ?? {});
+    void body;
+    const actor = actorOf(request);
+    const version = await runtime.store.writeOverlay({}, actor, 'reset configuration overlay');
+    return {
+      reset: true,
+      version,
+      restartRequired: version !== runtime.bootedOverlayVersion,
+    };
+  });
+
+  const lifecycle = async (
+    overlay: Record<string, unknown>,
+    actor: string,
+    note: string,
+  ): Promise<{ version: number; reloaded: boolean }> => {
+    parseConfigOverlay(overlay);
+    const version = await runtime.store.writeOverlay(overlay, actor, note);
+    let reloaded = false;
+    if (deps.reload) {
+      await deps.reload(note);
+      runtime.bootedOverlayVersion = version;
+      reloaded = true;
+    }
+    return { version, reloaded };
+  };
+
+  app.post('/api/v1/setup/add', async (request) => {
+    if (runtime.state !== 'complete') {
+      throw new AppError('setup.NOT_COMPLETE', 'finish first-run setup first', undefined, 409);
+    }
+    const body = z
+      .object({ interfaces: z.array(SetupInterfaceSchema).min(1).max(7) })
+      .strict()
+      .parse(request.body);
+    const latest = await runtime.store.latestOverlay();
+    const merged = mergeInterfacesOverlay(
+      (latest?.overlay ?? {}) as Record<string, unknown>,
+      body.interfaces,
+      [],
+      deps.modules,
+    );
+    const mergedCapabilities = (merged.overlay.capabilities ?? {}) as Record<string, unknown>;
+    if (
+      (body.interfaces.includes('chatbot') || body.interfaces.includes('doc-assistant')) &&
+      !mergedCapabilities.generator &&
+      !kernel.config.capabilities.generator
+    ) {
+      merged.problems.push(
+        'This interface writes answers, so it needs an LLM. Configure a model on /config first.',
+      );
+    }
+    if (merged.problems.length > 0) {
+      throw new AppError('setup.PLAN_INVALID', merged.problems.join(' '), merged.problems, 422);
+    }
+    const result = await lifecycle(merged.overlay, actorOf(request), 'add interfaces to setup');
+    return {
+      added: body.interfaces,
+      enabledModules: merged.enabledModules,
+      agents: merged.agents,
+      ...result,
+    };
+  });
+
+  app.post('/api/v1/setup/remove', async (request) => {
+    if (runtime.state !== 'complete') {
+      throw new AppError('setup.NOT_COMPLETE', 'finish first-run setup first', undefined, 409);
+    }
+    const body = z
+      .object({ interfaces: z.array(SetupInterfaceSchema).min(1).max(7) })
+      .strict()
+      .parse(request.body);
+    const latest = await runtime.store.latestOverlay();
+    const merged = mergeInterfacesOverlay(
+      (latest?.overlay ?? {}) as Record<string, unknown>,
+      [],
+      body.interfaces,
+      deps.modules,
+    );
+    const result = await lifecycle(
+      merged.overlay,
+      actorOf(request),
+      'remove interfaces from setup',
+    );
+    return {
+      removed: body.interfaces,
+      enabledModules: merged.enabledModules,
+      ...result,
+    };
+  });
+
+  app.post('/api/v1/setup/erase', async (request) => {
+    const body = z
+      .object({ confirm: z.literal('TriageAI') })
+      .strict()
+      .parse(request.body ?? {});
+    void body;
+    const actor = actorOf(request);
+    // Remember blob refs before the KB module tables are dropped.
+    const blobRows = await kernel.database
+      .query<{ blob_ref: string }>(
+        `SELECT DISTINCT blob_ref FROM kb_sources WHERE blob_ref IS NOT NULL`,
+      )
+      .catch(() => []);
+    const overlay = {
+      interfaces: [],
+      modules: Object.fromEntries(Object.keys(deps.modules).map((id) => [id, { enabled: false }])),
+    };
+    const result = await lifecycle(overlay, actor, 'reset and erase setup');
+    const uninstalled: string[] = [];
+    if (result.reloaded) {
+      for (const id of Object.keys(deps.modules)) {
+        try {
+          await kernel.uninstallModule(id);
+          uninstalled.push(id);
+        } catch (err) {
+          if ((err as AppError).code !== 'kernel.NOT_FOUND') throw err;
+        }
+      }
+      await kernel.database.query(`DELETE FROM vector_chunks`);
+      await kernel.database.query(`DELETE FROM datasets`).catch(() => undefined);
+      await kernel.database.query(`DELETE FROM candidate_examples`).catch(() => undefined);
+      await kernel.database.query(`DELETE FROM user_skills`).catch(() => undefined);
+      const blobs = new FilesystemBlobStore(
+        process.env.TRIAGEAI_BLOB_ROOT ??
+          resolve(process.env.TRIAGEAI_DATA_DIR ?? process.cwd(), 'data/blobs'),
+      );
+      for (const row of blobRows) {
+        await blobs.delete(row.blob_ref).catch(() => undefined);
+      }
+    }
+    await runtime.store.saveDraft({}, actor);
+    await kernel.database.query(`DELETE FROM setup_imports`).catch(() => undefined);
+    await runtime.secrets.clear(actor);
+    runtime.state = 'pending';
+    await runtime.store.setState('pending', actor);
+    runtime.token.revoke();
+    return {
+      erased: true,
+      uninstalled,
+      restartRequired: true,
+      tokenRequired: true,
+    };
+  });
+
+  app.put('/api/v1/setup/appearance-defaults', async (request) => {
+    const body = AppearanceDefaultsUpdateSchema.parse(request.body ?? {});
+    const latest = await runtime.store.latestOverlay();
+    const base = (latest?.overlay ?? {}) as Record<string, unknown>;
+    const appearance = (base.appearance ?? {}) as { defaults?: Record<string, unknown> };
+    const overlay = {
+      ...base,
+      appearance: { ...appearance, defaults: { ...(appearance.defaults ?? {}), ...body } },
+    };
+    parseConfigOverlay(overlay);
+    const version = await runtime.store.writeOverlay(
+      overlay,
+      actorOf(request),
+      'appearance defaults',
+    );
+    return { saved: true, version };
+  });
+
   app.get('/api/v1/setup/draft', async () => ({ draft: await runtime.store.draft() }));
 
   app.put('/api/v1/setup/draft', async (request) => {
@@ -201,6 +521,27 @@ export function registerSetupRoutes(
     const safe = redactValue(draft) as Record<string, unknown>;
     await runtime.store.saveDraft(safe, actorOf(request));
     return { saved: true };
+  });
+
+  app.get('/api/v1/setup/agent-defaults', async (request) => {
+    const query = z
+      .object({
+        interfaces: z.string().min(1).max(300),
+        existing: z.string().max(2000).optional(),
+        colors: z.string().max(2000).optional(),
+      })
+      .parse(request.query ?? {});
+    const interfaces = query.interfaces
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    return {
+      agents: agentDefaults(
+        interfaces,
+        (query.existing ?? '').split(',').filter(Boolean),
+        (query.colors ?? '').split(',').filter(Boolean),
+      ),
+    };
   });
 
   app.post('/api/v1/setup/plan', async (request) => plan(SetupAnswersSchema.parse(request.body)));

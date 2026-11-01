@@ -119,9 +119,8 @@ describeIfDb('support vertical slice (phase 3, no LLM)', () => {
       ['priority', 'SUCCEEDED'],
       ['team', 'SUCCEEDED'],
       ['apply', 'SUCCEEDED'],
-      ['dispatch', 'SUCCEEDED'],
     ]);
-    expect(runBody.decisions).toHaveLength(7);
+    expect(runBody.decisions).toHaveLength(6);
     // threshold values + rule ids are in decision records (ADR-0005)
     expect(JSON.stringify(runBody.decisions)).toContain('thresholds');
   });

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { apiFetch, setSession, type StoredSession } from '../host/api';
+import { Button, Card, ErrorNotice, Field, Input } from '../ui';
 
 /** First-run / session-expiry gate. Bootstrap registration creates the first admin. */
 export default function LoginPage() {
@@ -19,16 +20,16 @@ export default function LoginPage() {
     try {
       const path = mode === 'login' ? '/api/v1/auth/login' : '/api/v1/auth/register';
       const body = mode === 'login' ? { email, password } : { email, password, name };
-      const res = await apiFetch(path, {
+      const res = await apiFetch<StoredSession>(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const payload = (await res.json().catch(() => ({}))) as { detail?: string };
-        throw new Error(payload.detail ?? `sign-in failed (${res.status})`);
+        setError(res.error.envelope.userMessage);
+        return;
       }
-      setSession((await res.json()) as StoredSession);
+      setSession(res.data);
       window.location.reload();
     } catch (err) {
       setError((err as Error).message);
@@ -38,54 +39,45 @@ export default function LoginPage() {
   };
 
   return (
-    <main style={{ maxWidth: 360, margin: '4rem auto' }}>
+    <main className="ui-page" style={{ maxWidth: 380, marginTop: '4rem' }}>
       <h1>TriageAI</h1>
-      <p>{mode === 'login' ? 'Sign in to continue.' : 'Create the first admin account.'}</p>
-      <form onSubmit={submit}>
-        {mode === 'register' && (
-          <label style={{ display: 'block' }}>
-            Name
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
+      <Card title={mode === 'login' ? 'Sign in' : 'Create the first admin account'}>
+        <form className="ui-stack" onSubmit={submit}>
+          {mode === 'register' && (
+            <Field label="Name">
+              <Input value={name} onChange={(event) => setName(event.target.value)} required />
+            </Field>
+          )}
+          <Field label="Email">
+            <Input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
               required
-              style={{ display: 'block', width: '100%' }}
             />
-          </label>
-        )}
-        <label style={{ display: 'block' }}>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-            style={{ display: 'block', width: '100%' }}
-          />
-        </label>
-        <label style={{ display: 'block' }}>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            required
-            minLength={10}
-            style={{ display: 'block', width: '100%' }}
-          />
-        </label>
-        <button type="submit" disabled={busy} style={{ marginTop: 12 }}>
-          {busy ? 'Working…' : mode === 'login' ? 'Sign in' : 'Create admin'}
-        </button>
-      </form>
-      {error && <p role="alert">{error}</p>}
-      <button
-        type="button"
-        onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
-        style={{ marginTop: 12 }}
-      >
-        {mode === 'login' ? 'First run? Create the admin account' : 'Back to sign in'}
-      </button>
+          </Field>
+          <Field label="Password">
+            <Input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              minLength={10}
+            />
+          </Field>
+          <Button type="submit" variant="primary" disabled={busy}>
+            {busy ? 'Working…' : mode === 'login' ? 'Sign in' : 'Create admin'}
+          </Button>
+        </form>
+        <ErrorNotice error={error} />
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
+        >
+          {mode === 'login' ? 'First run? Create the admin account' : 'Back to sign in'}
+        </Button>
+      </Card>
     </main>
   );
 }

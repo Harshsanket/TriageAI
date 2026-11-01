@@ -154,8 +154,8 @@ describeIfDb('ownership ACLs (phase 10A)', () => {
         url: '/api/v1/chat/conversations',
         headers: { authorization: `Bearer ${tokens.alice}` },
       })
-    ).json() as Array<{ id: string }>;
-    expect(aliceList.map((c) => c.id)).toContain(conversationId);
+    ).json() as { conversations: Array<{ id: string }> };
+    expect(aliceList.conversations.map((c) => c.id)).toContain(conversationId);
 
     const bobList = (
       await app.inject({
@@ -163,8 +163,8 @@ describeIfDb('ownership ACLs (phase 10A)', () => {
         url: '/api/v1/chat/conversations',
         headers: { authorization: `Bearer ${tokens.bob}` },
       })
-    ).json() as Array<{ id: string }>;
-    expect(bobList.map((c) => c.id)).not.toContain(conversationId);
+    ).json() as { conversations: Array<{ id: string }> };
+    expect(bobList.conversations.map((c) => c.id)).not.toContain(conversationId);
 
     expect((await call('bob', 'GET', `/api/v1/chat/conversations/${conversationId}`)).status).toBe(
       404,

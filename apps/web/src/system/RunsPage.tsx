@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { RunDto } from '@triageai/contracts';
 
+import { apiFetch, type ApiFailure } from '../host/api';
 import { navigate } from '../host/router';
-import { apiFetch } from '../host/api';
+import { Button, Card, EmptyState, ErrorNotice, Loading, Page, StatusText, Table } from '../ui';
 
 const STATUS_COLORS: Record<string, string> = {
   SUCCEEDED: '#1a7f37',
@@ -16,64 +17,68 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function RunsPage() {
   const [runs, setRuns] = useState<RunDto[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiFailure | null>(null);
 
-  useEffect(() => {
-    let disposed = false;
-    const load = async () => {
-      try {
-        const res = await apiFetch('/api/v1/system/runs?limit=50');
-        if (!res.ok) throw new Error(`failed to load runs (${res.status})`);
-        const data = (await res.json()) as RunDto[];
-        if (!disposed) setRuns(data);
-      } catch (err) {
-        if (!disposed) setError((err as Error).message);
-      }
-    };
-    void load();
-    const timer = setInterval(load, 5000);
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-    };
+  const load = useCallback(async () => {
+    const res = await apiFetch<RunDto[]>('/api/v1/system/runs?limit=50');
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setError(null);
+    setRuns(res.data);
   }, []);
 
+  useEffect(() => {
+    void load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [load]);
+
   return (
-    <section>
-      <h2>Runs</h2>
-      {error && <p role="alert">{error}</p>}
-      {runs === null && !error && <p>Loading runs…</p>}
-      {runs && runs.length === 0 && <p>No runs yet — trigger a workflow to see it here.</p>}
-      {runs && runs.length > 0 && (
-        <table cellPadding={6} style={{ borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              <th align="left">Run</th>
-              <th align="left">Workflow</th>
-              <th align="left">Status</th>
-              <th align="left">Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((run) => (
-              <tr key={run.id} style={{ borderTop: '1px solid #ddd' }}>
-                <td>
-                  <button type="button" onClick={() => navigate(`/runs/${run.id}`)}>
-                    {run.id}
-                  </button>
-                </td>
-                <td>{run.workflowId}</td>
-                <td>
-                  <strong style={{ color: STATUS_COLORS[run.status] ?? 'inherit' }}>
-                    {run.status}
-                  </strong>
-                </td>
-                <td>{run.createdAt}</td>
+    <Page title="Runs" subtitle="Every workflow run, its stages and its decision records.">
+      <ErrorNotice error={error} onRetry={() => void load()} />
+      <Card title="Recent runs">
+        {runs === null && !error ? (
+          <Loading>Loading runs…</Loading>
+        ) : runs && runs.length === 0 ? (
+          <EmptyState>No runs yet — trigger a workflow to see it here.</EmptyState>
+        ) : runs ? (
+          <Table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Workflow</th>
+                <th>Status</th>
+                <th>Created</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
+            </thead>
+            <tbody>
+              {runs.map((run) => (
+                <tr key={run.id}>
+                  <td>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => navigate(`/runs/${run.id}`)}
+                    >
+                      {run.id}
+                    </Button>
+                  </td>
+                  <td>{run.workflowId}</td>
+                  <td>
+                    <StatusText
+                      status={run.status}
+                      color={STATUS_COLORS[run.status] ?? 'inherit'}
+                    />
+                  </td>
+                  <td>{run.createdAt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        ) : null}
+      </Card>
+    </Page>
   );
 }

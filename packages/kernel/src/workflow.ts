@@ -6,11 +6,19 @@
  */
 import { ulid } from 'ulid';
 
+import { CircuitBreaker } from './circuitBreaker.js';
+import type { CircuitBreakerOptions } from './circuitBreaker.js';
+import { AppError, toStructuredError } from './errors.js';
+import type { StructuredError } from './errors.js';
 import { evaluateWhen, resolveStageInput, validateWhen } from './grammar.js';
 import type { EvalContext } from './grammar.js';
 import type { EventBus } from './eventbus.js';
+import { compileV1, validateGraph } from './graph/v2.js';
+import type { WorkflowGraph } from './graph/v2.js';
 import type {
   Database,
+  JobProgressUpdate,
+  JobStatus,
   KernelLogger,
   QueueCapability,
   StageHandlerContext,
@@ -73,19 +81,46 @@ function fallbackAction(policy: string): 'fail' | 'awaiting' {
 
 export class WorkflowEngine {
   private workflows = new Map<string, RegisteredWorkflow>();
+  private graphs = new Map<string, WorkflowGraph>();
   private handlers = new Map<string, StageHandlerDef>();
   private running = new Map<string, AbortController>();
   private cancelled = new Set<string>();
+
+  private breaker: CircuitBreaker;
 
   constructor(
     private database: Database,
     private logger: KernelLogger,
     private events?: EventBus,
     private queueCapability?: QueueCapability,
-  ) {}
+    breakerOptions: CircuitBreakerOptions = {},
+  ) {
+    this.breaker = new CircuitBreaker(breakerOptions);
+  }
 
   register(def: WorkflowDef, moduleId: string, moduleVersion: string): void {
     this.workflows.set(def.id, { def, moduleId, moduleVersion });
+    this.graphs.set(
+      `${def.id}@${def.version}`,
+      compileV1({
+        id: def.id,
+        version: def.version,
+        module: def.module,
+        stages: def.stages.map((stage) => ({
+          id: stage.id,
+          kind: stage.kind,
+          ...(stage.when ? { when: stage.when } : {}),
+        })),
+      }),
+    );
+  }
+
+  graphFor(id: string, version?: string): WorkflowGraph | undefined {
+    if (version) return this.graphs.get(`${id}@${version}`);
+    return [...this.graphs.entries()]
+      .filter(([key]) => key.startsWith(`${id}@`))
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .at(-1)?.[1];
   }
 
   get(id: string): RegisteredWorkflow | undefined {
@@ -110,7 +145,16 @@ export class WorkflowEngine {
   async start(
     workflowId: string,
     input: unknown,
-    opts: { idempotencyKey?: string; orgId?: string | null; trigger?: string } = {},
+    opts: {
+      idempotencyKey?: string;
+      orgId?: string | null;
+      trigger?: string;
+      pinnedVersions?: Record<string, unknown>;
+      ownerId?: string | null;
+      title?: string;
+      total?: number;
+      unit?: string;
+    } = {},
   ): Promise<{ runId: string; deduped: boolean }> {
     const workflow = this.workflows.get(workflowId);
     if (!workflow) {
@@ -129,11 +173,94 @@ export class WorkflowEngine {
 
     const runId = ulid();
     await this.database.query(
-      `INSERT INTO workflow_runs (id, workflow_id, workflow_version, trigger, status, idempotency_key, input)
-       VALUES ($1, $2, $3, $4, 'PENDING', $5, $6)`,
-      [runId, workflowId, workflow.def.version, opts.trigger ?? 'endpoint', key, input ?? null],
+      `INSERT INTO workflow_runs
+         (id, workflow_id, workflow_version, trigger, status, idempotency_key, input, pinned_versions, owner_id, org_id)
+       VALUES ($1, $2, $3, $4, 'PENDING', $5, $6, $7, $8, $9)`,
+      [
+        runId,
+        workflowId,
+        workflow.def.version,
+        opts.trigger ?? 'endpoint',
+        key,
+        input ?? null,
+        opts.pinnedVersions ?? {},
+        opts.ownerId ?? null,
+        opts.orgId ?? null,
+      ],
     );
+    if (opts.title) {
+      await this.database.query(
+        `INSERT INTO job_progress
+           (job_id, run_id, workflow_id, owner_id, title, done, total, unit, status)
+         VALUES ($1, $1, $2, $3, $4, 0, $5, $6, 'running')
+         ON CONFLICT (job_id) DO UPDATE
+           SET title = EXCLUDED.title, total = EXCLUDED.total, unit = EXCLUDED.unit,
+               owner_id = EXCLUDED.owner_id, updated_at = now()`,
+        [
+          runId,
+          workflowId,
+          opts.ownerId ?? null,
+          opts.title,
+          Math.max(0, opts.total ?? 0),
+          opts.unit ?? 'items',
+        ],
+      );
+    }
     return { runId, deduped: false };
+  }
+
+  /**
+   * Write durable progress for a run and publish the generic `run.progress`
+   * event. Callers report monotonic `done` counts; the engine clamps them.
+   */
+  async reportProgress(runId: string, update: JobProgressUpdate): Promise<void> {
+    const run = await this.database.query<{
+      workflow_id: string;
+      owner_id: string | null;
+    }>(`SELECT workflow_id, owner_id FROM workflow_runs WHERE id = $1`, [runId]);
+    const row = run[0];
+    const status: JobStatus = update.status ?? 'running';
+    const done = Math.max(0, Math.trunc(update.done ?? 0));
+    const total = Math.max(0, Math.trunc(update.total ?? 0));
+    await this.database.query(
+      `INSERT INTO job_progress
+         (job_id, run_id, workflow_id, owner_id, title, stage, done, total, unit, status, error, detail)
+       VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (job_id) DO UPDATE SET
+         stage = COALESCE(EXCLUDED.stage, job_progress.stage),
+         done = GREATEST(job_progress.done, EXCLUDED.done),
+         total = CASE WHEN EXCLUDED.total > 0 THEN EXCLUDED.total ELSE job_progress.total END,
+         unit = EXCLUDED.unit,
+         status = EXCLUDED.status,
+         error = COALESCE(EXCLUDED.error, job_progress.error),
+         detail = job_progress.detail || EXCLUDED.detail,
+         title = CASE WHEN $12::text IS NULL THEN job_progress.title ELSE $12 END,
+         updated_at = now()`,
+      [
+        runId,
+        row?.workflow_id ?? null,
+        row?.owner_id ?? null,
+        update.title ?? row?.workflow_id ?? 'workflow',
+        update.stage ?? null,
+        done,
+        total,
+        update.unit ?? 'items',
+        status,
+        update.error ?? null,
+        update.detail ?? {},
+        update.title ?? null,
+      ],
+    );
+    if (this.events) {
+      await this.events.publish('run.progress', {
+        runId,
+        done,
+        total,
+        unit: update.unit ?? 'items',
+        stage: update.stage ?? null,
+        status,
+      });
+    }
   }
 
   /**
@@ -157,6 +284,24 @@ export class WorkflowEngine {
   private validateDef(def: WorkflowDef): void {
     if (def.stages.length === 0) {
       throw new Error(`workflow ${def.id} has no stages`);
+    }
+    const graphProblems = validateGraph(
+      compileV1({
+        id: def.id,
+        version: def.version,
+        module: def.module,
+        stages: def.stages.map((stage) => ({
+          id: stage.id,
+          kind: stage.kind,
+          ...(stage.when ? { when: stage.when } : {}),
+        })),
+      }),
+    );
+    if (graphProblems.length > 0) {
+      throw new AppError(
+        'kernel.WORKFLOW_INVALID',
+        `workflow ${def.id}: invalid when or graph: ${graphProblems.join('; ')}`,
+      );
     }
     if (def.fallbackPolicyId && !KNOWN_FALLBACK_POLICIES.has(def.fallbackPolicyId)) {
       throw new Error(
@@ -206,9 +351,11 @@ export class WorkflowEngine {
       input: unknown;
       trigger: string;
       org_id: string | null;
-    }>(`SELECT id, workflow_id, status, input, trigger, org_id FROM workflow_runs WHERE id = $1`, [
-      runId,
-    ]);
+      owner_id: string | null;
+    }>(
+      `SELECT id, workflow_id, status, input, trigger, org_id, owner_id FROM workflow_runs WHERE id = $1`,
+      [runId],
+    );
     const run = rows[0];
     if (!run) {
       this.logger.warn({ runId }, 'run row missing; dropping job');
@@ -329,6 +476,97 @@ export class WorkflowEngine {
 
   // ── stage execution ────────────────────────────────────────────────────────
 
+  private breakerKeyFor(stage: WorkflowDef['stages'][number]): string {
+    const configured = stage.config?.breaker;
+    if (typeof configured === 'string' && configured.length > 0) return configured;
+    return stage.kind.split('.')[0] ?? stage.kind;
+  }
+
+  private classifyStageError(error: unknown, attempt: number): StructuredError {
+    if (error instanceof StageTimeoutError) {
+      return {
+        code: 'TIMEOUT',
+        category: 'timeout',
+        retryable: true,
+        message: error.message,
+        attempt,
+      };
+    }
+    return toStructuredError(error, attempt);
+  }
+
+  private countsForBreaker(category: StructuredError['category']): boolean {
+    return category === 'dependency_unavailable' || category === 'timeout';
+  }
+
+  private async finishStageFailure(args: {
+    runId: string;
+    workflow: RegisteredWorkflow;
+    stage: WorkflowDef['stages'][number];
+    stageRunId: string;
+    resolvedInput: Record<string, unknown>;
+    startedAt: Date;
+    finishedAt: Date;
+    attempt: number;
+    status: 'FAILED' | 'TIMED_OUT';
+    structured: StructuredError;
+    fallbackRequested: boolean;
+    policy?: string;
+  }): Promise<{ kind: 'failed'; error: string } | { kind: 'awaiting'; error?: string }> {
+    const message = args.structured.message;
+    if (!this.countsForBreaker(args.structured.category)) {
+      this.breaker.releaseProbe(this.breakerKeyFor(args.stage));
+    }
+    await this.writeStageFailure({
+      stageRunId: args.stageRunId,
+      runId: args.runId,
+      stage: args.stage,
+      status: args.status,
+      attempts: args.attempt,
+      input: args.resolvedInput,
+      error: message,
+      startedAt: args.startedAt,
+      finishedAt: args.finishedAt,
+    });
+    await this.writeDecision({
+      runId: args.runId,
+      stageRunId: args.stageRunId,
+      workflow: args.workflow,
+      stage: args.stage,
+      evidence: {
+        stage: args.stage.id,
+        failed: true,
+        reason: message,
+        attempt: args.attempt,
+        policyRequested: args.fallbackRequested ? args.policy : null,
+      },
+      deterministic: null,
+      timings: {
+        startedAt: args.startedAt.toISOString(),
+        durationMs: args.finishedAt.getTime() - args.startedAt.getTime(),
+        attempts: args.attempt,
+      },
+      error: args.structured,
+      fallback: args.fallbackRequested
+        ? {
+            policyApplied: args.policy,
+            action: fallbackAction(args.policy as string),
+            stageId: args.stage.id,
+            status: args.status,
+            reasons: [message],
+            attempts: args.attempt,
+          }
+        : null,
+      outcome: { status: args.status },
+    });
+
+    if (!args.fallbackRequested) return { kind: 'failed', error: message };
+    if (args.policy === 'halt_run' || args.policy === 'retry_alternative_retrieval') {
+      return { kind: 'failed', error: `${message} (fallback: ${args.policy})` };
+    }
+    return { kind: 'awaiting', error: `${message} (fallback: ${args.policy})` };
+  }
+
   private async executeStage(args: {
     runId: string;
     workflow: RegisteredWorkflow;
@@ -349,7 +587,36 @@ export class WorkflowEngine {
 
     const totalAttempts = stage.retry?.attempts ?? 1;
     const backoff = stage.retry?.backoffMs ?? DEFAULT_BACKOFF_MS;
+    const policy = workflow.def.fallbackPolicyId;
+    const fallbackRequested = stage.onError === 'fallback' && policy !== undefined;
+    const breakerKey = this.breakerKeyFor(stage);
     let usesAlternative = false;
+
+    if (this.breaker.isOpen(breakerKey)) {
+      const now = new Date();
+      const retryAfterMs = this.breaker.retryAfterMs(breakerKey);
+      const circuit = new AppError(
+        'kernel.CIRCUIT_OPEN',
+        `circuit open for ${breakerKey}`,
+        { key: breakerKey, retryAfterMs },
+        503,
+        { category: 'dependency_unavailable', retryable: true, retryAfterMs },
+      );
+      return this.finishStageFailure({
+        runId,
+        workflow,
+        stage,
+        stageRunId: ulid(),
+        resolvedInput,
+        startedAt: now,
+        finishedAt: now,
+        attempt: 0,
+        status: 'FAILED',
+        structured: toStructuredError(circuit, 0),
+        fallbackRequested,
+        policy,
+      });
+    }
 
     for (let attempt = 1; ; attempt++) {
       if (await this.isCancelled(runId)) return { kind: 'cancelled' };
@@ -372,6 +639,7 @@ export class WorkflowEngine {
           database: this.database,
           queue: this.queueCapability ?? UNAVAILABLE_QUEUE,
           signal: controller.signal,
+          reportProgress: (update) => this.reportProgress(runId, update),
         };
         const configWithAlternative = usesAlternative
           ? { ...(stage.config ?? {}), _alternate: true }
@@ -435,6 +703,7 @@ export class WorkflowEngine {
           outcome: { status: 'SUCCEEDED', output },
           adapterVersions: result.adapterVersions,
         });
+        this.breaker.recordSuccess(breakerKey);
         return { kind: 'succeeded', output };
       } catch (err) {
         if (timer) clearTimeout(timer);
@@ -445,6 +714,7 @@ export class WorkflowEngine {
           controller.signal.reason instanceof RunCancelledError
         ) {
           this.running.delete(runId);
+          this.breaker.releaseProbe(breakerKey);
           await this.writeStageFailure({
             stageRunId,
             runId,
@@ -459,16 +729,31 @@ export class WorkflowEngine {
           return { kind: 'cancelled' };
         }
 
-        const timedOut = err instanceof StageTimeoutError;
-        const message = (err as Error)?.message ?? String(err);
+        const structured = this.classifyStageError(err, attempt);
+        const breakerFailure = this.countsForBreaker(structured.category);
+        if (breakerFailure) this.breaker.recordFailure(breakerKey);
+        const breakerOpen = breakerFailure && this.breaker.isOpen(breakerKey);
+        const retryOn = stage.retry?.retryOn;
+        const neverRetry =
+          structured.category === 'budget_exceeded' || structured.category === 'policy_blocked';
+        const retryAllowed = retryOn ? retryOn.includes(structured.category) : structured.retryable;
 
-        if (attempt < totalAttempts) {
-          const delay =
+        if (!neverRetry && retryAllowed && !breakerOpen && attempt < totalAttempts) {
+          const retryAfterMs = err instanceof AppError ? (err.retryAfterMs ?? 0) : 0;
+          const delay = Math.max(
             backoff[Math.min(attempt - 1, backoff.length - 1)] ??
-            backoff[backoff.length - 1] ??
-            100;
+              backoff[backoff.length - 1] ??
+              100,
+            retryAfterMs,
+          );
           this.logger.warn(
-            { runId, stage: stage.id, attempt, err: message },
+            {
+              runId,
+              stage: stage.id,
+              attempt,
+              err: structured.message,
+              category: structured.category,
+            },
             'stage attempt failed; retrying',
           );
           await sleep(delay);
@@ -476,9 +761,6 @@ export class WorkflowEngine {
         }
 
         // Retries exhausted: consult the fallback policy when requested.
-        const policy = workflow.def.fallbackPolicyId;
-        const fallbackRequested = stage.onError === 'fallback' && policy !== undefined;
-
         if (fallbackRequested && policy === 'retry_alternative_retrieval' && !usesAlternative) {
           usesAlternative = true;
           this.logger.warn(
@@ -488,57 +770,21 @@ export class WorkflowEngine {
           continue;
         }
 
-        const status = timedOut ? 'TIMED_OUT' : 'FAILED';
-        await this.writeStageFailure({
-          stageRunId,
+        const status = structured.category === 'timeout' ? 'TIMED_OUT' : 'FAILED';
+        return this.finishStageFailure({
           runId,
-          stage,
-          status,
-          attempts: attempt,
-          input: resolvedInput,
-          error: message,
-          startedAt,
-          finishedAt,
-        });
-        await this.writeDecision({
-          runId,
-          stageRunId,
           workflow,
           stage,
-          evidence: {
-            stage: stage.id,
-            failed: true,
-            reason: message,
-            attempt,
-            policyRequested: fallbackRequested ? policy : null,
-          },
-          deterministic: null,
-          timings: {
-            startedAt: startedAt.toISOString(),
-            durationMs: finishedAt.getTime() - startedAt.getTime(),
-            attempts: attempt,
-          },
-          error: { message, status },
-          fallback: fallbackRequested
-            ? {
-                policyApplied: policy,
-                action: fallbackAction(policy as string),
-                stageId: stage.id,
-                status,
-                reasons: [message],
-                attempts: attempt,
-              }
-            : null,
-          outcome: { status },
+          stageRunId,
+          resolvedInput,
+          startedAt,
+          finishedAt,
+          attempt,
+          status,
+          structured,
+          fallbackRequested,
+          policy,
         });
-
-        if (!fallbackRequested) return { kind: 'failed', error: message };
-
-        // Policies that defer to a human/channel stop the run as AWAITING; halt fails.
-        if (policy === 'halt_run' || policy === 'retry_alternative_retrieval') {
-          return { kind: 'failed', error: `${message} (fallback: ${policy})` };
-        }
-        return { kind: 'awaiting', error: `${message} (fallback: ${policy})` };
       } finally {
         if (timer) clearTimeout(timer);
         this.running.delete(runId);
@@ -586,7 +832,7 @@ export class WorkflowEngine {
     deterministic: Record<string, unknown> | null;
     timings: Record<string, unknown>;
     outcome?: Record<string, unknown>;
-    error?: Record<string, unknown>;
+    error?: StructuredError | Record<string, unknown>;
     fallback?: Record<string, unknown> | null;
     adapterVersions?: Record<string, unknown>;
   }): Promise<void> {
@@ -647,6 +893,21 @@ export class WorkflowEngine {
          SET status = $2, error = $3, output = COALESCE($4::jsonb, output), finished_at = now()
        WHERE id = $1`,
       [runId, status, error, output ?? null],
+    );
+    const jobStatus: JobStatus =
+      status === 'SUCCEEDED'
+        ? 'succeeded'
+        : status === 'FAILED'
+          ? 'failed'
+          : status === 'CANCELLED'
+            ? 'cancelled'
+            : 'awaiting';
+    // A handler may have marked the job `partial`; never overwrite a terminal
+    // status it reported with the run-level summary.
+    await this.database.query(
+      `UPDATE job_progress SET status = $2, error = COALESCE($3, error), updated_at = now()
+       WHERE job_id = $1 AND status = 'running'`,
+      [runId, jobStatus, error],
     );
     this.cancelled.delete(runId);
     this.running.delete(runId);

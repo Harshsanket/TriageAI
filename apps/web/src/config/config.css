@@ -96,6 +96,78 @@
   cursor: not-allowed;
 }
 
+.cfg-appearance-agents {
+  display: grid;
+  gap: 8px;
+}
+
+.cfg-agent-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr) minmax(0, 12rem) 1.2rem;
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--line, rgba(20, 22, 26, 0.12));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.cfg-agent-row__interface {
+  align-self: center;
+  color: var(--ink-soft, #5f636b);
+  font-size: 0.8rem;
+  text-transform: capitalize;
+}
+
+.cfg-agent-row label {
+  display: grid;
+  gap: 4px;
+}
+
+.cfg-agent-row .cfg-input,
+.cfg-agent-row .cfg-select {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line, rgba(20, 22, 26, 0.2));
+  border-radius: 8px;
+  font: inherit;
+  background: white;
+  color: inherit;
+}
+
+.cfg-agent-swatch {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  margin-bottom: 0.55rem;
+}
+
+.cfg-hint {
+  color: var(--ink-soft, #5f636b);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 560px) {
+  .cfg-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: 6px 12px;
+  }
+
+  .cfg-appearance-agents {
+    display: grid;
+    gap: 8px;
+  }
+
+  .cfg-agent-row {
+    grid-template-columns: 1fr;
+  }
+
+  .cfg-agent-swatch {
+    margin: 0;
+  }
+}
+
 .cfg-field {
   display: grid;
   gap: 4px;
@@ -291,4 +363,280 @@
   .cfg-table td:nth-child(4) {
     display: none;
   }
+}
+
+.cfg-danger {
+  border-color: rgba(207, 34, 46, 0.35);
+  background: rgba(255, 240, 241, 0.5);
+}
+
+.cfg-button--danger {
+  border-color: #cf222e;
+  background: #cf222e;
+  color: #fff;
+}
+
+.cfg-button--danger:hover:not(:disabled) {
+  background: #b31d28;
+  border-color: #b31d28;
+}
+
+.cfg-button--danger:disabled {
+  opacity: 0.5;
+}
+
+.cfg-switch-list {
+  display: grid;
+  gap: 0;
+}
+
+.cfg-switch-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--line, rgba(20, 22, 26, 0.1));
+  cursor: pointer;
+}
+
+.cfg-switch-row:last-child {
+  border-bottom: 0;
+}
+
+.cfg-switch-row__text {
+  display: grid;
+  gap: 1px;
+}
+
+.cfg-switch-row__name {
+  font-size: 0.95rem;
+}
+
+.cfg-switch-row__state {
+  color: var(--ink-soft, #5f636b);
+  font-size: 0.78rem;
+}
+
+.cfg-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.cfg-switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.cfg-switch__track {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 26px;
+  border-radius: 999px;
+  background: #c7c7cc;
+  transition: background 160ms ease;
+}
+
+.cfg-switch__track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 160ms ease;
+}
+
+.cfg-switch input:checked + .cfg-switch__track {
+  background: #34c759;
+}
+
+.cfg-switch input:checked + .cfg-switch__track::after {
+  transform: translateX(18px);
+}
+
+.cfg-switch input:focus-visible + .cfg-switch__track {
+  outline: 2px solid var(--ink, #1b1c20);
+  outline-offset: 2px;
+}
+
+.cfg-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(207, 34, 46, 0.35);
+  border-radius: 50%;
+  background: rgba(207, 34, 46, 0.08);
+  color: #cf222e;
+  cursor: pointer;
+}
+
+.cfg-delete-button:hover:not(:disabled) {
+  border-color: #cf222e;
+  background: #cf222e;
+  color: #fff;
+}
+
+.cfg-delete-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.cfg-delete-button:focus-visible {
+  outline: 2px solid #cf222e;
+  outline-offset: 2px;
+}
+
+.cfg-about h2 {
+  margin-bottom: 0.15rem;
+}
+
+.cfg-about__version {
+  margin-top: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.cfg-about__made {
+  margin-top: 1rem;
+}
+
+.cfg-about__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.65rem 0 1rem;
+}
+
+.cfg-about__update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.cfg-about__update-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  margin-left: auto;
+  text-align: right;
+}
+
+.cfg-about__update-state {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+}
+
+.cfg-about__update a {
+  font-size: 0.82rem;
+}
+
+.cfg-about__links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid #17181c;
+  border-radius: 10px;
+  background: #17181c;
+  color: #fbfbf8;
+  text-decoration: none;
+  font-size: 0.84rem;
+}
+
+.cfg-about__links a:hover {
+  background: #2b2d33;
+  border-color: #2b2d33;
+  color: #ffffff;
+}
+
+.cfg-about__credit {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+/* Dark charcoal surfaces (the app-wide theme tokens drive text/links). */
+:root[data-theme='dark'] .cfg-card,
+:root[data-theme='dark'] .cfg-wizard,
+:root[data-theme='dark'] .cfg-choice,
+:root[data-theme='dark'] .cfg-agent-row {
+  background: rgba(23, 26, 31, 0.82);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-theme='dark'] .cfg-field input,
+:root[data-theme='dark'] .cfg-field select,
+:root[data-theme='dark'] .cfg-select,
+:root[data-theme='dark'] .cfg-input,
+:root[data-theme='dark'] .cfg-search input,
+:root[data-theme='dark'] .cfg-table select {
+  background: #171a1f;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-theme='dark'] .cfg-button {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-theme='dark'] .cfg-button--primary,
+:root[data-theme='dark'] .cfg-button:hover {
+  background: #e8ebef;
+  border-color: #e8ebef;
+  color: #0d0f12;
+}
+
+:root[data-theme='dark'] .cfg-button--ghost {
+  background: transparent;
+  color: var(--ink);
+}
+
+:root[data-theme='dark'] .cfg-table th,
+:root[data-theme='dark'] .cfg-table td {
+  border-color: var(--line);
+}
+
+:root[data-theme='dark'] .cfg-about__update {
+  background: #191c22;
+}
+
+:root[data-theme='dark'] .cfg-button {
+  background: #e8ebef;
+  border-color: #e8ebef;
+  color: #0d0f12;
+}
+
+:root[data-theme='dark'] .cfg-button:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #0d0f12;
+}
+
+:root[data-theme='dark'] .cfg-button--ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--ink);
 }

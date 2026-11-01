@@ -113,4 +113,23 @@ export const MIGRATIONS = [
         ON support_tickets (owner_id, created_at DESC);
     `,
   },
+  {
+    id: '0005-support-sla-portal',
+    sql: `
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS sla_due_at TIMESTAMPTZ;
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS sla_breached_at TIMESTAMPTZ;
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS assignee_id TEXT;
+      ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS csat_score INT;
+      CREATE INDEX IF NOT EXISTS support_tickets_sla
+        ON support_tickets (sla_due_at) WHERE sla_due_at IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS support_canned_responses (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `,
+    dropSql: 'DROP TABLE IF EXISTS support_canned_responses;',
+  },
 ];

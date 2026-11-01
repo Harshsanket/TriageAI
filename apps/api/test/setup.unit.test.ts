@@ -1,12 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SetupAnswersSchema, type HardwareProfile } from '@triageai/contracts';
-import { parseConfigFile } from '@triageai/kernel';
+import {
+  applyConfigOverlay,
+  buildKernelConfig,
+  parseConfigFile,
+  resolveModules,
+} from '@triageai/kernel';
 
 import { MODULES } from '../src/app.js';
 import { fitFor, quantOf, searchHuggingFace, SEARCH_QUERY } from '../src/setup/catalog.js';
 import { modelBudget } from '../src/setup/hardware.js';
-import { planSetup } from '../src/setup/plan.js';
+import { agentDefaults } from '../src/setup/agents.js';
+import { mergeInterfacesOverlay, planSetup } from '../src/setup/plan.js';
 
 const GIB = 1024 ** 3;
 const HARDWARE: HardwareProfile = {
@@ -171,5 +177,63 @@ describe('model catalog helpers', () => {
     expect(SEARCH_QUERY.test('qwen2.5 instruct')).toBe(true);
     expect(SEARCH_QUERY.test('a&b=c')).toBe(false);
     expect(SEARCH_QUERY.test('https://evil.example/?x')).toBe(false);
+  });
+});
+
+describe('agent defaults and strict setup scoping (phase 20)', () => {
+  it('offers Voyager and Pioneer with different palette colours', () => {
+    const agents = agentDefaults(['chatbot', 'ticket-solver']);
+    expect(agents.map((agent) => agent.displayName)).toEqual(['Voyager', 'Pioneer']);
+    expect(new Set(agents.map((agent) => agent.color)).size).toBe(2);
+    expect(agentDefaults(['chatbot'], ['Voyager'], []).at(0)?.displayName).toBe('Pioneer');
+  });
+
+  it('plans exactly the manifest set for every valid interface combination', () => {
+    const all = [
+      'chatbot',
+      'ticket-solver',
+      'doc-assistant',
+      'notifications-github',
+      'notifications-slack',
+      'emailer',
+      'public-api',
+    ] as const;
+    for (let mask = 1; mask < 1 << all.length; mask++) {
+      const interfaces = all.filter((_, index) => (mask & (1 << index)) !== 0);
+      const result = plan({
+        interfaces,
+        llm: { runtime: 'ollama', model: 'qwen2.5:1.5b' },
+      });
+      if (result.problems.length > 0) continue;
+      const resolved = resolveModules(
+        buildKernelConfig(applyConfigOverlay(parseConfigFile({}), result.overlay), {}),
+        MODULES,
+      );
+      expect(resolved.error).toBeUndefined();
+      expect(resolved.ordered.map((entry) => entry.module.id).sort()).toEqual(
+        result.enabledModules,
+      );
+    }
+  });
+
+  it('adds and removes interfaces while preserving options and agents', () => {
+    const base = plan({
+      interfaces: ['chatbot'],
+      llm: { runtime: 'ollama', model: 'qwen2.5:1.5b' },
+    });
+    const added = mergeInterfacesOverlay(base.overlay, ['ticket-solver'], [], MODULES);
+    expect(added.enabledModules).toEqual(
+      expect.arrayContaining(['chat', 'kb', 'support', 'ai-pipeline']),
+    );
+    expect(added.overlay.interfaces).toEqual(['chatbot', 'ticket-solver']);
+    expect((added.overlay.agents as Record<string, unknown>).chatbot).toBeDefined();
+    const removed = mergeInterfacesOverlay(added.overlay, [], ['chatbot'], MODULES);
+    expect(removed.overlay.interfaces).toEqual(['ticket-solver']);
+    expect((removed.overlay.modules as Record<string, { enabled: boolean }>).chat.enabled).toBe(
+      false,
+    );
+    expect((removed.overlay.modules as Record<string, { enabled: boolean }>).support.enabled).toBe(
+      true,
+    );
   });
 });

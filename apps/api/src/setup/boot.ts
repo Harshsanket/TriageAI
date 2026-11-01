@@ -4,6 +4,8 @@
  * and move `applied` → `complete` once the new config actually boots.
  */
 import { randomBytes } from 'node:crypto';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 import type { SetupState } from '@triageai/contracts';
 import type { Database, Kernel, KernelLogger } from '@triageai/kernel';
@@ -41,6 +43,46 @@ export interface PreparedSetup {
   jwtSecret: string;
 }
 
+/**
+ * Phase 23.7: the encrypted store is on by default. An env key wins; otherwise
+ * a generated 32-byte key lives on the secrets volume, outside the database and
+ * its backups. A failed write leaves the store unavailable (never silently
+ * disables encryption).
+ */
+async function resolveSecretKey(args: {
+  secretKey: string | undefined;
+  nodeEnv: string;
+  logger: KernelLogger;
+}): Promise<string | undefined> {
+  if (args.secretKey) return args.secretKey;
+  const dir =
+    process.env.TRIAGEAI_SECRETS_DIR ??
+    resolve(process.env.TRIAGEAI_DATA_DIR ?? process.cwd(), 'data/secrets');
+  const file = resolve(dir, 'master.key');
+  try {
+    const existing = (await readFile(file, 'utf8')).trim();
+    if (existing.length >= 32) return existing;
+  } catch {
+    // generate below
+  }
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const key = randomBytes(48).toString('base64url');
+    await writeFile(file, key, { mode: 0o600 });
+    await chmod(file, 0o600).catch(() => undefined);
+    args.logger.warn(
+      `generated a secret-store key at ${file}; back it up separately from database backups`,
+    );
+    return key;
+  } catch (err) {
+    args.logger.error(
+      { err: (err as Error).message },
+      'could not create the secret-store key file; /config secrets stay disabled',
+    );
+    return undefined;
+  }
+}
+
 export async function prepareSetup(args: {
   database: Database;
   enabled: boolean;
@@ -54,7 +96,12 @@ export async function prepareSetup(args: {
 }): Promise<PreparedSetup> {
   const { database } = args;
   const store = new SetupStore(database);
-  const secrets = new SecretStore(database, args.secretKey);
+  const secretKey = await resolveSecretKey({
+    secretKey: args.secretKey,
+    nodeEnv: args.nodeEnv,
+    logger: args.logger,
+  });
+  const secrets = new SecretStore(database, secretKey);
   const fresh = await isFreshDatabase(database);
   const state: SetupState = fresh ? (args.enabled ? 'pending' : 'complete') : await store.state();
   const overlay = fresh ? null : await store.latestOverlay();
@@ -85,17 +132,6 @@ export async function prepareSetup(args: {
   } else {
     authMode = args.nodeEnv === 'production' ? 'required' : 'disabled';
     authModeSource = 'default';
-    if (!fresh && authMode === 'required' && !args.jwtSecretEnv && !env[JWT_SECRET_NAME]) {
-      // Installs from before the wizard ran the compose default
-      // `AUTH_MODE=disabled`; keep that effective mode rather than refusing
-      // to boot, and record it so the choice becomes visible on /config.
-      authMode = 'disabled';
-      authModeSource = 'setting';
-      await writeAuthSetting(database, 'disabled', 'system:legacy-default');
-      args.logger.warn(
-        'no AUTH_MODE and no JWT secret on an existing install: keeping auth disabled; choose on /config',
-      );
-    }
   }
 
   let jwtSecret = args.authModeOverride
@@ -107,9 +143,17 @@ export async function prepareSetup(args: {
       // Nothing but the token-gated wizard is reachable while pending, so a
       // throwaway secret is safe until the wizard stores a real one.
       jwtSecret = randomBytes(32).toString('base64url');
+    } else if (secrets.available) {
+      // Never downgrade auth: generate and persist a secret instead (R4).
+      jwtSecret = randomBytes(48).toString('base64url');
+      await secrets.set(JWT_SECRET_NAME, jwtSecret, 'system:auth-secret');
+      env[JWT_SECRET_NAME] = jwtSecret;
+      args.logger.warn(
+        'AUTH_MODE=required without a JWT secret: generated one into the secret store',
+      );
     } else {
       throw new Error(
-        'AUTH_JWT_SECRET must be set (env or /config secret store) when auth is required',
+        'AUTH_JWT_SECRET must be set (env or /config secret store) when auth is required; refusing to disable auth',
       );
     }
   }
@@ -191,9 +235,6 @@ export async function processPendingImports(
 ): Promise<{ imported: number; failed: number }> {
   const routes = kernel.routes();
   const create = routes.find((r) => r.method === 'POST' && r.url === '/api/v1/kb/documents');
-  const approve = routes.find(
-    (r) => r.method === 'POST' && r.url === '/api/v1/kb/documents/:id/approve',
-  );
   const pending = await runtime.store.pendingImports();
   if (!create || pending.length === 0) return { imported: 0, failed: 0 };
 
@@ -209,16 +250,6 @@ export async function processPendingImports(
         body: { title: item.title, body: item.body, source: item.source },
         actor: 'system:setup',
       })) as { document: { id: string } };
-      if (item.autoApprove && approve) {
-        await approve.handler({
-          method: 'POST',
-          url: approve.url,
-          params: { id: created.document.id },
-          query: {},
-          body: {},
-          actor: 'system:setup',
-        });
-      }
       await runtime.store.markImport(item.id, 'imported', created.document.id);
       imported += 1;
     } catch (err) {

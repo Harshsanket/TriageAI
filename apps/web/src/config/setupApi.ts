@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 
 import { SetupStatusSchema, type SetupStatus } from '@triageai/contracts';
 
-import { apiFetch } from '../host/api';
+import { getSession } from '../host/api';
 
 const TOKEN_KEY = 'triageai.setupToken';
 
@@ -29,10 +29,11 @@ export function setSetupToken(token: string | null): void {
 }
 
 export async function setupFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = getSetupToken();
-  if (!token) return apiFetch(path, init);
   const headers = new Headers(init.headers);
-  headers.set('authorization', `Setup ${token}`);
+  const token = getSetupToken();
+  const session = getSession();
+  if (token) headers.set('authorization', `Setup ${token}`);
+  else if (session?.accessToken) headers.set('authorization', `Bearer ${session.accessToken}`);
   return fetch(path, { ...init, headers });
 }
 
@@ -40,9 +41,12 @@ export async function setupJson<T>(path: string, init: RequestInit = {}): Promis
   const headers = new Headers(init.headers);
   if (init.body) headers.set('content-type', 'application/json');
   const res = await setupFetch(path, { ...init, headers });
-  const body = (await res.json().catch(() => ({}))) as T & { detail?: string };
+  const body = (await res.json().catch(() => ({}))) as T & {
+    userMessage?: string;
+    detail?: string;
+  };
   if (!res.ok && res.status !== 422) {
-    throw new Error(body.detail ?? `${path} failed (${res.status})`);
+    throw new Error(body.userMessage ?? body.detail ?? `${path} failed (${res.status})`);
   }
   return body;
 }

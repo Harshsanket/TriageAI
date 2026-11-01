@@ -89,12 +89,12 @@ describeIfDb('retention pass (phase 9)', () => {
       [oldDeadletter],
     );
     await db.query(
-      `INSERT INTO support_tickets (id, subject, body, requester, status)
+      `INSERT INTO mod_support.support_tickets (id, subject, body, requester, status)
        VALUES ($1, 'retention', 'old message body', 'tester', 'NEW')`,
       [ticketId],
     );
     await db.query(
-      `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, created_at)
+      `INSERT INTO mod_support.support_ticket_messages (id, ticket_id, author_type, author, body, created_at)
        VALUES ($1, $2, 'customer', 'tester', 'old message body', now() - interval '61 days')`,
       [oldMessage, ticketId],
     );
@@ -103,7 +103,7 @@ describeIfDb('retention pass (phase 9)', () => {
   afterAll(async () => {
     const db = app.kernel?.database;
     if (db) {
-      await db.query(`DELETE FROM support_tickets WHERE id = $1`, [ticketId]);
+      await db.query(`DELETE FROM mod_support.support_tickets WHERE id = $1`, [ticketId]);
       await db.query(`DELETE FROM workflow_runs WHERE id = ANY($1::text[])`, [[oldRun, recentRun]]);
     }
     await app?.close();
@@ -135,7 +135,7 @@ describeIfDb('retention pass (phase 9)', () => {
     ])) as Array<{ id: string }>;
     expect(runs.map((r) => r.id)).toEqual([recentRun]);
     const messages = (await db.query(
-      `SELECT id FROM support_ticket_messages WHERE ticket_id = $1`,
+      `SELECT id FROM mod_support.support_ticket_messages WHERE ticket_id = $1`,
       [ticketId],
     )) as Array<{ id: string }>;
     expect(messages).toEqual([]);

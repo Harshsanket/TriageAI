@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { ulid } from 'ulid';
 
+import { ErrorEnvelopeSchema } from '@triageai/contracts';
+
 import { buildApp } from '../src/app.js';
 import { config } from '../src/platform/config.js';
 import { AuthService } from '../src/platform/auth/service.js';
@@ -122,6 +124,20 @@ describeIfDb('auth, sessions and RBAC (phase 9)', () => {
     });
     expect(runsAsAgent.statusCode).toBe(200);
 
+    const dashboardAsCustomer = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/dashboard',
+      headers: { authorization: `Bearer ${customerSession.accessToken}` },
+    });
+    expect(dashboardAsCustomer.statusCode).toBe(403);
+
+    const dashboardAsAdmin = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/dashboard',
+      headers: { authorization: `Bearer ${adminSession.accessToken}` },
+    });
+    expect(dashboardAsAdmin.statusCode).toBe(200);
+
     const promoteAsAgent = await app.inject({
       method: 'POST',
       url: '/api/v1/models/not-real/promote',
@@ -137,6 +153,30 @@ describeIfDb('auth, sessions and RBAC (phase 9)', () => {
     });
     expect(configAsAdmin.statusCode).toBe(200);
     expect(configAsAdmin.json()).toMatchObject({ profile: expect.any(String) });
+  });
+
+  it('emits the shared envelope and strips detail for non-admins', async () => {
+    const adminSession = await login(admin.email, admin.password);
+    const customerSession = await login(customer.email, customer.password);
+
+    const forbidden = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/config',
+      headers: { authorization: `Bearer ${customerSession.accessToken}` },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    const customerBody = ErrorEnvelopeSchema.parse(forbidden.json());
+    expect(customerBody).toMatchObject({ category: 'forbidden', retryable: false });
+    expect(customerBody.detail).toBeUndefined();
+    expect(customerBody.correlationId.length).toBeGreaterThan(0);
+
+    const missing = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/runs/does-not-exist',
+      headers: { authorization: `Bearer ${adminSession.accessToken}` },
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(ErrorEnvelopeSchema.parse(missing.json()).detail).toContain('not found');
   });
 
   it('rotates refresh tokens and revokes the family on replay', async () => {

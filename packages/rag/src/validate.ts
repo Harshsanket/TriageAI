@@ -33,6 +33,12 @@ export interface ValidationPolicy {
   forbiddenPatterns?: string[];
   /** Extra regex strings (no flags) treated as prompt-injection markers. */
   injectionPatterns?: string[];
+  /**
+   * Chat-only mode (Phase 13.T8): there is no knowledge base, so an answer is
+   * allowed with zero sources. Format, injection, PII and forbidden-topic checks
+   * still run; the answer is never presented as grounded or cited.
+   */
+  allowUngrounded?: boolean;
 }
 
 export interface ValidationCheckResult {
@@ -116,6 +122,11 @@ export function groundingCheck(
   policy: ValidationPolicy,
 ): ValidationCheckResult {
   const sources = request.sources ?? [];
+  if (policy.allowUngrounded) {
+    // Explicit ungrounded path (chat-only/bootstrap or "prefer knowledge"
+    // general answer): never present retrieved-but-irrelevant text as proof.
+    return { checkId: 'grounding', passed: true, reasons: ['grounding_bypassed'] };
+  }
   if (sources.length === 0) {
     return { checkId: 'grounding', passed: false, reasons: ['no_sources'] };
   }

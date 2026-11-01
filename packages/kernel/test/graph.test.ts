@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ulid } from 'ulid';
 
 import { resolveModules } from '../src/kernel.js';
+import { normalizePermissions } from '../src/grants.js';
 import type { TriageModule, ModuleManifest } from '../src/types.js';
 
 const emptyManifest: ModuleManifest = { routes: [], nav: [], background: [] };
@@ -9,13 +10,17 @@ const emptyManifest: ModuleManifest = { routes: [], nav: [], background: [] };
 function fakeModule(
   id: string,
   version: string,
-  dependsOn: TriageModule['dependsOn'],
+  provides: string[] = [],
+  consumes: string[] = [],
 ): TriageModule {
   return {
     id,
     version,
     capabilities: [],
-    dependsOn,
+    permissions: normalizePermissions({
+      capabilities: { consume: consumes, provide: provides },
+    }),
+    dependsOn: { capabilities: [] },
     manifest: emptyManifest,
     lifecycle: {},
     register: () => undefined,
@@ -30,10 +35,10 @@ describe('resolveModules', () => {
     capabilities: {},
   });
 
-  it('orders dependencies before dependents', () => {
+  it('orders capability providers before consumers', () => {
     const modules = {
-      a: fakeModule('a', '0.1.0', { modules: [{ id: 'b', version: '^0.1.0' }] }),
-      b: fakeModule('b', '0.2.0', {}),
+      a: fakeModule('a', '0.1.0', [], ['search']),
+      b: fakeModule('b', '0.2.0', ['search'], []),
     };
     const res = resolveModules(config(['a', 'b']), modules);
     expect(res.error).toBeUndefined();
@@ -47,28 +52,10 @@ describe('resolveModules', () => {
     ]);
   });
 
-  it('reports disabled-but-required dependencies', () => {
+  it('detects handler cycles, naming the loop', () => {
     const modules = {
-      a: fakeModule('a', '0.1.0', { modules: [{ id: 'b', version: '>=0.1.0' }] }),
-      b: fakeModule('b', '0.2.0', {}),
-    };
-    const res = resolveModules(config(['a']), modules);
-    expect(res.error?.[0]).toContain('depends on "b" which is registered but not enabled');
-  });
-
-  it('enforces version ranges', () => {
-    const modules = {
-      a: fakeModule('a', '0.1.0', { modules: [{ id: 'b', version: '^0.2.0' }] }),
-      b: fakeModule('b', '0.1.0', {}),
-    };
-    const res = resolveModules(config(['a', 'b']), modules);
-    expect(res.error?.[0]).toContain('0.1.0 < 0.2.0 within same major');
-  });
-
-  it('detects cycles, naming the loop', () => {
-    const modules = {
-      a: fakeModule('a', '0.1.0', { modules: [{ id: 'b', version: '^0.1.0' }] }),
-      b: fakeModule('b', '0.1.0', { modules: [{ id: 'a', version: '^0.1.0' }] }),
+      a: fakeModule('a', '0.1.0', ['cap-a'], ['cap-b']),
+      b: fakeModule('b', '0.1.0', ['cap-b'], ['cap-a']),
     };
     const res = resolveModules(config(['a', 'b']), modules);
     expect(res.error?.[0]).toMatch(/cycle detected: a → b → a|cycle detected: b → a → b/);

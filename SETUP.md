@@ -149,7 +149,7 @@ take precedence over both.
 
 ```bash
 git clone <repo-url> TriageAI && cd TriageAI
-export TRIAGEAI_SECRET_KEY="$(openssl rand -hex 32)"   # enables the /config secret store
+export TRIAGEAI_SECRET_KEY="$(openssl rand -hex 32)"   # optional; otherwise a key file is generated
 docker compose --profile core up --build
 ```
 
@@ -244,7 +244,7 @@ pnpm seed:demo                          # after /readyz is green; TOKEN=... when
 | `NODE_ENV`                    | `development`                                            | `production` makes the unset auth mode default to `required`              |
 | `TRIAGEAI_CONFIG`             | `./triage.config.json`                                   | Base module/capability config (the `/config` overlay layers above it)     |
 | `TRIAGEAI_SETUP`              | `auto`                                                   | `off` disables the first-run wizard (existing-file/env deployments)       |
-| `TRIAGEAI_SECRET_KEY`         | —                                                        | 32+ chars; enables the encrypted secret store used by `/config`           |
+| `TRIAGEAI_SECRET_KEY`         | generated at `$TRIAGEAI_SECRETS_DIR/master.key`          | 32+ chars; optional env override for the encrypted `/config` secret store |
 | `TRIAGEAI_RESTART_ON_APPLY`   | unset (`0`)                                              | `1` exits the API after Apply so a supervisor boots the new config        |
 | `AI_SERVICE_URL`              | `http://localhost:8000`                                  | Python ai-service base URL                                                |
 | `TRIAGEAI_GENERATOR_BASE_URL` | from config                                              | Override the LLM endpoint (wins over the wizard)                          |
@@ -309,23 +309,23 @@ The setup suite creates and drops its own `triageai_setup_test` database.
 
 ## 9. Troubleshooting
 
-| Symptom                                               | Fix                                                                                            |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Every route returns `409 setup.REQUIRED`              | Finish `/config`; if it says "applied", restart the API (compose does it automatically)        |
-| "That token was not accepted"                         | Copy it again from the API log; a restart issues a new one                                     |
-| "The secret store is off (no TRIAGEAI_SECRET_KEY)"    | Set `TRIAGEAI_SECRET_KEY` to 32+ characters and restart, or put credentials in the environment |
-| `AUTH_JWT_SECRET must be set` on boot                 | Auth is on but the secret store is off; set `AUTH_JWT_SECRET` or `TRIAGEAI_SECRET_KEY`         |
-| `/config` changes do not take effect                  | The API has not restarted; compose restarts on Apply, `pnpm dev` needs a manual restart        |
-| Stored secrets stopped working                        | `TRIAGEAI_SECRET_KEY` changed; re-enter them (the old ciphertexts are unreadable by design)    |
-| `Invalid environment configuration: DATABASE_URL`     | Copy `apps/api/.env.example` to `apps/api/.env`                                                |
-| `kernel.BOOT_VALIDATION_FAILED … requires capability` | Your config/overlay enables a module whose capability isn't configured; re-run `/config`       |
-| `queue adapter "bullmq" is not implemented yet`       | Use `"pg-queue"` in `queue.adapter`                                                            |
-| `core migration …: checksum` on boot                  | A migration was edited; migrations are immutable — reset the dev DB volume                     |
-| Chat always says "could not verify"                   | Add and **approve** documents in `/kb`; check `/runs` for the retrieval gate                   |
-| A model marked "too large" cannot be selected         | Tick "Allow models marked too large"; the estimate is advice, the runtime is the final judge   |
-| API in Docker can't reach Ollama on the host          | `TRIAGEAI_GENERATOR_BASE_URL=http://host.docker.internal:11434`                                |
-| Port 3000/5432 already in use                         | Stop the other process, or change the left side of the compose port mapping                    |
-| Tests fail intermittently on workflow jobs            | Stop `pnpm dev`, or point tests at a dedicated database                                        |
+| Symptom                                               | Fix                                                                                                                  |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Every route returns `409 setup.REQUIRED`              | Finish `/config`; if it says "applied", restart the API (compose does it automatically)                              |
+| "That token was not accepted"                         | Copy it again from the API log; a restart issues a new one                                                           |
+| "The secret store is off"                             | Make `$TRIAGEAI_SECRETS_DIR` writable (default `<data>/data/secrets`) or set `TRIAGEAI_SECRET_KEY` to 32+ characters |
+| `AUTH_JWT_SECRET must be set` on boot                 | Auth is on but the secret store is off; set `AUTH_JWT_SECRET` or `TRIAGEAI_SECRET_KEY`                               |
+| `/config` changes do not take effect                  | The API has not restarted; compose restarts on Apply, `pnpm dev` needs a manual restart                              |
+| Stored secrets stopped working                        | `TRIAGEAI_SECRET_KEY`/`master.key` changed; restore the key file or re-enter the secrets                             |
+| `Invalid environment configuration: DATABASE_URL`     | Copy `apps/api/.env.example` to `apps/api/.env`                                                                      |
+| `kernel.BOOT_VALIDATION_FAILED … requires capability` | Your config/overlay enables a module whose capability isn't configured; re-run `/config`                             |
+| `queue adapter "bullmq" is not implemented yet`       | Use `"pg-queue"` in `queue.adapter`                                                                                  |
+| `core migration …: checksum` on boot                  | A migration was edited; migrations are immutable — reset the dev DB volume                                           |
+| Chat always says "could not verify"                   | Add and **approve** documents in `/kb`; check `/runs` for the retrieval gate                                         |
+| A model marked "too large" cannot be selected         | Tick "Allow models marked too large"; the estimate is advice, the runtime is the final judge                         |
+| API in Docker can't reach Ollama on the host          | `TRIAGEAI_GENERATOR_BASE_URL=http://host.docker.internal:11434`                                                      |
+| Port 3000/5432 already in use                         | Stop the other process, or change the left side of the compose port mapping                                          |
+| Tests fail intermittently on workflow jobs            | Stop `pnpm dev`, or point tests at a dedicated database                                                              |
 
 ## 10. Operations
 

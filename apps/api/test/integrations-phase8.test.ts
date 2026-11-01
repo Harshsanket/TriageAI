@@ -232,14 +232,14 @@ describeIfDb('integrations + stress-visible side effects (phase 8)', () => {
     };
     app = (await buildApp({ quiet: true, configPath, capabilities })) as App;
     const db = app.kernel?.database as PostgresDatabase;
-    await db.query(`DELETE FROM integration_github_links`);
-    await db.query(`DELETE FROM integration_github_actions`);
-    await db.query(`DELETE FROM integration_slack_actions`);
+    await db.query(`DELETE FROM mod_integrations_github.integration_github_links`);
+    await db.query(`DELETE FROM mod_integrations_github.integration_github_actions`);
+    await db.query(`DELETE FROM mod_integrations_slack.integration_slack_actions`);
     await db.query(`DELETE FROM audit_events`);
-    await db.query(`DELETE FROM support_auto_replies`);
-    await db.query(`DELETE FROM support_ticket_messages`);
-    await db.query(`DELETE FROM support_ticket_events`);
-    await db.query(`DELETE FROM support_tickets`);
+    await db.query(`DELETE FROM mod_support.support_auto_replies`);
+    await db.query(`DELETE FROM mod_support.support_ticket_messages`);
+    await db.query(`DELETE FROM mod_support.support_ticket_events`);
+    await db.query(`DELETE FROM mod_support.support_tickets`);
     await db.query(
       `DELETE FROM workflow_runs WHERE workflow_id LIKE 'integrations.%' OR workflow_id LIKE 'support.%'`,
     );
@@ -309,11 +309,21 @@ describeIfDb('integrations + stress-visible side effects (phase 8)', () => {
     expect(audit.statusCode).toBe(200);
     expect(JSON.stringify(audit.json())).toContain('integration.github.issue_linked');
 
-    const detail = await app.inject({ method: 'GET', url: `/api/v1/support/tickets/${ticketId}` });
-    const events = (detail.json() as { events: Array<{ type: string }> }).events.map(
-      (event) => event.type,
-    );
-    expect(events).toContain('integration_issue_linked');
+    const deadline = Date.now() + 3_000;
+    for (;;) {
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/support/tickets/${ticketId}`,
+      });
+      const events = (detail.json() as { events: Array<{ type: string }> }).events.map(
+        (event) => event.type,
+      );
+      if (events.includes('integration_issue_linked')) break;
+      if (Date.now() > deadline) {
+        expect(events).toContain('integration_issue_linked');
+      }
+      await new Promise((resolveTick) => setTimeout(resolveTick, 50));
+    }
   });
 
   it('blocks outward GitHub action behind approval and sends only after approval', async () => {

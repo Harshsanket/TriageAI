@@ -9,6 +9,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import type { Kernel } from '@triageai/kernel';
+import { notFound } from '@triageai/kernel';
 import { DecisionRecordDtoSchema, RunDtoSchema, StageRunDtoSchema } from '@triageai/contracts';
 
 interface RunRow {
@@ -90,7 +91,7 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
     return rows.map(toRunDto);
   });
 
-  app.get('/api/v1/system/runs/:id', async (request, reply) => {
+  app.get('/api/v1/system/runs/:id', async (request) => {
     const { id } = request.params as { id: string };
     const runs = (await kernel.database.query(
       `SELECT id, workflow_id, workflow_version, trigger, status, input, output, error, created_at, finished_at
@@ -98,10 +99,7 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
       [id],
     )) as unknown as RunRow[];
     const run = runs[0];
-    if (!run)
-      return reply
-        .status(404)
-        .send({ status: 404, title: 'NOT_FOUND', detail: `run ${id} not found` });
+    if (!run) throw notFound(`run ${id} not found`, { runId: id });
 
     const stages = (await kernel.database.query(
       `SELECT id, run_id, stage_id, kind, status, attempts, output, error, started_at, finished_at
@@ -149,6 +147,35 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
         fallback: decision.fallback ?? null,
         outcome: decision.outcome ?? null,
       })),
+    };
+  });
+
+  app.get('/api/v1/system/runs/:id/graph', async (request) => {
+    const { id } = request.params as { id: string };
+    const rows = await kernel.database.query<{ workflow_id: string; workflow_version: string }>(
+      `SELECT workflow_id, workflow_version FROM workflow_runs WHERE id = $1`,
+      [id],
+    );
+    const run = rows[0];
+    if (!run) throw notFound(`run ${id} not found`);
+    const graph = kernel.workflowEngine.graphFor(run.workflow_id, run.workflow_version);
+    if (!graph) throw notFound(`graph for ${run.workflow_id}@${run.workflow_version} not found`);
+    const stages = await kernel.database.query<{ stage_id: string; status: string }>(
+      `SELECT stage_id, status FROM stage_runs WHERE run_id = $1 ORDER BY created_at, stage_id`,
+      [id],
+    );
+    const order = stages.map((stage) => stage.stage_id);
+    const takenEdges = graph.edges
+      .filter((edge) =>
+        order.some((stageId, index) => edge.from === stageId && edge.to === order[index + 1]),
+      )
+      .map((edge) => `${edge.from}->${edge.to}`);
+    return {
+      runId: id,
+      workflowId: run.workflow_id,
+      version: run.workflow_version,
+      graph,
+      takenEdges,
     };
   });
 

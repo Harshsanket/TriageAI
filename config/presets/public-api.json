@@ -1,0 +1,20 @@
+{
+  "profile": "assistant",
+  "queue": { "adapter": "pg-queue", "pollIntervalMs": 250 },
+  "modules": {
+    "public-api": { "enabled": true },
+    "ai-pipeline": { "enabled": true },
+    "chat": { "enabled": false },
+    "echo": { "enabled": false }
+  },
+  "capabilities": {
+    "embedder": { "adapter": "ai-service" },
+    "vectorStore": { "adapter": "pgvector" },
+    "retriever": { "adapter": "pgvector", "threshold": 0.35, "margin": 0.05 },
+    "generator": {
+      "adapter": "ollama",
+      "baseUrl": "http://localhost:11434",
+      "model": "qwen2.5:1.5b"
+    }
+  }
+}

@@ -4,7 +4,7 @@
  * limits, credential rotation and delivery idempotency live here so every
  * adapter gets the same behaviour and the contract suite can pin it.
  */
-import { AppError } from '../errors.js';
+import { AppError, fetchFailure, httpFailure, parseRetryAfterMs } from '../errors.js';
 import type {
   DeliveryContext,
   DeliveryResult,
@@ -56,6 +56,10 @@ export interface RequestWithRetryOptions {
   signal?: AbortSignal;
   /** Disable automatic 5xx retries for non-idempotent creates. */
   retryServerErrors?: boolean;
+  /** Code prefix for classified failures (default `integration`). */
+  codePrefix?: string;
+  /** Human label for classified failures (default `outbound request`). */
+  label?: string;
 }
 
 export interface RetriedResponse {
@@ -68,28 +72,26 @@ export interface RetriedResponse {
 const sleepDefault = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms));
 
 function retryDelayMs(response: Response, attempt: number): number {
-  const retryAfter = response.headers.get('retry-after');
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-    const date = Date.parse(retryAfter);
-    if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
-  }
-  return Math.min(5_000, 100 * 2 ** attempt);
+  return (
+    parseRetryAfterMs(response.headers.get('retry-after')) ?? Math.min(5_000, 100 * 2 ** attempt)
+  );
 }
 
 /**
  * Sends one logical request, retrying 429/5xx and rotating credentials on
- * 401/403. Exhausted retries throw a typed `INTEGRATION_REQUEST_FAILED` (the
- * caller keeps the ticket/run state untouched — outages never mutate domain
- * state).
+ * 401/403. Exhausted retries throw a classified AppError (timeout,
+ * rate_limited or dependency_unavailable; 4xx stays permanent), so the caller
+ * can retry only what can succeed — outages never mutate domain state.
  */
 export async function requestWithRetry(options: RequestWithRetryOptions): Promise<RetriedResponse> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const maxAttempts = options.maxAttempts ?? 4;
   const sleep = options.sleep ?? sleepDefault;
+  const codePrefix = options.codePrefix ?? 'integration';
+  const label = options.label ?? 'outbound request';
   let lastStatus = 0;
   let lastBody = '';
+  let lastRetryAfter: string | null = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const headers: Record<string, string> = {
@@ -97,19 +99,30 @@ export async function requestWithRetry(options: RequestWithRetryOptions): Promis
       ...(options.auth?.headers() ?? {}),
     };
     if (options.body !== undefined) headers['content-type'] ??= 'application/json';
-    const response = await fetchImpl(options.url, {
-      method: options.method ?? 'POST',
-      headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: options.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(options.url, {
+        method: options.method ?? 'POST',
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: options.signal,
+      });
+    } catch (error) {
+      if (attempt + 1 < maxAttempts) {
+        await sleep(Math.min(5_000, 100 * 2 ** attempt));
+        continue;
+      }
+      throw fetchFailure({ codePrefix, label, cause: error });
+    }
     lastStatus = response.status;
+    lastRetryAfter = response.headers.get('retry-after');
     lastBody = await response.text();
 
     if ((response.status === 401 || response.status === 403) && options.auth?.rotate()) {
       continue;
     }
     if (
+      response.status === 408 ||
       response.status === 429 ||
       (response.status >= 500 && options.retryServerErrors !== false)
     ) {
@@ -119,12 +132,13 @@ export async function requestWithRetry(options: RequestWithRetryOptions): Promis
       }
     }
     if (!response.ok) {
-      throw new AppError(
-        'INTEGRATION_REQUEST_FAILED',
-        `outbound request failed (${response.status})`,
-        { status: response.status, body: lastBody.slice(0, 500) },
-        502,
-      );
+      throw httpFailure({
+        codePrefix,
+        label,
+        status: response.status,
+        retryAfter: lastRetryAfter,
+        body: lastBody,
+      });
     }
     let body: unknown = lastBody;
     try {
@@ -135,12 +149,13 @@ export async function requestWithRetry(options: RequestWithRetryOptions): Promis
     return { status: response.status, body, bodyText: lastBody, headers: response.headers };
   }
 
-  throw new AppError(
-    'INTEGRATION_REQUEST_FAILED',
-    `outbound request failed after ${maxAttempts} attempts (${lastStatus})`,
-    { status: lastStatus, body: lastBody.slice(0, 500) },
-    502,
-  );
+  throw httpFailure({
+    codePrefix,
+    label,
+    status: lastStatus,
+    retryAfter: lastRetryAfter,
+    body: lastBody,
+  });
 }
 
 export interface HttpOutputChannelOptions {
@@ -185,6 +200,7 @@ export class HttpOutputChannel implements OutputChannel {
         `output channel "${this.options.channel}" is not configured`,
         undefined,
         503,
+        { category: 'internal', retryable: false, userMessage: 'This integration is not enabled.' },
       );
     }
     const key = intent.idempotencyKey ?? ctx.idempotencyKey;
@@ -200,6 +216,8 @@ export class HttpOutputChannel implements OutputChannel {
       fetchImpl: this.options.fetchImpl,
       maxAttempts: this.options.maxAttempts,
       sleep: this.options.sleep,
+      codePrefix: 'integration',
+      label: this.options.channel,
     });
     const parsed = this.options.parse(response, ctx, intent);
     const result: DeliveryResult = {
@@ -219,6 +237,7 @@ export class HttpOutputChannel implements OutputChannel {
         `output channel "${this.options.channel}" is not configured`,
         undefined,
         503,
+        { category: 'internal', retryable: false, userMessage: 'This integration is not enabled.' },
       );
     }
     return this.options.search(ctx, query, requestWithRetry);

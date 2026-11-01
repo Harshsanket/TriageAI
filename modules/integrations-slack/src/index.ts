@@ -10,6 +10,7 @@ import { ulid } from 'ulid';
 
 import { IntegrationActionDtoSchema, TicketPriorityCodeSchema } from '@triageai/contracts';
 import { createActionStore, registerActionRoutes } from '@triageai/integrations-core';
+import { internal, invalid, notFound } from '@triageai/kernel';
 import type { KernelContext, TriageModule } from '@triageai/kernel';
 
 import { createSlackChannel } from './channel.js';
@@ -146,8 +147,30 @@ export const integrationsSlackModule: TriageModule = {
   id: 'integrations-slack',
   version: '0.1.0',
   capabilities: ['storage', 'queue', 'eventBus', 'outputChannel'],
+  permissions: {
+    storage: { schema: true },
+    routes: [
+      { method: 'GET', path: '/api/v1/integrations/slack/actions' },
+      { method: 'POST', path: '/api/v1/integrations/slack/actions/:id/approve' },
+      { method: 'POST', path: '/api/v1/integrations/slack/actions/:id/reject' },
+      { method: 'POST', path: '/api/v1/integrations/slack/actions/:id/retry' },
+    ],
+    events: {
+      publish: [],
+      subscribe: ['support.ticket.routed', 'workflow.run.finished'],
+    },
+    capabilities: {
+      consume: ['storage', 'queue', 'eventBus', 'outputChannel'],
+      provide: [],
+    },
+    stages: ['integrations.slack.flush_batch', 'integrations.slack.notify'],
+    workflows: ['integrations.slack.flush', 'integrations.slack.notify'],
+    evals: [],
+    tools: [],
+    egress: { hosts: ['*'], dataClasses: ['public', 'internal', 'restricted'] },
+    knowledge: { read: [], write: [] },
+  },
   dependsOn: {
-    modules: [{ id: 'support', version: '^0.3.0' }],
     capabilities: [{ capability: 'outputChannel' }],
   },
   configSchema,
@@ -178,6 +201,7 @@ export const integrationsSlackModule: TriageModule = {
       ctx.database,
       'slack',
       'integration_slack_actions',
+      (entry) => ctx.audit.append(entry),
     );
     const audit = actions.audit;
     const loadAction = actions.load;
@@ -344,9 +368,9 @@ export const integrationsSlackModule: TriageModule = {
     ctx.registerStageHandler('integrations.slack.notify', {
       execute: async (stage) => {
         const input = stage.input as { actionId?: string };
-        if (!input.actionId) throw new Error('integrations.slack.notify requires actionId');
+        if (!input.actionId) throw invalid('integrations.slack.notify requires actionId');
         const action = await loadAction(input.actionId);
-        if (!action) throw new Error(`slack action ${input.actionId} not found`);
+        if (!action) throw notFound(`slack action ${input.actionId} not found`);
         if (action.status === 'sent') {
           return {
             output: { sent: true, deduped: true, ref: action.ref },
@@ -369,7 +393,7 @@ export const integrationsSlackModule: TriageModule = {
           };
         }
         const channel = ctx.capabilities.outputChannel;
-        if (!channel) throw new Error('outputChannel capability missing');
+        if (!channel) throw internal('outputChannel capability missing');
         const delivered = await channel.deliver(
           {
             runId: stage.runId,
@@ -425,7 +449,7 @@ export const integrationsSlackModule: TriageModule = {
           groups.set(row.channel, bucket);
         }
         const channel = ctx.capabilities.outputChannel;
-        if (!channel) throw new Error('outputChannel capability missing');
+        if (!channel) throw internal('outputChannel capability missing');
         let flushed = 0;
         const failures: string[] = [];
         for (const [slackChannel, actions] of groups) {

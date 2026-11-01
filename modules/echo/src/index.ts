@@ -7,7 +7,6 @@ import { ulid } from 'ulid';
 import { z } from 'zod';
 
 import type { TriageModule } from '@triageai/kernel';
-import { RunDtoSchema, StageRunDtoSchema } from '@triageai/contracts';
 
 const MIGRATIONS = [
   {
@@ -23,6 +22,17 @@ const MIGRATIONS = [
     `,
     dropSql: 'DROP TABLE IF EXISTS echo_notes;',
   },
+  {
+    // ADR-0054 §3: module tables never carry a foreign key into a core table.
+    // The original migration created `run_id REFERENCES workflow_runs(id)`;
+    // applied databases get the FK dropped here (migrations are immutable).
+    id: '0002-echo-drop-core-fks',
+    sql: `
+      ALTER TABLE echo_notes DROP CONSTRAINT IF EXISTS echo_notes_run_id_fkey;
+      ALTER TABLE echo_notes DROP CONSTRAINT IF EXISTS echo_notes_org_id_fkey;
+    `,
+    dropSql: '',
+  },
 ];
 
 const configSchema = z
@@ -37,7 +47,22 @@ export function createEchoModule(): TriageModule {
     id: 'echo',
     version: '0.1.0',
     capabilities: ['queue', 'eventBus', 'storage'],
-    dependsOn: { modules: [], capabilities: [] },
+    permissions: {
+      storage: { schema: true },
+      routes: [
+        { method: 'GET', path: '/api/v1/echo/runs' },
+        { method: 'POST', path: '/api/v1/echo/note' },
+        { method: 'POST', path: '/api/v1/echo/run' },
+      ],
+      events: { publish: [], subscribe: [] },
+      capabilities: { consume: ['queue', 'eventBus', 'storage'], provide: [] },
+      stages: ['echo.upper', 'echo.wrap'],
+      workflows: ['echo.run'],
+      evals: [],
+      tools: [],
+      knowledge: { read: [], write: [] },
+    },
+    dependsOn: { capabilities: [] },
     configSchema,
     migrations: MIGRATIONS,
     tables: ['echo_notes'],
@@ -124,78 +149,8 @@ export function createEchoModule(): TriageModule {
           const limit = Number.isFinite(rawLimit)
             ? Math.min(Math.max(1, Math.trunc(rawLimit)), 100)
             : 10;
-          interface RunRow {
-            [key: string]: unknown;
-            id: string;
-            workflow_id: string;
-            workflow_version: string;
-            trigger: string;
-            status: string;
-            input: unknown;
-            output: Record<string, unknown> | null;
-            error: string | null;
-            created_at: Date | string;
-            finished_at: Date | string | null;
-          }
-          interface StageRow {
-            [key: string]: unknown;
-            id: string;
-            run_id: string;
-            stage_id: string;
-            kind: string;
-            status: string;
-            attempts: number;
-            output: unknown;
-            error: string | null;
-            started_at: Date | string | null;
-            finished_at: Date | string | null;
-          }
-          const runs = await ctx.database.query<RunRow>(
-            `SELECT id, workflow_id, workflow_version, trigger, status, input, output, error,
-                    created_at, finished_at
-             FROM workflow_runs WHERE workflow_id = 'echo.run' ORDER BY created_at DESC LIMIT $1`,
-            [limit],
-          );
-          const stageRows = await ctx.database.query<StageRow>(
-            `SELECT s.id, s.run_id, s.stage_id, s.kind, s.status, s.attempts, s.output, s.error,
-                    s.started_at, s.finished_at
-             FROM stage_runs s JOIN workflow_runs r ON r.id = s.run_id
-             WHERE r.workflow_id = 'echo.run'
-             ORDER BY s.created_at DESC LIMIT $1`,
-            [limit * 10],
-          );
-          const byRun = new Map<string, StageRow[]>();
-          for (const row of stageRows)
-            byRun.set(row.run_id, [...(byRun.get(row.run_id) ?? []), row]);
-          return runs.map((run) => {
-            const stages = (byRun.get(run.id) ?? []).map((s) =>
-              StageRunDtoSchema.parse({
-                id: s.id,
-                runId: s.run_id,
-                stageId: s.stage_id,
-                kind: s.kind,
-                status: s.status,
-                attempts: s.attempts,
-                output: s.output ?? null,
-                error: s.error ?? null,
-                startedAt: s.started_at ? new Date(s.started_at).toISOString() : null,
-                finishedAt: s.finished_at ? new Date(s.finished_at).toISOString() : null,
-              }),
-            );
-            const runDto = RunDtoSchema.parse({
-              id: run.id,
-              workflowId: run.workflow_id,
-              workflowVersion: run.workflow_version,
-              trigger: run.trigger,
-              status: run.status,
-              input: run.input ?? null,
-              output: run.output ?? null,
-              error: run.error ?? null,
-              createdAt: new Date(run.created_at).toISOString(),
-              finishedAt: run.finished_at ? new Date(run.finished_at).toISOString() : null,
-            });
-            return { ...runDto, stages } as Record<string, unknown>;
-          });
+          const runs = await ctx.runs.list({ workflowId: 'echo.run', limit });
+          return runs.map(({ run, stages }) => ({ ...run, stages }));
         },
       });
     },

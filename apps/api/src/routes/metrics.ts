@@ -16,9 +16,12 @@ export function registerMetricsRoute(app: FastifyInstance, kernel: Kernel): void
   const safeQuery = async <T extends Record<string, unknown>>(text: string): Promise<Array<T>> => {
     try {
       return await kernel.database.query<T>(text);
-    } catch {
-      // Module tables may be absent in profiles where the module is disabled.
-      return [];
+    } catch (err) {
+      // Only a missing optional module table is benign. A database outage must
+      // fail the scrape loudly instead of reading as zeros (10C.T6).
+      if ((err as { code?: unknown }).code === '42P01') return [];
+      app.log.error({ err }, 'metrics query failed');
+      throw err;
     }
   };
 
@@ -53,8 +56,11 @@ export function registerMetricsRoute(app: FastifyInstance, kernel: Kernel): void
               COUNT(*)::int AS total
        FROM stage_runs`,
     );
-    const autoReplies = await safeQuery<{ state: string; count: number }>(
-      `SELECT state, COUNT(*)::int AS count FROM support_auto_replies GROUP BY state`,
+    const providerMetrics = (await kernel.readMetricsProviders?.().catch(() => [])) ?? [];
+    const autoReplies = providerMetrics.flatMap((provider) =>
+      Object.entries(provider)
+        .filter(([key]) => key.startsWith('auto_replies.'))
+        .map(([key, value]) => ({ state: key.slice('auto_replies.'.length), count: value })),
     );
 
     const lines: string[] = [

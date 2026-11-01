@@ -15,7 +15,8 @@
     "@triageai/contracts": "workspace:*",
     "@triageai/kernel": "workspace:*",
     "@triageai/rag": "workspace:*",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "ulid": "^3.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",

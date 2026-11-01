@@ -211,12 +211,24 @@ importers:
       '@triageai/module-chat':
         specifier: workspace:*
         version: link:../../modules/chat
+      '@triageai/module-classifier-provider':
+        specifier: workspace:*
+        version: link:../../modules/classifier-provider
+      '@triageai/module-data-extract':
+        specifier: workspace:*
+        version: link:../../modules/data-extract
       '@triageai/module-doc-assistant':
         specifier: workspace:*
         version: link:../../modules/doc-assistant
       '@triageai/module-echo':
         specifier: workspace:*
         version: link:../../modules/echo
+      '@triageai/module-emailer':
+        specifier: workspace:*
+        version: link:../../modules/emailer
+      '@triageai/module-embedder-provider':
+        specifier: workspace:*
+        version: link:../../modules/embedder-provider
       '@triageai/module-integrations-github':
         specifier: workspace:*
         version: link:../../modules/integrations-github
@@ -226,6 +238,12 @@ importers:
       '@triageai/module-kb':
         specifier: workspace:*
         version: link:../../modules/kb
+      '@triageai/module-llm-local':
+        specifier: workspace:*
+        version: link:../../modules/llm-local
+      '@triageai/module-public-api':
+        specifier: workspace:*
+        version: link:../../modules/public-api
       '@triageai/module-support':
         specifier: workspace:*
         version: link:../../modules/support
@@ -244,6 +262,9 @@ importers:
       ulid:
         specifier: ^3.0.1
         version: 3.0.2
+      undici:
+        specifier: ^7.30.1
+        version: 7.30.1
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -318,6 +339,9 @@ importers:
       '@triageai/rag':
         specifier: workspace:*
         version: link:../../packages/rag
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -337,6 +361,9 @@ importers:
       '@triageai/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@triageai/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
       ulid:
         specifier: ^3.0.1
         version: 3.0.2
@@ -350,6 +377,53 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  modules/classifier-provider:
+    dependencies:
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
+
+  modules/data-extract:
+    dependencies:
+      '@triageai/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      '@triageai/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
 
   modules/doc-assistant:
     dependencies:
@@ -391,6 +465,47 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+
+  modules/emailer:
+    dependencies:
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
+
+  modules/embedder-provider:
+    dependencies:
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
 
   modules/integrations-github:
     dependencies:
@@ -476,6 +591,50 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
 
+  modules/llm-local:
+    dependencies:
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
+
+  modules/public-api:
+    dependencies:
+      '@triageai/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@triageai/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
+
   modules/support:
     dependencies:
       '@triageai/contracts':
@@ -544,12 +703,34 @@ importers:
       '@triageai/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@triageai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
       ulid:
         specifier: ^3.0.1
         version: 3.0.2
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.5)(jsdom@27.4.0(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.15)
+
+  packages/plugin-sdk:
+    dependencies:
+      '@triageai/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -2226,6 +2407,10 @@ packages:
 
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+  undici@7.30.1:
+    resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
+    engines: {node: '>=20.18.1'}
 
   update-browserslist-db@1.3.4:
     resolution: {integrity: sha512-t8wonIOdQyOjtPd2VktlBu6QjTVTks6v8bSi7kd0r2Vll8TK1JYDZtRRdbmCHOAMphkZgrzK+L+vXK4pyZ8t4A==}
@@ -3943,6 +4128,8 @@ snapshots:
   ulid@3.0.2: {}
 
   undici-types@6.21.0: {}
+
+  undici@7.30.1: {}
 
   update-browserslist-db@1.3.4(browserslist@4.29.4):
     dependencies:

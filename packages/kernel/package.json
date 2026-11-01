@@ -18,7 +18,8 @@
     "@triageai/contracts": "workspace:*",
     "postgres": "^3.4.9",
     "ulid": "^3.0.1",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "@triageai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",

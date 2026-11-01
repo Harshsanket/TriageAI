@@ -58,12 +58,63 @@ const retentionSchema = z.object({
   deadletterDays: daysSchema,
 });
 
+const hostedSchema = z.object({
+  enabled: z.boolean().default(false),
+  allowedProviders: z.array(z.string()).default([]),
+  budgets: z
+    .record(
+      z.string(),
+      z.object({
+        dailyTokens: z.number().int().positive().optional(),
+        dailyCurrency: z.number().positive().optional(),
+      }),
+    )
+    .default({}),
+  currency: z.string().default('USD'),
+});
+
+const egressSchema = z.object({
+  allowlist: z
+    .array(
+      z.object({
+        host: z.string().min(1),
+        dataClass: z.enum(['public', 'internal', 'restricted', 'secret']).default('public'),
+      }),
+    )
+    .default([{ host: 'api.github.com', dataClass: 'public' }]),
+});
+
 const getSchema = z.object({
   profile: profileNameSchema.default('core'),
   queue: queueAdapterSchema.default({ adapter: 'pg-queue', pollIntervalMs: 250 }),
   modules: z.record(z.string(), moduleConfigSchema).default({}),
   capabilities: z.record(z.string(), capabilitySchema).default({ queue: { adapter: 'pg-queue' } }),
+  interfaces: z.array(z.string().min(1).max(60)).optional(),
   retention: retentionSchema.default({}),
+  hosted: hostedSchema.default({}),
+  egress: egressSchema.default({}),
+  agents: z
+    .record(
+      z.string(),
+      z.object({
+        displayName: z.string().min(1).max(40),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      }),
+    )
+    .optional(),
+  appearance: z
+    .object({
+      defaults: z
+        .object({
+          theme: z.enum(['light', 'dark', 'auto']).optional(),
+          fontSize: z.enum(['small', 'default', 'large', 'xlarge']).optional(),
+          motion: z.enum(['on', 'off', 'auto']).optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict()
+    .optional(),
 });
 
 export type RawConfigFile = z.input<typeof getSchema>;
@@ -125,7 +176,32 @@ const overlaySchema = z
     queue: queueAdapterSchema.partial().optional(),
     modules: z.record(z.string(), moduleConfigSchema.partial()).optional(),
     capabilities: z.record(z.string(), capabilityPatchSchema()).optional(),
+    interfaces: z.array(z.string().min(1).max(60)).optional(),
     retention: retentionSchema.partial().optional(),
+    hosted: hostedSchema.partial().optional(),
+    egress: egressSchema.partial().optional(),
+    agents: z
+      .record(
+        z.string(),
+        z.object({
+          displayName: z.string().min(1).max(40),
+          color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+        }),
+      )
+      .optional(),
+    appearance: z
+      .object({
+        defaults: z
+          .object({
+            theme: z.enum(['light', 'dark', 'auto']).optional(),
+            fontSize: z.enum(['small', 'default', 'large', 'xlarge']).optional(),
+            motion: z.enum(['on', 'off', 'auto']).optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -166,12 +242,22 @@ export function applyConfigOverlay(
   for (const [id, patch] of Object.entries(overlay.capabilities ?? {})) {
     capabilities[id] = { ...file.capabilities[id], ...patch };
   }
+  const agents = { ...file.agents, ...overlay.agents };
   return parseConfigFile({
     profile: overlay.profile ?? file.profile,
     queue: { ...file.queue, ...overlay.queue },
     modules,
     capabilities,
+    ...((overlay.interfaces ?? file.interfaces)
+      ? { interfaces: overlay.interfaces ?? file.interfaces }
+      : {}),
     retention: { ...file.retention, ...overlay.retention },
+    hosted: { ...file.hosted, ...overlay.hosted },
+    egress: { ...file.egress, ...overlay.egress },
+    ...(Object.keys(agents).length > 0 ? { agents } : {}),
+    ...((overlay.appearance ?? file.appearance)
+      ? { appearance: overlay.appearance ?? file.appearance }
+      : {}),
   });
 }
 
@@ -222,5 +308,7 @@ export function buildKernelConfig(
     modules,
     capabilities: file.capabilities,
     retention: file.retention,
+    hosted: file.hosted,
+    egress: file.egress,
   };
 }

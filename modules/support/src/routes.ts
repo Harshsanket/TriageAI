@@ -87,6 +87,11 @@ export function registerRoutes(
          VALUES ($1, $2, 'created', $3, $4)`,
         [ulid(), ticketId, { requester: body.requester }, body.requester],
       );
+      await ctx.events.publish('support.ticket.created', {
+        ticketId,
+        requester: body.requester,
+        subject: body.subject,
+      });
 
       const started = await ctx.queue.startWorkflow(
         'support.triage',
@@ -283,34 +288,28 @@ export function registerRoutes(
 
       // Agent corrections are feedback, never training data: they enter the
       // candidate pool as `proposed` and must be reviewed (FR-6.2).
-      const latestRun = await ctx.database.query<{ id: string }>(
-        `SELECT id FROM workflow_runs
-         WHERE input->>'ticketId' = $1 ORDER BY created_at DESC LIMIT 1`,
-        [id],
-      );
-      await ctx.database.query(
-        `INSERT INTO candidate_examples
-           (id, source, source_run_id, input, gold, provenance, status, actor)
-         VALUES ($1, 'agent_override', $2, $3, $4, $5, 'proposed', $6)`,
-        [
-          ulid(),
-          latestRun[0]?.id ?? null,
-          { ticketId: id, subject: ticket.subject, body: ticket.body },
-          {
-            category: ticket.category,
-            priorityCode: body.priorityCode,
-            teamId: body.teamId,
-          },
-          {
-            ticketId: id,
-            previous,
-            method: body.method,
-            note: body.note ?? null,
-            actor: body.actor,
-          },
-          body.actor,
-        ],
-      );
+      const latestRun = await ctx.runs.list({
+        inputMatch: { ticketId: id },
+        limit: 1,
+      });
+      await ctx.feedback.propose({
+        source: 'agent_override',
+        sourceRunId: latestRun[0]?.run.id ?? null,
+        input: { ticketId: id, subject: ticket.subject, body: ticket.body },
+        gold: {
+          category: ticket.category,
+          priorityCode: body.priorityCode,
+          teamId: body.teamId,
+        },
+        provenance: {
+          ticketId: id,
+          previous,
+          method: body.method,
+          note: body.note ?? null,
+          actor: body.actor,
+        },
+        actor: body.actor,
+      });
 
       return ticketDto(updatedRows[0] as TicketRow);
     },
@@ -418,22 +417,19 @@ export function registerRoutes(
         // A verified resolution is feedback, never training data: it enters
         // the candidate pool as `proposed` and must be reviewed (FR-6.2).
         if (autoReply) {
-          await ctx.database.query(
-            `INSERT INTO candidate_examples (id, source, source_run_id, input, gold, provenance, status, actor)
-             VALUES ($1, 'confirmed_resolution', $2, $3, $4, $5, 'proposed', 'customer')`,
-            [
-              ulid(),
-              autoReply.run_id,
-              { ticketId: id, subject: ticket.subject, body: ticket.body },
-              { category: ticket.category, answer: autoReply.answer },
-              {
-                ticketId: id,
-                autoReplyId: autoReply.id,
-                method: 'confirmed_resolution',
-                actor: 'customer',
-              },
-            ],
-          );
+          await ctx.feedback.propose({
+            source: 'confirmed_resolution',
+            sourceRunId: autoReply.run_id,
+            input: { ticketId: id, subject: ticket.subject, body: ticket.body },
+            gold: { category: ticket.category, answer: autoReply.answer },
+            provenance: {
+              ticketId: id,
+              autoReplyId: autoReply.id,
+              method: 'confirmed_resolution',
+              actor: 'customer',
+            },
+            actor: 'customer',
+          });
         }
         return TicketConfirmationResponseSchema.parse({
           ticketId: id,
@@ -503,6 +499,167 @@ export function registerRoutes(
         { trigger: 'manual' },
       );
       return { ticketId: id, runId: started.runId, deduped: started.deduped };
+    },
+  });
+
+  ctx.registerRoute({
+    method: 'GET',
+    url: '/api/v1/support/my-tickets',
+    handler: async (request) => {
+      const rows = await ctx.database.query<TicketRow>(
+        `SELECT * FROM support_tickets
+         WHERE ($1::text IS NULL OR owner_id = $1)
+         ORDER BY created_at DESC LIMIT 50`,
+        [request.actorId ?? null],
+      );
+      return rows.map(ticketDto);
+    },
+  });
+
+  ctx.registerRoute({
+    method: 'GET',
+    url: '/api/v1/support/sla/breaches',
+    handler: async () => {
+      const rows = await ctx.database.query<TicketRow>(
+        `SELECT * FROM support_tickets
+         WHERE sla_due_at IS NOT NULL AND sla_due_at < now()
+           AND status NOT IN ('RESOLVED','CANCELLED')
+         ORDER BY sla_due_at ASC LIMIT 100`,
+      );
+      for (const ticket of rows) {
+        if (ticket.sla_breached_at) continue;
+        await ctx.database.query(
+          `UPDATE support_tickets SET sla_breached_at = now() WHERE id = $1`,
+          [ticket.id],
+        );
+        await ctx.database.query(
+          `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+           VALUES ($1, $2, 'sla_breached', $3, 'system')`,
+          [ulid(), ticket.id, { dueAt: ticket.sla_due_at ?? null }],
+        );
+      }
+      return rows.map((ticket) => ({
+        ...ticketDto(ticket),
+        slaBreachedAt: new Date().toISOString(),
+      }));
+    },
+  });
+
+  ctx.registerRoute({
+    method: 'PATCH',
+    url: '/api/v1/support/tickets/:id/assignment',
+    handler: async (request) => {
+      const { id } = request.params;
+      const body = z
+        .object({ assigneeId: z.string().min(1).max(200).nullable() })
+        .strict()
+        .parse(request.body ?? {});
+      const rows = await ctx.database.query<TicketRow>(
+        `UPDATE support_tickets SET assignee_id = $2, updated_at = now()
+         WHERE id = $1 RETURNING *`,
+        [id, body.assigneeId],
+      );
+      if (!rows[0]) throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+      await ctx.database.query(
+        `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+         VALUES ($1, $2, 'assigned', $3, $4)`,
+        [ulid(), id, { assigneeId: body.assigneeId }, request.actor ?? 'agent'],
+      );
+      return ticketDto(rows[0]);
+    },
+  });
+
+  ctx.registerRoute({
+    method: 'POST',
+    url: '/api/v1/support/tickets/:id/csat',
+    handler: async (request) => {
+      const { id } = request.params;
+      const body = z
+        .object({ score: z.number().int().min(1).max(5) })
+        .strict()
+        .parse(request.body);
+      const rows = await ctx.database.query<TicketRow>(
+        `SELECT * FROM support_tickets WHERE id = $1`,
+        [id],
+      );
+      const ticket = rows[0];
+      if (!ticket || !ownedBy(ticket, request.ownerScope)) {
+        throw new AppError('NOT_FOUND', `ticket ${id} not found`);
+      }
+      if (ticket.status !== 'RESOLVED') {
+        throw new AppError('CONFLICT', 'satisfaction can only be recorded on a resolved ticket');
+      }
+      if (ticket.csat_score != null) {
+        throw new AppError('CONFLICT', 'satisfaction was already recorded');
+      }
+      await ctx.database.query(
+        `UPDATE support_tickets SET csat_score = $2, updated_at = now() WHERE id = $1`,
+        [id, body.score],
+      );
+      await ctx.database.query(
+        `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
+         VALUES ($1, $2, 'csat_recorded', $3, $4)`,
+        [ulid(), id, { score: body.score }, request.actor ?? 'customer'],
+      );
+      return { ticketId: id, csatScore: body.score };
+    },
+  });
+
+  ctx.registerRoute({
+    method: 'GET',
+    url: '/api/v1/support/canned-responses',
+    handler: async () => {
+      const rows = await ctx.database.query<Record<string, unknown>>(
+        `SELECT id, title, body, created_by, created_at
+         FROM support_canned_responses ORDER BY created_at DESC`,
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        body: row.body,
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+      }));
+    },
+  });
+
+  ctx.registerRoute({
+    method: 'POST',
+    url: '/api/v1/support/canned-responses',
+    handler: async (request) => {
+      const body = z
+        .object({ title: z.string().min(1).max(120), body: z.string().min(1).max(20_000) })
+        .strict()
+        .parse(request.body ?? {});
+      const id = ulid();
+      await ctx.database.query(
+        `INSERT INTO support_canned_responses (id, title, body, created_by)
+         VALUES ($1, $2, $3, $4)`,
+        [id, body.title, body.body, request.actor ?? null],
+      );
+      return { id, title: body.title, body: body.body };
+    },
+  });
+
+  ctx.registerDashboardProvider({
+    id: 'support',
+    async read({ database }) {
+      const rows = await database.query<{ bucket: string; count: number }>(
+        `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS bucket,
+                COUNT(*)::int AS count
+           FROM support_tickets WHERE created_at > now() - interval '14 days' GROUP BY 1`,
+      );
+      return { usageTickets: rows };
+    },
+  });
+
+  ctx.registerMetricsProvider({
+    id: 'support.auto_replies',
+    async read({ database }) {
+      const rows = await database.query<{ state: string; count: number }>(
+        `SELECT state, COUNT(*)::int AS count FROM support_auto_replies GROUP BY state`,
+      );
+      return Object.fromEntries(rows.map((row) => [`auto_replies.${row.state}`, row.count]));
     },
   });
 }

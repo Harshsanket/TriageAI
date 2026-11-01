@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TriageAI</title>
+    <script>
+      (function () {
+        try {
+          var p = JSON.parse(localStorage.getItem('triageai.appearance') || 'null') || {};
+          var theme = p.theme || 'auto';
+          var dark =
+            theme === 'dark' ||
+            (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var reduce =
+            p.motion === 'off' ||
+            (p.motion === 'auto' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+          var root = document.documentElement;
+          root.dataset.theme = dark ? 'dark' : 'light';
+          root.dataset.themeChoice = theme;
+          root.dataset.fontSize = p.fontSize || 'default';
+          root.dataset.motion = reduce ? 'off' : 'on';
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

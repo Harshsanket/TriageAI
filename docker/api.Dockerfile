@@ -15,6 +15,7 @@ COPY modules/chat/package.json modules/chat/package.json
 COPY modules/support/package.json modules/support/package.json
 COPY modules/ai-pipeline/package.json modules/ai-pipeline/package.json
 COPY modules/kb/package.json modules/kb/package.json
+COPY modules/data-extract/package.json modules/data-extract/package.json
 COPY modules/doc-assistant/package.json modules/doc-assistant/package.json
 COPY modules/integrations-github/package.json modules/integrations-github/package.json
 COPY modules/integrations-slack/package.json modules/integrations-slack/package.json

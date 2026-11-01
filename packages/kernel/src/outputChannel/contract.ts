@@ -32,6 +32,8 @@ export interface OutputChannelContractOptions {
   /** Path prefix the adapter will append to the base URL. */
   successStatus?: number;
   retryStatus?: number;
+  /** Whether the adapter retries 5xx (default true; false for non-idempotent creates). */
+  retriesServerErrors?: boolean;
 }
 
 interface RecordedRequest {
@@ -151,6 +153,68 @@ export function outputChannelContractSuite(
       });
       expect(result.ref.length).toBeGreaterThan(0);
       expect(server.requests).toHaveLength(2);
+    } finally {
+      await fixture.dispose?.();
+      await server.close();
+    }
+  });
+
+  it(`${name}: retries a 408 then succeeds`, async () => {
+    const server = await startMockChannelServer(options.successBody, options.successStatus);
+    server.script.push(408);
+    const fixture = await factory(server.baseUrl, { tokens: ['token-a'] });
+    try {
+      const result = await fixture.channel.deliver(context('contract:408'), {
+        channel: options.channel,
+        body: 'retry after a timeout',
+      });
+      expect(result.ref.length).toBeGreaterThan(0);
+      expect(server.requests).toHaveLength(2);
+    } finally {
+      await fixture.dispose?.();
+      await server.close();
+    }
+  });
+
+  it(`${name}: does not retry a permanent 4xx`, async () => {
+    const server = await startMockChannelServer(options.successBody, options.successStatus);
+    server.script.push(400);
+    const fixture = await factory(server.baseUrl, { tokens: ['token-a'] });
+    try {
+      await expect(
+        fixture.channel.deliver(context('contract:permanent'), {
+          channel: options.channel,
+          body: 'do not retry',
+        }),
+      ).rejects.toMatchObject({ category: 'validation', retryable: false });
+      expect(server.requests).toHaveLength(1);
+    } finally {
+      await fixture.dispose?.();
+      await server.close();
+    }
+  });
+
+  it(`${name}: classifies a server error`, async () => {
+    const server = await startMockChannelServer(options.successBody, options.successStatus);
+    server.script.push(503);
+    const fixture = await factory(server.baseUrl, { tokens: ['token-a'] });
+    try {
+      if (options.retriesServerErrors === false) {
+        await expect(
+          fixture.channel.deliver(context('contract:5xx'), {
+            channel: options.channel,
+            body: 'do not retry creates',
+          }),
+        ).rejects.toMatchObject({ category: 'dependency_unavailable', retryable: true });
+        expect(server.requests).toHaveLength(1);
+      } else {
+        const result = await fixture.channel.deliver(context('contract:5xx'), {
+          channel: options.channel,
+          body: 'retry the outage',
+        });
+        expect(result.ref.length).toBeGreaterThan(0);
+        expect(server.requests).toHaveLength(2);
+      }
     } finally {
       await fixture.dispose?.();
       await server.close();

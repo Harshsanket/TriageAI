@@ -5,8 +5,9 @@ export function registerWorkflows(ctx: KernelContext): void {
   ctx.queue.start({
     id: 'support.triage',
     module: 'support',
-    version: '0.1.0',
+    version: '0.2.0',
     trigger: { type: 'endpoint' },
+    fallbackPolicyId: 'escalate_human',
     stages: [
       { id: 'load', kind: 'support.ticket.load', input: { ticketId: '$.ticketId' } },
       {
@@ -17,6 +18,7 @@ export function registerWorkflows(ctx: KernelContext): void {
           body: '${stages.load.output.body}',
         },
         config: {},
+        onError: 'fallback',
       },
       {
         id: 'route',
@@ -71,12 +73,6 @@ export function registerWorkflows(ctx: KernelContext): void {
           teamReasons: '${stages.team.output.reasons}',
         },
       },
-      {
-        id: 'dispatch',
-        kind: 'support.dispatch_auto_reply',
-        when: "${stages.apply.output.status} == 'ROUTED'",
-        input: { ticketId: '${stages.load.output.ticketId}' },
-      },
     ],
   });
 
@@ -107,7 +103,8 @@ export function registerWorkflows(ctx: KernelContext): void {
         input: {
           query: '${stages.load.output.body}',
           collection: '${stages.policy.output.collection}',
-          filter: { approved: true },
+          filter: { sourceEnabled: true },
+          audience: 'public',
         },
       },
       {

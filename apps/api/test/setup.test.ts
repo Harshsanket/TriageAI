@@ -6,7 +6,7 @@ import { PostgresDatabase } from '@triageai/kernel';
 
 import { buildApp } from '../src/app.js';
 import { SecretStore } from '../src/setup/secrets.js';
-import type { SetupRuntime } from '../src/setup/boot.js';
+import { prepareSetup, type SetupRuntime } from '../src/setup/boot.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
 const BASE_URL = process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai';
@@ -154,6 +154,34 @@ describeIfDb('first-run setup (phase 11)', () => {
     }
   }, 60_000);
 
+  it('never downgrades required auth when no JWT secret exists (R4)', async () => {
+    const database = new PostgresDatabase(SETUP_URL);
+    try {
+      await database.query(
+        `INSERT INTO settings (key, value, updated_by, updated_at)
+         VALUES ('host.authMode', '"required"', 'test', now())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      );
+      const prepared = await prepareSetup({
+        database,
+        enabled: true,
+        secretKey: undefined,
+        authModeEnv: undefined,
+        jwtSecretEnv: undefined,
+        devJwtSecret: 'development-only-insecure-secret-change-me',
+        nodeEnv: 'production',
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      // Phase 23.7: the generated key file makes the store available, so R4
+      // generates and stores a JWT secret instead of disabling auth.
+      expect(prepared.runtime.authMode).toBe('required');
+      expect(prepared.jwtSecret.length).toBeGreaterThanOrEqual(32);
+    } finally {
+      await database.query(`DELETE FROM settings WHERE key = 'host.authMode'`);
+      await database.close();
+    }
+  });
+
   it('completes setup when the applied config boots', async () => {
     const app = await boot();
     try {
@@ -220,6 +248,50 @@ describeIfDb('first-run setup (phase 11)', () => {
     }
   }, 60_000);
 
+  it('offers agent defaults and adds/removes interfaces with a soft reload', async () => {
+    const app = await boot();
+    try {
+      const defaults = await app.inject({
+        method: 'GET',
+        url: '/api/v1/setup/agent-defaults?interfaces=chatbot,ticket-solver',
+      });
+      expect(defaults.statusCode).toBe(200);
+      const agents = (defaults.json() as { agents: Array<{ displayName: string; color: string }> })
+        .agents;
+      expect(agents.map((agent) => agent.displayName)).toEqual(['Voyager', 'Pioneer']);
+      expect(agents[0]?.color).not.toBe(agents[1]?.color);
+
+      const added = await app.inject({
+        method: 'POST',
+        url: '/api/v1/setup/add',
+        payload: { interfaces: ['notifications-github'] },
+      });
+      expect(added.statusCode).toBe(200);
+      expect(added.json()).toMatchObject({ reloaded: true });
+      const withGithub = await app.inject({ method: 'GET', url: '/api/v1/system/manifest' });
+      expect(
+        (withGithub.json() as { modules: Array<{ id: string }> }).modules.map(
+          (module) => module.id,
+        ),
+      ).toContain('integrations-github');
+
+      const removed = await app.inject({
+        method: 'POST',
+        url: '/api/v1/setup/remove',
+        payload: { interfaces: ['notifications-github'] },
+      });
+      expect(removed.statusCode).toBe(200);
+      const withoutGithub = await app.inject({ method: 'GET', url: '/api/v1/system/manifest' });
+      expect(
+        (withoutGithub.json() as { modules: Array<{ id: string }> }).modules.map(
+          (module) => module.id,
+        ),
+      ).not.toContain('integrations-github');
+    } finally {
+      await app.close();
+    }
+  }, 60_000);
+
   it('reverts an applied config that fails to boot and reopens setup', async () => {
     const database = new PostgresDatabase(SETUP_URL);
     try {
@@ -250,6 +322,7 @@ describeIfDb('first-run setup (phase 11)', () => {
   it('encrypts secrets, binds them to their name, and refuses a wrong key', async () => {
     const database = new PostgresDatabase(SETUP_URL);
     try {
+      await database.query(`DELETE FROM secrets`);
       const store = new SecretStore(database, 'k'.repeat(40));
       await store.set('GITHUB_TOKEN', 'ghp_example_value', 'test');
       const raw = await database.query(
@@ -272,4 +345,38 @@ describeIfDb('first-run setup (phase 11)', () => {
       await database.close();
     }
   });
+
+  it('erases setup, uninstalls modules and returns to the token gate', async () => {
+    await resetDatabase();
+    const first = await boot();
+    try {
+      const token = first.setupRuntime?.token.peek();
+      const applied = await first.inject({
+        method: 'POST',
+        url: '/api/v1/setup/apply',
+        headers: { authorization: `Setup ${token}` },
+        payload: { ...ticketSolverAnswers, knowledge: { autoApprove: false, documents: [] } },
+      });
+      expect(applied.statusCode).toBe(200);
+    } finally {
+      await first.close();
+    }
+    const app = await boot();
+    try {
+      const erased = await app.inject({
+        method: 'POST',
+        url: '/api/v1/setup/erase',
+        payload: { confirm: 'TriageAI' },
+      });
+      expect(erased.statusCode).toBe(200);
+      expect(erased.json()).toMatchObject({ erased: true, tokenRequired: true });
+      expect((erased.json() as { uninstalled: string[] }).uninstalled).toContain('support');
+      const status = await app.inject({ method: 'GET', url: '/api/v1/setup/status' });
+      expect(status.json()).toMatchObject({ state: 'pending', tokenRequired: true });
+      const blocked = await app.inject({ method: 'GET', url: '/api/v1/system/manifest' });
+      expect(blocked.statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  }, 60_000);
 });

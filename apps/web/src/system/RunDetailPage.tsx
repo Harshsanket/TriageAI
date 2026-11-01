@@ -2,12 +2,22 @@ import { useEffect, useState } from 'react';
 import type { DecisionRecordDto, RunDto, StageRunDto } from '@triageai/contracts';
 
 import { navigate } from '../host/router';
-import { apiFetch } from '../host/api';
+import { apiFetch, type ApiFailure } from '../host/api';
 
 interface RunDetail {
   run: RunDto;
   stages: StageRunDto[];
   decisions: Array<DecisionRecordDto & { fallback?: unknown; outcome?: unknown }>;
+}
+
+interface RunGraph {
+  workflowId: string;
+  version: string;
+  graph: {
+    nodes: Array<{ id: string; type: string; kind?: string }>;
+    edges: Array<{ from: string; to: string; label: string }>;
+  };
+  takenEdges: string[];
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -35,21 +45,32 @@ function decisionBadges(decision: RunDetail['decisions'][number]): string[] {
 
 export default function RunDetailPage({ runId }: { runId: string }) {
   const [detail, setDetail] = useState<RunDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiFailure | string | null>(null);
   const [gold, setGold] = useState('');
   const [reason, setReason] = useState('');
   const [saved, setSaved] = useState<string | null>(null);
+  const [graph, setGraph] = useState<RunGraph | null>(null);
+
+  useEffect(() => {
+    const disposed = false;
+    const loadGraph = async () => {
+      const res = await apiFetch<RunGraph>(`/api/v1/system/runs/${runId}/graph`);
+      if (!disposed && res.ok && Array.isArray(res.data?.graph?.nodes)) setGraph(res.data);
+    };
+    void loadGraph();
+  }, [runId]);
 
   useEffect(() => {
     let disposed = false;
     const load = async () => {
-      try {
-        const res = await apiFetch(`/api/v1/system/runs/${runId}`);
-        if (!res.ok) throw new Error(`run ${runId} not found (${res.status})`);
-        const data = (await res.json()) as RunDetail;
-        if (!disposed) setDetail(data);
-      } catch (err) {
-        if (!disposed) setError((err as Error).message);
+      const res = await apiFetch<RunDetail>(`/api/v1/system/runs/${runId}`);
+      if (!res.ok) {
+        if (!disposed) setError(res.error);
+        return;
+      }
+      if (!disposed) {
+        setDetail(res.data);
+        setError(null);
       }
     };
     void load();
@@ -60,7 +81,8 @@ export default function RunDetailPage({ runId }: { runId: string }) {
     };
   }, [runId]);
 
-  if (error) return <p role="alert">{error}</p>;
+  if (error)
+    return <p role="alert">{typeof error === 'string' ? error : error.envelope.userMessage}</p>;
   if (!detail) return <p>Loading run…</p>;
 
   const submitCorrection = async (event: React.FormEvent) => {
@@ -70,7 +92,7 @@ export default function RunDetailPage({ runId }: { runId: string }) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ runId: run.id, input: run.input, gold, reason }),
     });
-    setSaved(res.ok ? 'Correction saved as a candidate example.' : `Save failed (${res.status})`);
+    setSaved(res.ok ? 'Correction saved as a candidate example.' : res.error.envelope.userMessage);
   };
 
   const { run, stages, decisions } = detail;
@@ -93,6 +115,24 @@ export default function RunDetailPage({ runId }: { runId: string }) {
         <strong style={{ color: STATUS_COLORS[run.status] ?? 'inherit' }}>{run.status}</strong>
         {run.error ? <span style={{ color: '#cf222e' }}> — {run.error}</span> : null}
       </p>
+
+      {graph && (
+        <>
+          <h3>Graph</h3>
+          <p>
+            {graph.workflowId} v{graph.version} · {graph.graph.nodes.length} nodes · taken path{' '}
+            {graph.takenEdges.length > 0 ? graph.takenEdges.join(', ') : '—'}
+          </p>
+          <ol>
+            {graph.graph.nodes.map((node) => (
+              <li key={node.id}>
+                <code>{node.id}</code> {node.type}
+                {node.kind ? ` (${node.kind})` : ''}
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
 
       <h3>Input</h3>
       <pre>{JSON.stringify(run.input, null, 2)}</pre>

@@ -1,39 +1,49 @@
 # TriageAI
 
+> **v1.1.0** — module isolation with signed plugins, hosted model APIs, tools/skills, base memory, runtime model controls, a consolidated dashboard, connected APIs, data extraction, and a single chat home.
+
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
 TriageAI combines classification, retrieval, generation, validation, and human review into composable workflows. Capabilities are replaceable independently, every decision is inspectable, and inference stays local.
 
 ## Configurations
 
-- **`support`** — Ticket classification, routing, KB-grounded auto-reply with validation/fallbacks, human review, and customer confirmation.
+- **`support`** — Ticket classification, routing, human review, and a typed ticket state machine.
+- **`support-autoreply`** — Support plus KB-grounded auto-reply with validation, fallbacks, and customer confirmation.
 - **`assistant`** — KB-grounded chat and a doc-assistant that answers from this repository's `docs/**` with file-path citations.
-- **`full`** — Support + chat + KB + doc-assistant in one process (the easiest way to see everything).
-- **`core`** — Minimal kernel and application hosts for custom workflows.
+- **`chat-only`** — The chat surface without a knowledge base.
+- **`full`** — Support + chat + KB + doc-assistant + data extraction in one process (the easiest way to see everything).
+- **`public-api`** — Scoped API keys with an OpenAI-compatible chat/embeddings surface.
+- **`emailer`** — Support plus inbound email and approval-gated outbound replies.
 - **`integrations`** — Support plus optional GitHub/Slack outward actions (`config/presets/integrations.json`); enable/disable and credentials stay config/env-only.
+- **`core`** — Minimal kernel and application hosts for custom workflows.
 
 ## Repository Layout
 
 ```text
 packages/
-  kernel/        # Boot, config, module graph, events, workflows, queues, decision records
-  contracts/     # Shared Zod DTOs (feedback/datasets/models included) → JSON Schema
+  kernel/        # Boot, config, module graph, events, workflows, queues, decision records,
+                 #   grants, module protocol, agents, tools, skills, memory, data policy
+  contracts/     # Shared Zod DTOs (feedback/datasets/models/agents/jobs/errors) → JSON Schema
   rag/           # Prompt boundaries, chunking, grounding, deterministic validation
+  plugin-sdk/    # Manifest, signing and install helpers for runtime plugins
   integrations-core/  # Audited action rows + approve/reject/retry routes for integrations
 apps/
-  web/           # React host (module pages, inspector, /feedback review queue)
-  api/           # Fastify host (system, inspector, datasets, model registry API)
+  web/           # React host (chat home, module pages, dashboard, inspector, /config)
+  api/           # Fastify host (system, dashboard, setup, model registry, public API)
   ai-service/    # Optional Python inference service + eval/ + train/ (CPU seed)
 modules/         # Replaceable first-party modules
   integrations-github/  # github-issue OutputChannel, approval gates, webhook sync
   integrations-slack/   # slack-message OutputChannel, routing/batching/dedupe
-  support/ · kb/ · chat/ · ai-pipeline/ · doc-assistant/ · echo/
-perf/k6/          # ingest/drain + Phase-8 burst, fairness, hot-swap suites
-config/presets/   # Starting configs: support, support-autoreply, assistant, full, integrations
-scripts/          # backup/restore, demo seed, new-module scaffold
+  support/ · kb/ · chat/ · ai-pipeline/ · doc-assistant/ · data-extract/
+  public-api/ · emailer/ · llm-local/ · classifier-provider/ · embedder-provider/ · echo/
+perf/k6/          # ingest/drain, burst/fairness/hot-swap, module-failure suites
+config/presets/   # Starting configs: support, support-autoreply, assistant, chat-only,
+                  #   full, public-api, emailer, integrations
+scripts/          # backup/restore, demo seed, new-module scaffold, docs-workflow
 ```
 
-Step-by-step setup (every profile, env var, and troubleshooting tip): [SETUP.md](./SETUP.md). Feature inventory: [FEATURES.md](./FEATURES.md).
+Step-by-step setup (every profile, env var, and troubleshooting tip): [SETUP.md](./SETUP.md). Feature inventory: [FEATURES.md](./FEATURES.md). Project map: [WORKFLOW.md](./WORKFLOW.md).
 
 ## Prerequisites
 
@@ -87,16 +97,19 @@ TRIAGEAI_CONFIG=config/presets/full.json pnpm dev
 
 Open:
 
-- `http://localhost:5173/chat` — grounded chat over the KB
+- `http://localhost:5173/` — grounded chat over the KB (`/?c=<id>` reopens a conversation)
 - `http://localhost:5173/support` — tickets + auto-reply + confirmation
-- `http://localhost:5173/kb` — add/approve knowledge-base documents
+- `http://localhost:5173/kb` — add, import, enable, and delete knowledge sources
+- `http://localhost:5173/data-extract` — turn CSV/XLSX/PDF files into queryable datasets
 - `http://localhost:5173/doc-assistant` — ask about this repo's docs
 - `http://localhost:5173/runs` — inspector with stage timelines and decision records
-- `http://localhost:5173/feedback` — review queue, datasets, model registry, audit trail
+- `http://localhost:5173/feedback` — feedback insights, review queue, datasets, model registry
+- `http://localhost:5173/dashboard` — health, activity, knowledge, security, usage, storage
+- `http://localhost:5173/config` — setup wizard while pending, then settings
 
-The chat is **grounded**: it answers from approved KB documents and refuses when retrieval is insufficient ("I could not verify this from the knowledge base."). Add docs in `/kb` for new topics. If a question refuses, check `/runs` for the retrieval gate and validation checks.
+The chat is **grounded by default**: answers cite enabled KB sources. With `knowledgeMode: "prefer"` (the default) it labels an ungrounded answer as general; set `knowledgeMode: "only"` to refuse instead ("I could not verify this from the knowledge base."). Add sources in `/kb`; if a question looks wrong, check `/runs` for retrieval and validation decisions.
 
-Phase-2 surfaces: workflow inspector at `/runs`, hardware monitor at `/system`, Prometheus metrics at `/metrics`, and the optional observability stack via `docker compose --profile observ up -d` (Prometheus `:9090`, Grafana `:3310`).
+Operations surfaces: workflow inspector at `/runs`, admin dashboard at `/dashboard`, Prometheus metrics at `/metrics`, and the optional observability stack via `docker compose --profile observ up -d` (Prometheus `:9090`, Grafana `:3310`).
 
 Assistant profile (KB + retrieval + local generation): first download a model into the local runtime, then start the assistant stack:
 
@@ -106,9 +119,9 @@ docker exec triageai-ollama ollama pull qwen2.5:1.5b
 TRIAGEAI_CONFIG=/app/config/presets/assistant.json docker compose --profile core up --build
 ```
 
-Open `/kb` to add and approve documents, then `/chat` to ask grounded questions (answers cite their sources). `TRIAGEAI_CONFIG=/app/config/presets/assistant.json` points the API at the assistant module set; without it the default core profile runs.
+Open `/kb` to add and enable documents, then `/` to ask grounded questions (answers cite their sources). `TRIAGEAI_CONFIG=/app/config/presets/assistant.json` points the API at the assistant module set; without it the default core profile runs.
 
-Run everything together (support + chat + KB + doc-assistant) with `TRIAGEAI_CONFIG=/app/config/presets/full.json`; the chat is grounded, so questions without an approved KB source are refused by design.
+Run everything together (support + chat + KB + doc-assistant + data extraction) with `TRIAGEAI_CONFIG=/app/config/presets/full.json`; answers use enabled knowledge by default and label general answers when nothing relevant is enabled.
 
 Generator address: configs point at `http://localhost:11434` for host-run dev. The API container defaults to `http://ollama:11434`; set `TRIAGEAI_GENERATOR_BASE_URL` to override (e.g. `http://host.docker.internal:11434` for an Ollama on the host, or any remote runtime).
 
@@ -132,6 +145,33 @@ TRIAGEAI_CONFIG=/app/config/presets/support-autoreply.json docker compose --prof
 ```
 
 Auto-reply is per-category and versioned (`GET/PUT /api/v1/support/auto-reply-policies`): disable it for a category and the **next** ticket escalates without a deploy. Replies move the ticket to `AWAITING_CUSTOMER`; `POST /api/v1/support/tickets/:id/confirmation` with `{ "solved": true | false }` resolves or escalates, and identical failed answers are never re-sent. `POST /api/v1/support/tickets/:id/auto-reply` re-dispatches a run for an agent; the same hash guard applies.
+
+## Knowledge, memory, and data
+
+- **Knowledge base** (`kb`) ingests PDF, DOCX, XLSX, CSV, Markdown, text, HTML, URLs, GitHub repositories and notes. Every source has an On/Off switch (On means used), labels, search and storage totals; identical content is deduplicated, and deleting a source removes its chunks, vectors and stored original.
+- **Base memory** is generated from setup as managed `base-memory.public` / `base-memory.operator` KB sources. Customer surfaces (chat, support, public API) retrieve public entries only; operator surfaces see both. An operational `system-status` snapshot backs read-only `system.get_status/get_uptime/get_storage` tools.
+- **Data extraction** (`data-extract`) turns CSV/XLSX/PDF files into typed `transactions` or `generic-table` datasets with deterministic mapping, saved confirmations and user rules. A balance reconciliation gate keeps `needs_review` rows out of charts; dataset views (totals, categories, months, merchants, rows) can be pinned, and a fixed-schema `data_extract.query_dataset` tool is restricted by default.
+
+## Agents, tools, and skills
+
+- **Tools** use one mandatory contract with read/write and low/high-risk labels, a rule floor, undo class and preview checks; high-risk calls are gated.
+- **Skills** follow the Agent Skills format: frontmatter index, lazy body loading and path-traversal guards. User skills are owner-scoped, can be enabled/disabled, imported from GitHub with pin/ETag, or suggested from chat; enabled skills are mirrored into the KB as read-only operator sources.
+- The agent runtime's checkpointed state, need-based context, structured handoffs, shared work board and long-term memory are landing across Phases 15–17; the contracts and stores are in place, with the full agent loop still in progress.
+
+## Models and runtime control
+
+- **Hosted LLM APIs** (Anthropic, OpenAI, Google and any OpenAI-compatible host) are opt-in per workload with an egress gate, redaction, daily budgets and a cost ledger; local inference remains the default.
+- **Model runtimes** can be listed and switched at runtime, with a global LLM kill switch and per-runtime On/Off enforced before network or cache paths.
+- **Chat context** is assembled by one shared packer with a per-call token budget, high-water compaction, a durable versioned summary, a deterministic outage fallback, and a composer ring showing used/total tokens.
+
+## Plugins and module isolation
+
+Runtime plugins are signed `.tgz` packages verified with ed25519 + sha256; install, enable, disable and uninstall are admin actions, and installs hot-swap a kernel generation. Modules declare permission manifests (routes, events, capabilities, stages, workflows, tools, egress, knowledge) with default-deny grants, and own a `mod_<id>` Postgres schema. Container modules speak the MP1 protocol (strict envelope, replay/deadline checks, broker authorization); `echo` is the reference implementation and runs under the `modules` compose profile. Packs and Stage-B container certificates are still partial — see [FEATURES.md](./FEATURES.md).
+
+## Public API and email
+
+- **`public-api`** issues hashed, scoped API keys and exposes OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings`, plus KB search, so other apps and agents can use TriageAI as a backend.
+- **`emailer`** accepts a signed inbound webhook, threads replies into tickets and sends approval-gated outbound mail through an SMTP outbox. IMAP polling is still planned.
 
 ## Feedback, datasets, and the model registry
 
@@ -162,12 +202,22 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 
 `pnpm eval:generation` + `pnpm eval:merge` produce the generation and merged reports locally (CI runs the classifier, retrieval, generation, and merged jobs). The active model pointer is recorded in every run's `decision_records.adapter_versions`.
 
+## Dashboard, setup, and operations
+
+- `/dashboard` consolidates health, activity, knowledge, security, token usage, performance (tokens/s, TTFT), uptime, storage, machine, dead letters and connected APIs. Graphs support day/month/year/custom ranges; the refresh interval is configurable (default 10 min).
+- `/config` is the first-run wizard and then the settings home. Answers are written as a versioned, audited overlay above the config file and below environment variables, so secrets stay out of files. It also covers connected APIs (add/test/rotate/disable/remove), per-class data policy with named presets, model runtimes, skills, and appearance (Light/Dark/Auto, four font sizes, animations, agent names and colours).
+- Setup is exact scoped: add or remove interfaces, or run **Reset** / **Reset and erase** from the danger zone. Applied changes are audited and restart-time unless they use a supported hot-reload path.
+- Long jobs (knowledge ingestion, datasets) report progress, ETA and cancel in the notification tray, and the tray survives a reload.
+- [WORKFLOW.md](./WORKFLOW.md) is the committed project map; `pnpm docs:workflow` regenerates its tables and CI fails on drift, a missing section, or a line-budget breach.
+
 ## Scripts
 
 | Command                    | Purpose                                              |
 | -------------------------- | ---------------------------------------------------- |
 | `pnpm dev`                 | Run development hosts with reload                    |
+| `pnpm build`               | Build the web and API apps                           |
 | `pnpm test`                | Run TypeScript and Python tests                      |
+| `pnpm test:python`         | Run the Python inference-service tests               |
 | `pnpm typecheck`           | Check TypeScript types                               |
 | `pnpm lint`                | Run ESLint                                           |
 | `pnpm format`              | Run Prettier                                         |
@@ -177,26 +227,30 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 | `pnpm eval:merge`          | Merge suites into the registry report format         |
 | `pnpm eval:fixtures`       | Export approved corrections as blessed fixtures      |
 | `pnpm seed:demo`           | Seed demo KB docs + a ticket (after `readyz`)        |
+| `pnpm docs:workflow`       | Regenerate `WORKFLOW.md` generated tables            |
+| `pnpm docs:workflow:check` | Fail when `WORKFLOW.md` drifts from the code         |
 
 ## About
 
 **TriageAI** is an open-source project focused on building modular, self-hosted AI automation systems. It prioritizes extensibility, local inference, and transparent decision-making.
+
+Current release: **v1.1.0**.
 
 Developed and maintained by **Harsh Sanket**.  
 **DeepSeek 4.1** was used during development.
 
 ## Tech Stack
 
-| Category          | Technologies                                                        |
-| ----------------- | ------------------------------------------------------------------- |
-| Languages         | TypeScript, Python                                                  |
-| Frontend          | React 19, Vite                                                      |
-| Backend           | Node.js, Fastify, FastAPI, Zod                                      |
-| Database          | PostgreSQL, pgvector, thin SQL adapter (migrations applied on boot) |
-| AI & ML           | all-MiniLM-L6-v2, Qwen2.5-1.5B via Ollama, LM Studio                |
-| Testing           | Vitest, pytest, Playwright, k6                                      |
-| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana                  |
-| Development Tools | pnpm, uv, ESLint, Prettier                                          |
+| Category          | Technologies                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| Languages         | TypeScript, Python                                                                                              |
+| Frontend          | React 19, Vite                                                                                                  |
+| Backend           | Node.js, Fastify, FastAPI, Zod                                                                                  |
+| Database          | PostgreSQL, pgvector, schema-per-module storage, migrations on boot                                             |
+| AI & ML           | sentence-transformers (MiniLM default), Qwen2.5-1.5B via Ollama, LM Studio, hosted Anthropic/OpenAI/Google APIs |
+| Testing           | Vitest, pytest, Playwright, k6                                                                                  |
+| Infrastructure    | Docker, Docker Compose, Nginx, Prometheus, Grafana                                                              |
+| Development Tools | pnpm, uv, ESLint, Prettier                                                                                      |
 
 ## License
 

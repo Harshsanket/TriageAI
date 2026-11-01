@@ -58,7 +58,12 @@ export function resolveStageInput(
   const resolved: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(mapping)) {
     if (typeof value === 'string' && (value.startsWith('$') || value.startsWith('${'))) {
-      resolved[key] = resolveRef(value, ctx);
+      // Boolean expressions in input mappings use the same safe grammar as
+      // `when` guards (e.g. `!${a.b} || ${c.d}`).
+      resolved[key] =
+        value.includes('||') || value.includes('&&') || value.trim().startsWith('!')
+          ? evaluateWhen(value, ctx)
+          : resolveRef(value, ctx);
     } else {
       resolved[key] = value;
     }

@@ -272,6 +272,316 @@ CREATE TABLE IF NOT EXISTS setup_imports (
 );
 `;
 
+const PLUGIN_TABLES = `
+CREATE TABLE IF NOT EXISTS plugin_installs (
+  id TEXT PRIMARY KEY,
+  version TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT false,
+  key_id TEXT,
+  installed_by TEXT,
+  installed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
+const COST_LEDGER = `
+CREATE TABLE IF NOT EXISTS cost_ledger (
+  id TEXT PRIMARY KEY,
+  run_id TEXT,
+  stage_id TEXT,
+  agent_id TEXT,
+  task TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  tokens_in INT NOT NULL DEFAULT 0,
+  tokens_out INT NOT NULL DEFAULT 0,
+  tokens_cached INT NOT NULL DEFAULT 0,
+  est_cost NUMERIC(14,6) NOT NULL DEFAULT 0,
+  actual_cost NUMERIC(14,6),
+  currency TEXT NOT NULL DEFAULT 'USD',
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS cost_ledger_run ON cost_ledger (run_id);
+CREATE INDEX IF NOT EXISTS cost_ledger_day ON cost_ledger (at, provider);
+`;
+
+const AGENT_STATE = `
+CREATE TABLE IF NOT EXISTS shared_state (
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value JSONB NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  sensitivity TEXT NOT NULL DEFAULT 'internal',
+  updated_by_run TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_type, scope_id, key)
+);
+CREATE TABLE IF NOT EXISTS state_events (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  version INT NOT NULL,
+  value JSONB,
+  run_id TEXT,
+  agent_id TEXT,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS work_items (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  root_run_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo',
+  owner_agent_id TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  depends_on TEXT[] NOT NULL DEFAULT '{}',
+  input_refs TEXT[] NOT NULL DEFAULT '{}',
+  output_handoff_id TEXT,
+  done_when TEXT NOT NULL,
+  proof_refs TEXT[] NOT NULL DEFAULT '{}',
+  checked_by TEXT,
+  review JSONB,
+  blocked_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS work_items_board ON work_items (workspace_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workspace_decisions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  alternatives TEXT[] NOT NULL DEFAULT '{}',
+  made_by TEXT NOT NULL,
+  supersedes TEXT,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS memories (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  source_refs TEXT[] NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  supersedes TEXT,
+  derived_from_untrusted BOOLEAN NOT NULL DEFAULT false,
+  last_used_at TIMESTAMPTZ,
+  use_count INT NOT NULL DEFAULT 0,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS memories_scope ON memories (scope, scope_id, status);
+`;
+
+const VECTOR_INDEX = `
+ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS dims INT;
+ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT 'default';
+UPDATE vector_chunks SET dims = vector_dims(embedding) WHERE dims IS NULL;
+CREATE INDEX IF NOT EXISTS vector_chunks_hnsw_384
+  ON vector_chunks USING hnsw ((embedding::vector(384)) vector_cosine_ops)
+  WHERE dims = 384;
+CREATE INDEX IF NOT EXISTS vector_chunks_fts
+  ON vector_chunks USING GIN (to_tsvector('english', text));
+`;
+
+const APPROVALS = `
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  step_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  input JSONB NOT NULL DEFAULT '{}'::jsonb,
+  preview JSONB,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','approved','rejected','expired')),
+  on_expiry TEXT NOT NULL DEFAULT 'escalate'
+    CHECK (on_expiry IN ('escalate','cancel','park_as_draft')),
+  approver TEXT,
+  reason TEXT,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS approvals_pending ON approvals (status, expires_at);
+`;
+
+const AUDIT_CHAIN_SEQ = `
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS chain_seq BIGSERIAL;
+CREATE UNIQUE INDEX IF NOT EXISTS audit_events_chain_seq ON audit_events (chain_seq);
+`;
+
+const AUDIT_CHAIN = `
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS hash TEXT;
+CREATE INDEX IF NOT EXISTS audit_events_chain ON audit_events (created_at, id);
+`;
+
+const MODEL_TRACES = `
+CREATE TABLE IF NOT EXISTS model_call_traces (
+  trace_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  task TEXT NOT NULL,
+  trace JSONB NOT NULL,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS model_call_traces_run ON model_call_traces (run_id, at);
+`;
+
+const OUTBOX = `
+CREATE TABLE IF NOT EXISTS outbox_events (
+  id TEXT PRIMARY KEY,
+  topic TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS outbox_events_pending
+  ON outbox_events (available_at) WHERE published_at IS NULL;
+`;
+
+const PINNED_VERSIONS = `
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS pinned_versions JSONB NOT NULL DEFAULT '{}'::jsonb;
+`;
+
+const AGENT_RUNTIME = `
+CREATE TABLE IF NOT EXISTS agent_definitions (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  definition JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agent_steps (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  step_no INT NOT NULL,
+  decision TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (run_id, step_no)
+);
+CREATE TABLE IF NOT EXISTS agent_checkpoints (
+  run_id TEXT PRIMARY KEY,
+  version INT NOT NULL DEFAULT 1,
+  state JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
+const MODEL_TRACES_PARTITIONED = `
+CREATE TABLE IF NOT EXISTS model_call_traces_partitioned (
+  trace_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  task TEXT NOT NULL,
+  trace JSONB NOT NULL,
+  at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (trace_id, at)
+) PARTITION BY RANGE (at);
+
+DO $$
+DECLARE
+  start_date DATE := date_trunc('month', now())::date;
+  end_date DATE := (date_trunc('month', now()) + interval '1 month')::date;
+  partition_name TEXT;
+BEGIN
+  partition_name := 'model_call_traces_' || to_char(start_date, 'YYYY_MM');
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = partition_name) THEN
+    EXECUTE format(
+      'CREATE TABLE %I PARTITION OF model_call_traces_partitioned FOR VALUES FROM (%L) TO (%L)',
+      partition_name, start_date, end_date
+    );
+  END IF;
+END $$;
+
+INSERT INTO model_call_traces_partitioned (trace_id, run_id, task, trace, at)
+SELECT trace_id, run_id, task, trace, at FROM model_call_traces
+ON CONFLICT DO NOTHING;
+DROP TABLE model_call_traces;
+ALTER TABLE model_call_traces_partitioned RENAME TO model_call_traces;
+CREATE INDEX IF NOT EXISTS model_call_traces_run ON model_call_traces (run_id, at);
+`;
+
+const MODEL_TRACE_PARTITIONS = `
+DO $$
+DECLARE
+  month_start DATE;
+  month_end DATE;
+  partition_name TEXT;
+  month_offset INT;
+BEGIN
+  FOR month_offset IN 0..2 LOOP
+    month_start := (date_trunc('month', now()) + (month_offset || ' month')::interval)::date;
+    month_end := (date_trunc('month', now()) + ((month_offset + 1) || ' month')::interval)::date;
+    partition_name := 'model_call_traces_' || to_char(month_start, 'YYYY_MM');
+    IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = partition_name) THEN
+      EXECUTE format(
+        'CREATE TABLE %I PARTITION OF model_call_traces FOR VALUES FROM (%L) TO (%L)',
+        partition_name, month_start, month_end
+      );
+    END IF;
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'model_call_traces_default') THEN
+    CREATE TABLE model_call_traces_default PARTITION OF model_call_traces DEFAULT;
+  END IF;
+END $$;
+`;
+
+const JOB_PROGRESS = `
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS owner_id TEXT;
+CREATE TABLE IF NOT EXISTS job_progress (
+  job_id TEXT PRIMARY KEY,
+  run_id TEXT,
+  workflow_id TEXT,
+  owner_id TEXT,
+  title TEXT NOT NULL,
+  stage TEXT,
+  done INT NOT NULL DEFAULT 0,
+  total INT NOT NULL DEFAULT 0,
+  unit TEXT NOT NULL DEFAULT 'items',
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK (status IN ('running','succeeded','partial','failed','cancelled','awaiting')),
+  error TEXT,
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS job_progress_active ON job_progress (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS job_progress_owner ON job_progress (owner_id, created_at DESC);
+`;
+
+const USER_PREFERENCES = `
+CREATE TABLE IF NOT EXISTS user_preferences (
+  user_id TEXT PRIMARY KEY,
+  preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
+const VECTOR_SOURCE_ENABLED = `
+UPDATE vector_chunks
+   SET metadata = metadata || '{"sourceEnabled": true}'::jsonb
+ WHERE NOT (metadata ? 'sourceEnabled');
+`;
+
+const MODULE_GRANTS = `
+CREATE TABLE IF NOT EXISTS module_grants (
+  module_id TEXT PRIMARY KEY,
+  version TEXT NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  permissions JSONB NOT NULL,
+  run_mode TEXT NOT NULL DEFAULT 'in-process'
+    CHECK (run_mode IN ('in-process','worker','container')),
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`;
+
 export const CORE_MIGRATIONS: Migration[] = [
   { id: '0001-core-tables', sql: CORE_TABLES },
   { id: '0002-queue-tables', sql: QUEUE_TABLES },
@@ -279,4 +589,68 @@ export const CORE_MIGRATIONS: Migration[] = [
   { id: '0004-feedback-columns', sql: FEEDBACK_COLUMNS },
   { id: '0005-auth-tables', sql: AUTH_TABLES },
   { id: '0006-setup-tables', sql: SETUP_TABLES },
+  { id: '0007-plugin-installs', sql: PLUGIN_TABLES },
+  { id: '0008-cost-ledger', sql: COST_LEDGER },
+  { id: '0009-agent-state', sql: AGENT_STATE },
+  { id: '0010-vector-index', sql: VECTOR_INDEX },
+  { id: '0011-approvals', sql: APPROVALS },
+  { id: '0012-audit-chain', sql: AUDIT_CHAIN },
+  { id: '0013-audit-chain-seq', sql: AUDIT_CHAIN_SEQ },
+  { id: '0014-model-traces', sql: MODEL_TRACES },
+  { id: '0015-outbox', sql: OUTBOX },
+  { id: '0016-pinned-versions', sql: PINNED_VERSIONS },
+  { id: '0017-agent-runtime', sql: AGENT_RUNTIME },
+  { id: '0018-partition-model-traces', sql: MODEL_TRACES_PARTITIONED },
+  { id: '0019-model-trace-partitions', sql: MODEL_TRACE_PARTITIONS },
+  { id: '0020-job-progress', sql: JOB_PROGRESS },
+  { id: '0021-vector-source-enabled', sql: VECTOR_SOURCE_ENABLED },
+  { id: '0022-user-preferences', sql: USER_PREFERENCES },
+  { id: '0023-module-grants', sql: MODULE_GRANTS },
+  {
+    id: '0024-secret-last-used',
+    sql: 'ALTER TABLE secrets ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;',
+  },
+  {
+    id: '0025-uptime-probes',
+    sql: `
+      CREATE TABLE IF NOT EXISTS uptime_probes (
+        id BIGSERIAL PRIMARY KEY,
+        target TEXT NOT NULL,
+        at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        ok BOOLEAN NOT NULL,
+        latency_ms INT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS uptime_probes_target ON uptime_probes (target, at DESC);
+    `,
+  },
+  {
+    id: '0026-user-skills',
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_skills (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT,
+        scope TEXT NOT NULL DEFAULT 'user'
+          CHECK (scope IN ('user','instance','agent')),
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        content TEXT NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT true,
+        version INT NOT NULL DEFAULT 1,
+        provenance TEXT NOT NULL DEFAULT 'manual'
+          CHECK (provenance IN ('manual','github','chat','custom','suggestion')),
+        source_url TEXT,
+        source_ref TEXT,
+        license TEXT,
+        suggestion BOOLEAN NOT NULL DEFAULT false,
+        ignored BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS user_skills_owner
+        ON user_skills (owner_id, enabled, updated_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS user_skills_owner_name
+        ON user_skills (COALESCE(owner_id, ''), name);
+    `,
+    dropSql: 'DROP TABLE IF EXISTS user_skills;',
+  },
 ];

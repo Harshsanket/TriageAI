@@ -1,0 +1,16 @@
+{
+  "id": "ticket-solver",
+  "version": "1.0.0",
+  "name": "Ticket solver",
+  "license": "MIT",
+  "description": "Support tickets, classification and an optional local small LLM, installed and approved as one signed pack.",
+  "modules": [
+    { "id": "support", "version": "^0.3.0" },
+    { "id": "classifier-provider", "version": "^0.0.1" },
+    { "id": "llm-local", "version": "^0.1.0", "optional": true }
+  ],
+  "wiring": {
+    "capabilities.classifier.provider": "classifier-provider",
+    "capabilities.chatModel.provider": "llm-local"
+  }
+}

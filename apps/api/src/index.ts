@@ -1,9 +1,21 @@
 import { buildApp } from './app.js';
+import { formatBootFailure } from './platform/bootFailure.js';
 import { config } from './platform/config.js';
 import { logger } from './platform/logger.js';
+import { installProcessGuards } from './platform/process.js';
 
 async function main(): Promise<void> {
-  const app = await buildApp();
+  const removeGuards = installProcessGuards({ logger });
+  process.on('exit', removeGuards);
+
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  try {
+    app = await buildApp();
+  } catch (err) {
+    logger.fatal({ err }, formatBootFailure(err));
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    process.exit(1);
+  }
   const kernel = app.kernel;
 
   try {
@@ -13,7 +25,7 @@ async function main(): Promise<void> {
       `api listening on :${config.port}`,
     );
   } catch (err) {
-    logger.error(err, 'failed to start api');
+    logger.error(err, formatBootFailure(err));
     process.exit(1);
   }
 

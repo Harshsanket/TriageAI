@@ -15,7 +15,7 @@ import { verifyAccessToken, type Role } from './tokens.js';
 export interface Principal {
   userId: string;
   email: string;
-  role: Role;
+  role: Role | 'anonymous';
   sessionId: string | null;
   authenticated: boolean;
 }
@@ -40,6 +40,14 @@ const SETUP_OPERATOR: Principal = {
   email: 'setup@triageai.dev',
   role: 'admin',
   sessionId: null,
+  authenticated: true,
+};
+
+const ANONYMOUS: Principal = {
+  userId: 'anonymous',
+  email: '',
+  role: 'anonymous',
+  sessionId: null,
   authenticated: false,
 };
 
@@ -62,7 +70,7 @@ const LOCAL_DEVELOPER: Principal = {
   email: 'local@triageai.dev',
   role: 'admin',
   sessionId: null,
-  authenticated: false,
+  authenticated: true,
 };
 
 function bearerToken(request: FastifyRequest): string | null {
@@ -100,10 +108,17 @@ export function createAuthGuard(options: AuthGuardOptions) {
       return;
     }
 
+    // Key-authenticated surfaces validate their own API key: the guard must
+    // not try to verify it as a session JWT (R2).
+    if (rule.roles === 'key') {
+      request.principal = ANONYMOUS;
+      return;
+    }
+
     const token = bearerToken(request);
     if (!token) {
       if (rule.roles === 'public') {
-        request.principal = LOCAL_DEVELOPER;
+        request.principal = ANONYMOUS;
         return;
       }
       reply.header('www-authenticate', 'Bearer');
@@ -157,12 +172,36 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
-const refreshSchema = z.object({ refreshToken: z.string().min(20).max(500) });
-
 const roleSchema = z.enum(['customer', 'agent', 'admin']);
+
+export function loginRateLimitKey(request: FastifyRequest): string {
+  const email = (request.body as { email?: unknown } | null)?.email;
+  return `${request.ip}:${String(email ?? '')}`;
+}
 
 export interface AuthRouteOptions {
   mode: 'disabled' | 'required';
+}
+
+const REFRESH_COOKIE = 'triageai_refresh';
+
+function refreshCookie(token: string, maxAgeSeconds: number): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${REFRESH_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/api/v1/auth; Max-Age=${maxAgeSeconds}${secure}`;
+}
+
+function clearRefreshCookie(): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${REFRESH_COOKIE}=; HttpOnly; SameSite=Strict; Path=/api/v1/auth; Max-Age=0${secure}`;
+}
+
+function cookieToken(request: FastifyRequest): string | undefined {
+  const header = request.headers.cookie ?? '';
+  for (const part of header.split(';')) {
+    const [name, ...rest] = part.trim().split('=');
+    if (name === REFRESH_COOKIE) return decodeURIComponent(rest.join('='));
+  }
+  return undefined;
 }
 
 export function registerAuthRoutes(
@@ -170,7 +209,13 @@ export function registerAuthRoutes(
   service: AuthService,
   options: AuthRouteOptions,
 ): void {
-  const loginRateLimit = { max: options.mode === 'required' ? 10 : 1000, timeWindow: '1 minute' };
+  // Key the login limiter by client IP *and* email so one attacker cannot lock
+  // every user out of login (R3).
+  const loginRateLimit = {
+    max: options.mode === 'required' ? 10 : 1000,
+    timeWindow: '1 minute',
+    keyGenerator: loginRateLimitKey,
+  };
 
   app.post(
     '/api/v1/auth/register',
@@ -178,23 +223,42 @@ export function registerAuthRoutes(
     async (request, reply) => {
       const body = registerSchema.parse(request.body);
       const session = await service.register(body);
+      reply.header('set-cookie', refreshCookie(session.refreshToken, 30 * 24 * 60 * 60));
       return reply.status(201).send(session);
     },
   );
 
-  app.post('/api/v1/auth/login', { config: { rateLimit: loginRateLimit } }, async (request) => {
-    const body = loginSchema.parse(request.body);
-    return service.login(body.email, body.password);
+  app.post(
+    '/api/v1/auth/login',
+    { config: { rateLimit: loginRateLimit } },
+    async (request, reply) => {
+      const body = loginSchema.parse(request.body);
+      const session = await service.login(body.email, body.password);
+      reply.header('set-cookie', refreshCookie(session.refreshToken, 30 * 24 * 60 * 60));
+      return session;
+    },
+  );
+
+  app.post('/api/v1/auth/refresh', async (request, reply) => {
+    const parsed = z
+      .object({ refreshToken: z.string().min(20).max(500).optional() })
+      .parse(request.body ?? {});
+    const token = parsed.refreshToken ?? cookieToken(request);
+    if (!token) {
+      throw new AppError('auth.UNAUTHENTICATED', 'missing refresh token', undefined, 401);
+    }
+    const session = await service.refresh(token);
+    reply.header('set-cookie', refreshCookie(session.refreshToken, 30 * 24 * 60 * 60));
+    return session;
   });
 
-  app.post('/api/v1/auth/refresh', async (request) => {
-    const body = refreshSchema.parse(request.body);
-    return service.refresh(body.refreshToken);
-  });
-
-  app.post('/api/v1/auth/logout', async (request) => {
-    const body = z.object({ refreshToken: z.string().min(20).max(500) }).parse(request.body);
-    await service.logout(body.refreshToken);
+  app.post('/api/v1/auth/logout', async (request, reply) => {
+    const body = z
+      .object({ refreshToken: z.string().min(20).max(500).optional() })
+      .parse(request.body ?? {});
+    const token = body.refreshToken ?? cookieToken(request);
+    if (token) await service.logout(token);
+    reply.header('set-cookie', clearRefreshCookie());
     return { loggedOut: true };
   });
 

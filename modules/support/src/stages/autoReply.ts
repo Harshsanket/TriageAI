@@ -1,6 +1,7 @@
 /** Auto-reply path stages: policy, decision, deliver, clarify, escalate, dispatch. */
 import { ulid } from 'ulid';
 
+import { invalid, notFound } from '@triageai/kernel';
 import type { KernelContext } from '@triageai/kernel';
 
 import { assertTransition } from '../state.js';
@@ -156,7 +157,7 @@ export function registerAutoReplyStages(
         answerHash?: string;
       };
       if (!input.ticketId || !input.answer) {
-        throw new Error('support.auto_reply_deliver requires ticketId + answer');
+        throw invalid('support.auto_reply_deliver requires ticketId + answer');
       }
       const existing = await ctx.database.query<AutoReplyRow>(
         `SELECT * FROM support_auto_replies WHERE run_id = $1 AND ticket_id = $2 LIMIT 1`,
@@ -176,7 +177,7 @@ export function registerAutoReplyStages(
         };
       }
       const ticket = await loadTicketRow(input.ticketId);
-      if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
+      if (!ticket) throw notFound(`ticket ${input.ticketId} not found`);
       assertTransition(ticket.status, 'AWAITING_CUSTOMER');
 
       const answerHash = input.answerHash ?? hashAnswer(input.answer);
@@ -261,7 +262,7 @@ export function registerAutoReplyStages(
   ctx.registerStageHandler('support.auto_reply_clarify', {
     execute: async (stage) => {
       const input = stage.input as { ticketId?: string; reasons?: string[] };
-      if (!input.ticketId) throw new Error('support.auto_reply_clarify requires ticketId');
+      if (!input.ticketId) throw invalid('support.auto_reply_clarify requires ticketId');
       const existing = await ctx.database.query<{ id: string }>(
         `SELECT id FROM support_ticket_events
          WHERE ticket_id = $1 AND type = 'auto_reply_clarification'
@@ -276,7 +277,7 @@ export function registerAutoReplyStages(
         };
       }
       const ticket = await loadTicketRow(input.ticketId);
-      if (!ticket) throw new Error(`ticket ${input.ticketId} not found`);
+      if (!ticket) throw notFound(`ticket ${input.ticketId} not found`);
       assertTransition(ticket.status, 'AWAITING_CUSTOMER');
 
       const body =
@@ -331,7 +332,7 @@ export function registerAutoReplyStages(
         reasons?: string[];
         checks?: unknown;
       };
-      if (!input.ticketId) throw new Error('support.auto_reply_escalate requires ticketId');
+      if (!input.ticketId) throw invalid('support.auto_reply_escalate requires ticketId');
       const result = await escalateAutoReply({
         ticketId: input.ticketId,
         runId: stage.runId,
@@ -342,23 +343,6 @@ export function registerAutoReplyStages(
         output: result,
         evidence: { kind: 'deterministic', reasons: result.reasons },
         deterministic: { escalated: result.escalated, status: result.status },
-      };
-    },
-  });
-
-  ctx.registerStageHandler('support.dispatch_auto_reply', {
-    execute: async (stage) => {
-      const input = stage.input as { ticketId?: string };
-      if (!input.ticketId) throw new Error('support.dispatch_auto_reply requires ticketId');
-      const started = await stage.queue.startWorkflow(
-        'support.auto_reply',
-        { ticketId: input.ticketId },
-        { idempotencyKey: `auto_reply:${input.ticketId}`, trigger: 'endpoint' },
-      );
-      return {
-        output: { runId: started.runId, deduped: started.deduped },
-        evidence: { kind: 'deterministic', runId: started.runId },
-        deterministic: { deduped: started.deduped },
       };
     },
   });

@@ -11,7 +11,7 @@ import { ulid } from 'ulid';
 
 import { IntegrationActionDtoSchema } from '@triageai/contracts';
 import { createActionStore, registerActionRoutes } from '@triageai/integrations-core';
-import { AppError } from '@triageai/kernel';
+import { AppError, internal, invalid, notFound } from '@triageai/kernel';
 import type { KernelContext, TriageModule } from '@triageai/kernel';
 
 import { createGitHubChannel } from './channel.js';
@@ -144,8 +144,40 @@ export const integrationsGitHubModule: TriageModule = {
   id: 'integrations-github',
   version: '0.1.0',
   capabilities: ['storage', 'queue', 'eventBus', 'outputChannel'],
+  permissions: {
+    storage: { schema: true },
+    routes: [
+      { method: 'GET', path: '/api/v1/integrations/github/actions' },
+      { method: 'POST', path: '/api/v1/integrations/github/actions/:id/approve' },
+      { method: 'POST', path: '/api/v1/integrations/github/actions/:id/reject' },
+      { method: 'POST', path: '/api/v1/integrations/github/actions/:id/retry' },
+      { method: 'POST', path: '/api/v1/integrations/github/webhook' },
+    ],
+    events: {
+      namespace: 'integrations',
+      publish: [
+        'integrations.github.issue_closed',
+        'integrations.github.issue_linked',
+        'integrations.github.issue_reopened',
+      ],
+      subscribe: [
+        'support.ticket.routed',
+        'support.ticket.status_changed',
+        'workflow.run.finished',
+      ],
+    },
+    capabilities: {
+      consume: ['storage', 'queue', 'eventBus', 'outputChannel'],
+      provide: [],
+    },
+    stages: ['integrations.github.close_issue', 'integrations.github.sync_issue'],
+    workflows: ['integrations.github.sync_issue', 'integrations.github.sync_status'],
+    evals: [],
+    tools: [],
+    egress: { hosts: ['*'], dataClasses: ['public', 'internal', 'restricted'] },
+    knowledge: { read: [], write: [] },
+  },
   dependsOn: {
-    modules: [{ id: 'support', version: '^0.3.0' }],
     capabilities: [{ capability: 'outputChannel' }],
   },
   configSchema,
@@ -182,6 +214,7 @@ export const integrationsGitHubModule: TriageModule = {
       ctx.database,
       'github',
       'integration_github_actions',
+      (entry) => ctx.audit.append(entry),
     );
     const audit = actions.audit;
     const loadAction = actions.load;
@@ -337,9 +370,9 @@ export const integrationsGitHubModule: TriageModule = {
     ctx.registerStageHandler('integrations.github.sync_issue', {
       execute: async (stage) => {
         const input = stage.input as { actionId?: string };
-        if (!input.actionId) throw new Error('integrations.github.sync_issue requires actionId');
+        if (!input.actionId) throw invalid('integrations.github.sync_issue requires actionId');
         const action = await loadAction(input.actionId);
-        if (!action) throw new Error(`github action ${input.actionId} not found`);
+        if (!action) throw notFound(`github action ${input.actionId} not found`);
         if (action.status === 'sent') {
           return {
             output: { delivered: true, deduped: true, ref: action.ref, url: action.url },
@@ -365,7 +398,7 @@ export const integrationsGitHubModule: TriageModule = {
         const marker = markerFor(action.id, action.ticket_id);
         const snapshot = action.snapshot;
         const channel = ctx.capabilities.outputChannel;
-        if (!channel) throw new Error('outputChannel capability missing');
+        if (!channel) throw internal('outputChannel capability missing');
 
         let existing: { ref: string; url?: string; number?: number; reason: string } | null = null;
         if (options.duplicateSearch && channel.search) {
@@ -489,13 +522,13 @@ export const integrationsGitHubModule: TriageModule = {
     ctx.registerStageHandler('integrations.github.close_issue', {
       execute: async (stage) => {
         const input = stage.input as { linkId?: string; ticketId?: string };
-        if (!input.linkId) throw new Error('integrations.github.close_issue requires linkId');
+        if (!input.linkId) throw invalid('integrations.github.close_issue requires linkId');
         const rows = await ctx.database.query<LinkRow>(
           `SELECT * FROM integration_github_links WHERE id = $1`,
           [input.linkId],
         );
         const link = rows[0];
-        if (!link) throw new Error(`github link ${input.linkId} not found`);
+        if (!link) throw notFound(`github link ${input.linkId} not found`);
         if (link.state === 'closed') {
           return {
             output: { closed: true, deduped: true, ref: link.issue_ref },
@@ -503,7 +536,7 @@ export const integrationsGitHubModule: TriageModule = {
           };
         }
         const channel = ctx.capabilities.outputChannel;
-        if (!channel) throw new Error('outputChannel capability missing');
+        if (!channel) throw internal('outputChannel capability missing');
         const delivered = await channel.deliver(
           {
             runId: stage.runId,

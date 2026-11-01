@@ -13,7 +13,7 @@ COPY apps/ai-service/pyproject.toml apps/ai-service/uv.lock ./
 
 RUN uv sync --no-dev --frozen
 
-COPY apps/ai-service/ ./app/
+COPY apps/ai-service/ ./
 
 ENV HF_HOME=/models
 VOLUME ["/models"]

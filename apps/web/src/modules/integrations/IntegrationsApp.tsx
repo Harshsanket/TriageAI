@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { apiFetch } from '../../host/api';
+import { apiFetch, type ApiFailure } from '../../host/api';
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorNotice,
+  Page,
+  StatusText,
+  Table,
+  safeExternalUrl,
+} from '../../ui';
 
 interface Action {
   id: string;
@@ -31,12 +41,16 @@ export function IntegrationsApp({
   title: string;
 }) {
   const [actions, setActions] = useState<Action[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiFailure | null>(null);
 
   const load = useCallback(async () => {
-    const res = await apiFetch(`/api/v1/integrations/${provider}/actions`);
-    if (!res.ok) return;
-    setActions((await res.json()) as Action[]);
+    const res = await apiFetch<Action[]>(`/api/v1/integrations/${provider}/actions`);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setError(null);
+    setActions(res.data);
   }, [provider]);
 
   useEffect(() => {
@@ -46,76 +60,87 @@ export function IntegrationsApp({
   }, [load]);
 
   const mutate = async (id: string, operation: 'approve' | 'reject' | 'retry') => {
-    setError(null);
     const res = await apiFetch(`/api/v1/integrations/${provider}/actions/${id}/${operation}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ actor: 'ui-admin' }),
     });
     if (!res.ok) {
-      setError(`${operation} failed (${res.status})`);
+      setError(res.error);
       return;
     }
     await load();
   };
 
   return (
-    <section>
-      <h2>{title}</h2>
-      <p>
-        Outward actions are audited. Approve or reject pending actions; failed deliveries can be
-        retried without touching ticket state.
-      </p>
-      {error && <p role="alert">{error}</p>}
-      <table cellPadding={6} style={{ borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            <th align="left">Ticket</th>
-            <th align="left">Status</th>
-            <th align="left">Channel</th>
-            <th align="left">Ref</th>
-            <th align="left">Reason</th>
-            <th align="left">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {actions.map((action) => (
-            <tr key={action.id} style={{ borderTop: '1px solid #ddd' }}>
-              <td>{action.ticketId}</td>
-              <td style={{ color: STATUS_COLORS[action.status] ?? '#24292f' }}>{action.status}</td>
-              <td>{action.channel ?? '—'}</td>
-              <td>
-                {action.url ? (
-                  <a href={action.url} target="_blank" rel="noreferrer">
-                    {action.ref}
-                  </a>
-                ) : (
-                  (action.ref ?? '—')
-                )}
-              </td>
-              <td>{action.reason ?? '—'}</td>
-              <td>
-                {action.status === 'pending_approval' && (
-                  <>
-                    <button type="button" onClick={() => void mutate(action.id, 'approve')}>
-                      Approve
-                    </button>{' '}
-                    <button type="button" onClick={() => void mutate(action.id, 'reject')}>
-                      Reject
-                    </button>
-                  </>
-                )}
-                {action.status === 'failed' && (
-                  <button type="button" onClick={() => void mutate(action.id, 'retry')}>
-                    Retry
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {actions.length === 0 && <p>No integration actions yet.</p>}
-    </section>
+    <Page
+      title={title}
+      subtitle="Outward actions are audited. Approve or reject pending actions; failed deliveries can be retried without touching ticket state."
+    >
+      <ErrorNotice error={error} onRetry={() => void load()} />
+      <Card title="Actions">
+        {actions.length === 0 ? (
+          <EmptyState>No integration actions yet.</EmptyState>
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <th>Ticket</th>
+                <th>Status</th>
+                <th>Channel</th>
+                <th>Ref</th>
+                <th>Reason</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {actions.map((action) => (
+                <tr key={action.id}>
+                  <td>{action.ticketId}</td>
+                  <td>
+                    <StatusText
+                      status={action.status}
+                      color={STATUS_COLORS[action.status] ?? '#24292f'}
+                    />
+                  </td>
+                  <td>{action.channel ?? '—'}</td>
+                  <td>
+                    {safeExternalUrl(action.url) ? (
+                      <a
+                        href={safeExternalUrl(action.url) as string}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {action.ref}
+                      </a>
+                    ) : (
+                      (action.ref ?? '—')
+                    )}
+                  </td>
+                  <td>{action.reason ?? '—'}</td>
+                  <td>
+                    {action.status === 'pending_approval' && (
+                      <div className="ui-row">
+                        <Button type="button" onClick={() => void mutate(action.id, 'approve')}>
+                          Approve
+                        </Button>
+                        <Button type="button" onClick={() => void mutate(action.id, 'reject')}>
+                          Reject
+                        </Button>
+                      </div>
+                    )}
+                    {action.status === 'failed' && (
+                      <Button type="button" onClick={() => void mutate(action.id, 'retry')}>
+                        Retry
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Card>
+    </Page>
   );
 }

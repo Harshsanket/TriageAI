@@ -46,10 +46,10 @@ async function clean(database: PostgresDatabase): Promise<void> {
   await database.query(`DELETE FROM datasets`);
   await database.query(`DELETE FROM candidate_examples`);
   await database.query(`DELETE FROM audit_events`);
-  await database.query(`DELETE FROM support_auto_replies`);
-  await database.query(`DELETE FROM support_ticket_messages`);
-  await database.query(`DELETE FROM support_ticket_events`);
-  await database.query(`DELETE FROM support_tickets`);
+  await database.query(`DELETE FROM mod_support.support_auto_replies`);
+  await database.query(`DELETE FROM mod_support.support_ticket_messages`);
+  await database.query(`DELETE FROM mod_support.support_ticket_events`);
+  await database.query(`DELETE FROM mod_support.support_tickets`);
   await database.query(
     `DELETE FROM workflow_runs WHERE workflow_id IN ('support.triage','support.auto_reply')`,
   );
@@ -74,11 +74,11 @@ describeIfDb('advanced triage + agent overrides (phase 7)', () => {
     await writeFile(configPath, JSON.stringify(raw));
 
     database = new PostgresDatabase(DATABASE_URL);
-    await clean(database);
     const capabilities: Capabilities = {
       classifier: { classify: async () => classification() },
     };
     app = (await buildApp({ quiet: true, configPath, capabilities })) as App;
+    await clean(database);
   });
 
   afterEach(async () => {

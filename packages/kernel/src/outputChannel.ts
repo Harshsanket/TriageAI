@@ -3,7 +3,7 @@
  * knowing any provider vocabulary. Integration modules register their adapter
  * during `register()` (ADR-0018).
  */
-import { AppError } from './errors.js';
+import { AppError, invalid } from './errors.js';
 import type {
   DeliveryContext,
   DeliveryResult,
@@ -18,7 +18,7 @@ class Registry implements OutputChannelRegistry {
   private readonly adapters = new Map<string, OutputChannel>();
 
   register(channel: string, adapter: OutputChannel): void {
-    if (!channel.trim()) throw new Error('output channel id must not be empty');
+    if (!channel.trim()) throw invalid('output channel id must not be empty');
     if (this.adapters.has(channel)) {
       throw new AppError('kernel.CONFLICT', `output channel "${channel}" is already registered`);
     }
@@ -51,6 +51,7 @@ class Registry implements OutputChannelRegistry {
         `output channel "${channel ?? '(missing)'}" is not configured`,
         { configured: this.channels() },
         503,
+        { category: 'internal', retryable: false, userMessage: 'This integration is not enabled.' },
       );
     }
     return adapter;

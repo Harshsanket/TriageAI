@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { chunkText } from '@triageai/rag';
+import { chunkDocument, chunkText } from '@triageai/rag';
 
 describe('kb chunker', () => {
   it('merges short paragraphs up to the limit', () => {
@@ -19,5 +19,27 @@ describe('kb chunker', () => {
   it('is deterministic', () => {
     const text = 'A.\n\nB.\n\nC.';
     expect(chunkText(text, 10)).toEqual(chunkText(text, 10));
+  });
+
+  it('keeps heading paths and code blocks intact', () => {
+    const text = [
+      '# Billing',
+      '',
+      'Refunds are explained here.',
+      '',
+      '## Steps',
+      '',
+      '```',
+      'step one',
+      'step two',
+      '```',
+      '',
+      '- list item',
+    ].join('\n');
+    const chunks = chunkDocument(text, 200);
+    expect(chunks.some((chunk) => chunk.headingPath === 'Billing')).toBe(true);
+    expect(chunks.some((chunk) => chunk.headingPath === 'Billing › Steps')).toBe(true);
+    expect(chunks.map((chunk) => chunk.text).join('\n')).toContain('step one');
+    expect(chunks.length).toBeGreaterThan(0);
   });
 });

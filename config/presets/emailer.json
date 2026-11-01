@@ -1,0 +1,14 @@
+{
+  "profile": "support",
+  "queue": { "adapter": "pg-queue", "pollIntervalMs": 250 },
+  "modules": {
+    "support": { "enabled": true },
+    "ai-pipeline": { "enabled": true },
+    "emailer": { "enabled": true },
+    "echo": { "enabled": false }
+  },
+  "capabilities": {
+    "embedder": { "adapter": "ai-service" },
+    "classifier": { "adapter": "ai-service" }
+  }
+}

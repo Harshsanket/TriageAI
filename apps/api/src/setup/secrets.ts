@@ -73,15 +73,33 @@ export class SecretStore {
     await writeAudit(this.database, { actor, action: 'secret.set', subject: name });
   }
 
-  async list(): Promise<Array<{ name: string; updatedBy: string; updatedAt: string }>> {
+  async list(): Promise<
+    Array<{ name: string; updatedBy: string; updatedAt: string; lastUsedAt: string | null }>
+  > {
     const rows = await this.database
-      .query<SecretRow>(`SELECT name, updated_by, updated_at FROM secrets ORDER BY name`)
-      .catch(() => [] as SecretRow[]);
+      .query<SecretRow & { last_used_at: Date | string | null }>(
+        `SELECT name, updated_by, updated_at, last_used_at FROM secrets ORDER BY name`,
+      )
+      .catch(() => [] as Array<SecretRow & { last_used_at: Date | string | null }>);
     return rows.map((row) => ({
       name: row.name,
       updatedBy: row.updated_by,
       updatedAt: new Date(row.updated_at).toISOString(),
+      lastUsedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : null,
     }));
+  }
+
+  /** Erase every stored secret (setup "Reset and erase"). */
+  async clear(actor: string): Promise<number> {
+    const rows = await this.database.query<{ count: number }>(
+      `DELETE FROM secrets RETURNING 1 AS count`,
+    );
+    await writeAudit(this.database, {
+      actor,
+      action: 'secret.clear',
+      subject: String(rows.length),
+    });
+    return rows.length;
   }
 
   /**
@@ -95,6 +113,7 @@ export class SecretStore {
       .catch(() => [] as SecretRow[]);
     const values: Record<string, string> = {};
     const failed: string[] = [];
+    const used: string[] = [];
     for (const row of rows) {
       try {
         const decipher = createDecipheriv('aes-256-gcm', this.key, Buffer.from(row.iv, 'base64'));
@@ -104,9 +123,15 @@ export class SecretStore {
           decipher.update(Buffer.from(row.ciphertext, 'base64')),
           decipher.final(),
         ]).toString('utf8');
+        used.push(row.name);
       } catch {
         failed.push(row.name);
       }
+    }
+    if (used.length > 0) {
+      await this.database
+        .query(`UPDATE secrets SET last_used_at = now() WHERE name = ANY($1::text[])`, [used])
+        .catch(() => undefined);
     }
     return { values, failed };
   }

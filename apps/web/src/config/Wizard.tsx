@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
 
 import type {
+  AgentPreference,
   CatalogModel,
   HardwareProfile,
   SetupAnswers,
@@ -9,15 +10,18 @@ import type {
   SetupPlan,
   SetupStatus,
 } from '@triageai/contracts';
+import { AGENT_COLORS } from '@triageai/contracts';
 
 import { getSetupToken, gib, setSetupToken, setupFetch, setupJson } from './setupApi';
 
-type StepId = 'token' | 'machine' | 'interfaces' | 'knowledge' | 'llm' | 'access' | 'review';
+type StepId =
+  'token' | 'machine' | 'interfaces' | 'agents' | 'knowledge' | 'llm' | 'access' | 'review';
 
 const STEP_TITLES: Record<StepId, string> = {
   token: 'Setup token',
   machine: 'Machine check',
   interfaces: 'What should it do?',
+  agents: 'Name your agents',
   knowledge: 'Base knowledge',
   llm: 'Language model',
   access: 'Access & accounts',
@@ -59,13 +63,11 @@ const INTERFACES: Array<{
     id: 'public-api',
     label: 'API for other agents',
     help: 'OpenAI-compatible API and MCP server.',
-    soon: true,
   },
   {
     id: 'emailer',
     label: 'Emailer',
     help: 'Turns email into tickets and replies by email.',
-    soon: true,
   },
 ];
 
@@ -93,7 +95,8 @@ const RUNTIMES = [
 
 const DEFAULT_ANSWERS: SetupAnswers = {
   interfaces: ['chatbot'],
-  knowledge: { autoApprove: false, documents: [] },
+  agents: [],
+  knowledge: { autoApprove: true, documents: [] },
   llm: { runtime: 'ollama', baseUrl: 'http://localhost:11434', model: undefined },
   ticketSolver: { autoReply: true },
   integrations: {},
@@ -123,6 +126,7 @@ export function Wizard({
       ...(status.tokenRequired ? (['token'] as StepId[]) : []),
       'machine',
       'interfaces',
+      'agents',
       'knowledge',
       'llm',
       'access',
@@ -183,6 +187,7 @@ export function Wizard({
       {step === 'token' && <TokenStep onValid={next} setError={setError} />}
       {step === 'machine' && <MachineStep onNext={next} />}
       {step === 'interfaces' && <InterfacesStep answers={answers} update={update} />}
+      {step === 'agents' && <AgentsStep answers={answers} update={update} />}
       {step === 'knowledge' && <KnowledgeStep answers={answers} update={update} />}
       {step === 'llm' && <LlmStep answers={answers} update={update} />}
       {step === 'access' && <AccessStep answers={answers} update={update} status={status} />}
@@ -349,6 +354,112 @@ function InterfacesStep({ answers, update }: StepProps) {
   );
 }
 
+function AgentsStep({ answers, update }: StepProps) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const interfaceKey = answers.interfaces.join(',');
+  const agents = (answers.agents ?? []).filter((agent) =>
+    answers.interfaces.includes(agent.interface as SetupInterface),
+  );
+
+  useEffect(() => {
+    if (answers.interfaces.length === 0) {
+      update({ agents: [] });
+      return;
+    }
+    let disposed = false;
+    const existing = answers.agents ?? [];
+    const missing = answers.interfaces.filter(
+      (key) => !existing.some((agent) => agent.interface === key),
+    );
+    if (missing.length === 0) return;
+    const params = new URLSearchParams({
+      interfaces: missing.join(','),
+      existing: existing.map((agent) => agent.displayName).join(','),
+      colors: existing.map((agent) => agent.color).join(','),
+    });
+    setLoading(true);
+    void setupJson<{ agents: AgentPreference[] }>(
+      `/api/v1/setup/agent-defaults?${params.toString()}`,
+    )
+      .then((result) => {
+        if (disposed) return;
+        const kept = (answers.agents ?? []).filter((agent) =>
+          answers.interfaces.includes(agent.interface as SetupInterface),
+        );
+        update({ agents: [...kept, ...(result.agents ?? [])] });
+      })
+      .catch((err: Error) => {
+        if (!disposed) setError(err.message);
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+    // Re-run only when the chosen interface set changes.
+  }, [interfaceKey]);
+
+  const change = (interfaceKeyValue: string, patch: Partial<AgentPreference>) => {
+    const next = agents.map((agent) =>
+      agent.interface === interfaceKeyValue ? { ...agent, ...patch } : agent,
+    );
+    update({ agents: next });
+  };
+
+  return (
+    <fieldset className="cfg-card cfg-choices">
+      <legend>
+        Every agent gets a name and a colour. NASA spacecraft names are the defaults; rename any of
+        them.
+      </legend>
+      {loading ? <p className="cfg-hint">Choosing names…</p> : null}
+      {error ? (
+        <p className="cfg-alert" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {agents.map((agent) => (
+        <div key={agent.interface} className="cfg-agent-row">
+          <span className="cfg-agent-row__interface">{agent.interface}</span>
+          <label>
+            <span className="cfg-label">Name</span>
+            <input
+              className="cfg-input"
+              maxLength={40}
+              value={agent.displayName}
+              onChange={(event) => change(agent.interface, { displayName: event.target.value })}
+            />
+          </label>
+          <label>
+            <span className="cfg-label">Colour</span>
+            <select
+              className="cfg-select"
+              value={agent.color}
+              onChange={(event) => change(agent.interface, { color: event.target.value })}
+            >
+              {AGENT_COLORS.map((color) => (
+                <option key={color} value={color}>
+                  {color}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span
+            className="cfg-agent-swatch"
+            style={{ background: agent.color }}
+            aria-hidden="true"
+          />
+        </div>
+      ))}
+      {agents.length === 0 && !loading ? (
+        <p className="cfg-hint">Choose at least one interface first.</p>
+      ) : null}
+    </fieldset>
+  );
+}
+
 function KnowledgeStep({ answers, update }: StepProps) {
   const documents = answers.knowledge?.documents ?? [];
   const [note, setNote] = useState<string | null>(null);
@@ -409,21 +520,6 @@ function KnowledgeStep({ answers, update }: StepProps) {
           ))}
         </ul>
       )}
-      <label className="cfg-choice">
-        <input
-          type="checkbox"
-          checked={answers.knowledge?.autoApprove ?? false}
-          onChange={(e) =>
-            update({ knowledge: { ...answers.knowledge, autoApprove: e.target.checked } })
-          }
-        />
-        <span>
-          <strong>Approve these documents automatically</strong>
-          <small>
-            Only approved documents are used for answers. Leave off to review them first.
-          </small>
-        </span>
-      </label>
       <p className="cfg-hint">
         Embeddings use the ai-service model (default all-MiniLM-L6-v2); change it with
         EMBEDDING_MODEL on the ai-service.
@@ -615,8 +711,11 @@ function ModelActions({
       body: JSON.stringify({ baseUrl, model }),
     });
     if (!res.ok || !res.body) {
-      const body = (await res.json().catch(() => ({}))) as { detail?: string };
-      setProgress(`Download failed: ${body.detail ?? res.status}`);
+      const body = (await res.json().catch(() => ({}))) as {
+        userMessage?: string;
+        detail?: string;
+      };
+      setProgress(`Download failed: ${body.userMessage ?? body.detail ?? res.status}`);
       return;
     }
     const reader = res.body.getReader();

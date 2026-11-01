@@ -4,6 +4,7 @@
  */
 import { ulid } from 'ulid';
 
+import { toStructuredError } from '../errors.js';
 import type { DeadLetterEntry, KernelLogger } from '../types.js';
 
 import type {
@@ -105,11 +106,14 @@ export class InlineQueue implements Queue {
         } catch (err) {
           job.attempts += 1;
           if (job.attempts >= job.maxAttempts) {
+            const structured = toStructuredError(err, job.attempts);
             this.dead.push({
+              id: ulid(),
               queue: job.queue,
               payload: job.payload,
               attempts: job.attempts,
-              error: (err as Error).message,
+              error: structured.message,
+              errorDetails: structured,
               createdAt: new Date().toISOString(),
             });
             this.jobs.delete(job.id);

@@ -11,6 +11,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { buildRagPrompt, chunkText, finalizeAnswer, runValidation } from '@triageai/rag';
+import { internal } from '@triageai/kernel';
 import type { TriageModule } from '@triageai/kernel';
 
 const configSchema = z
@@ -42,8 +43,23 @@ export const docAssistantModule: TriageModule = {
   id: 'doc-assistant',
   version: '0.1.0',
   capabilities: ['embedder', 'vectorStore', 'retriever', 'generator', 'validator'],
+  permissions: {
+    routes: [
+      { method: 'POST', path: '/api/v1/doc-assistant/ask' },
+      { method: 'POST', path: '/api/v1/doc-assistant/reingest' },
+    ],
+    events: { publish: [], subscribe: [] },
+    capabilities: {
+      consume: ['embedder', 'vectorStore', 'retriever', 'generator', 'validator'],
+      provide: [],
+    },
+    stages: [],
+    workflows: [],
+    evals: [],
+    tools: [],
+    knowledge: { read: ['project_docs'], write: ['project_docs'] },
+  },
   dependsOn: {
-    modules: [],
     capabilities: [
       { capability: 'embedder' },
       { capability: 'vectorStore' },
@@ -82,7 +98,7 @@ export const docAssistantModule: TriageModule = {
         const embedder = ctx.capabilities.embedder;
         const vectorStore = ctx.capabilities.vectorStore;
         if (!embedder || !vectorStore)
-          throw new Error('doc-assistant requires embedder + vectorStore');
+          throw internal('doc-assistant requires embedder + vectorStore');
 
         const files = await walkMarkdown(docsDir);
         let totalChunks = 0;
@@ -121,7 +137,7 @@ export const docAssistantModule: TriageModule = {
         const retriever = ctx.capabilities.retriever;
         const generator = ctx.capabilities.generator;
         if (!retriever || !generator) {
-          throw new Error('doc-assistant requires retriever + generator capabilities');
+          throw internal('doc-assistant requires retriever + generator capabilities');
         }
         const body = z
           .object({

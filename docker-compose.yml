@@ -51,14 +51,32 @@ services:
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       # 32+ chars; enables the encrypted secret store used by /config.
       TRIAGEAI_SECRET_KEY: ${TRIAGEAI_SECRET_KEY:-}
+      # Phase 23.7: generated master.key lives here (mode 600), outside the DB.
+      TRIAGEAI_SECRETS_DIR: /data/secrets
+      TRIAGEAI_UPDATE_DIR: /data/updates
+      TRIAGEAI_UPDATE_ROOT: ${TRIAGEAI_UPDATE_ROOT:-}
+      TRIAGEAI_UPDATE_COMMAND: ${TRIAGEAI_UPDATE_COMMAND:-}
       # Exit after the wizard applies so `restart:` boots the new config.
       TRIAGEAI_RESTART_ON_APPLY: '1'
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      # Behind nginx: trust only the compose network for X-Forwarded-For (R3).
+      TRIAGEAI_TRUST_PROXY: ${TRIAGEAI_TRUST_PROXY:-loopback, linklocal, uniquelocal}
       TRIAGEAI_GENERATOR_BASE_URL: ${TRIAGEAI_GENERATOR_BASE_URL:-http://ollama:11434}
       TRIAGEAI_CONFIG: ${TRIAGEAI_CONFIG:-/app/triage.config.json}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      # Phase 12: signed plugins hot-load from this volume; `off` = bundled only.
+      TRIAGEAI_PLUGINS_DIR: /plugins
+      TRIAGEAI_PLUGIN_REGISTRY: ${TRIAGEAI_PLUGIN_REGISTRY:-off}
+      TRIAGEAI_PLUGIN_PUBLIC_KEYS: ${TRIAGEAI_PLUGIN_PUBLIC_KEYS:-}
+    networks:
+      - default
+      - modules
+    volumes:
+      - triageai-plugins:/plugins
+      - triageai-secrets:/data/secrets
+      - triageai-updates:/data/updates
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,6 +137,69 @@ services:
     depends_on:
       - api
 
+  echo-module:
+    build:
+      context: .
+      dockerfile: docker/echo-module.Dockerfile
+    image: triageai/module-echo:dev
+    container_name: triageai-module-echo
+    profiles: [modules]
+    environment:
+      TRIAGEAI_MP1_PORT: '8080'
+      TRIAGEAI_MP1_REQUIRE_SESSION: ${TRIAGEAI_MP1_REQUIRE_SESSION:-0}
+      TRIAGEAI_CORE_PUBLIC_KEY: ${TRIAGEAI_CORE_PUBLIC_KEY:-}
+      TRIAGEAI_SESSION_PUBLIC_KEY: ${TRIAGEAI_SESSION_PUBLIC_KEY:-}
+      TRIAGEAI_SESSION_GENERATION: ${TRIAGEAI_SESSION_GENERATION:-}
+    expose:
+      - '8080'
+    networks:
+      - modules
+
+  slack-module:
+    build:
+      context: .
+      dockerfile: docker/integrations-slack.Dockerfile
+    image: triageai/module-integrations-slack:dev
+    container_name: triageai-module-slack
+    profiles: [modules]
+    environment:
+      TRIAGEAI_MP1_PORT: '8080'
+      DATABASE_URL: postgres://mod_integrations_slack@postgres:5432/triageai
+      TRIAGEAI_MP1_REQUIRE_SESSION: ${TRIAGEAI_MP1_REQUIRE_SESSION:-0}
+      TRIAGEAI_CORE_PUBLIC_KEY: ${TRIAGEAI_CORE_PUBLIC_KEY:-}
+      TRIAGEAI_SESSION_PUBLIC_KEY: ${TRIAGEAI_SESSION_PUBLIC_KEY:-}
+      TRIAGEAI_SESSION_GENERATION: ${TRIAGEAI_SESSION_GENERATION:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    expose:
+      - '8080'
+    networks:
+      - modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  chat-module:
+    build:
+      context: .
+      dockerfile: docker/chat-module.Dockerfile
+    image: triageai/module-chat:dev
+    container_name: triageai-module-chat
+    profiles: [modules]
+    environment:
+      TRIAGEAI_MP1_PORT: '8080'
+      DATABASE_URL: postgres://mod_chat@postgres:5432/triageai
+      TRIAGEAI_MP1_REQUIRE_SESSION: ${TRIAGEAI_MP1_REQUIRE_SESSION:-0}
+      TRIAGEAI_CORE_PUBLIC_KEY: ${TRIAGEAI_CORE_PUBLIC_KEY:-}
+      TRIAGEAI_SESSION_PUBLIC_KEY: ${TRIAGEAI_SESSION_PUBLIC_KEY:-}
+      TRIAGEAI_SESSION_GENERATION: ${TRIAGEAI_SESSION_GENERATION:-}
+    expose:
+      - '8080'
+    networks:
+      - modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   ollama:
     image: ollama/ollama:0.40.12
     container_name: triageai-ollama
@@ -148,8 +229,15 @@ services:
     ports:
       - '${TRIAGEAI_BIND:-127.0.0.1}:3310:3000'
 
+networks:
+  modules:
+    internal: true
+
 volumes:
+  triageai-updates:
+  triageai-secrets:
   triageai-pgdata:
   triageai-hf-cache:
   triageai-artifacts:
   triageai-ollama:
+  triageai-plugins:

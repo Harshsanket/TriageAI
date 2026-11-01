@@ -61,7 +61,39 @@ describe('first-run gate', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Setup token' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/config');
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'TriageAI' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Runs' })).not.toBeInTheDocument();
+  });
+
+  it('shows only setup while the setup status is still loading', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/v1/setup/status') return new Promise<Response>(() => undefined);
+      if (url.includes('/api/v1/system/manifest')) {
+        return json({
+          generatedAt: new Date().toISOString(),
+          modules: [
+            {
+              id: 'echo',
+              version: '0.1.0',
+              manifest: {
+                routes: [{ path: '/echo', title: 'Echo' }],
+                nav: [{ label: 'Echo', order: 10, path: '/echo' }],
+                background: [],
+              },
+            },
+          ],
+        });
+      }
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<App />);
+
+    expect(await screen.findByText('Loading setup…')).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Echo' })).not.toBeInTheDocument();
   });
 });
 
@@ -146,10 +178,148 @@ describe('changing setup after it is complete', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Continue' }));
 
     expect(await screen.findByRole('radio', { name: /Ollama/ })).toBeChecked();
     expect(screen.getByRole('textbox', { name: /Model \(as the runtime names it\)/ })).toHaveValue(
       'qwen2.5:3b',
+    );
+  });
+});
+
+describe('module switches', () => {
+  it('stages additions and switches into delete mode when an enabled module is switched off', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/v1/setup/config/effective') {
+        return json({
+          bootedOverlayVersion: 1,
+          latestOverlay: { version: 1, overlay: { interfaces: ['chatbot'] } },
+          history: [],
+          running: { profile: 'assistant', modules: { chat: { enabled: true } }, capabilities: {} },
+          authMode: 'disabled',
+          authModeSource: 'setting',
+        });
+      }
+      if (url === '/api/v1/setup/secrets') return json({ available: true, secrets: [] });
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<ConfigView status={COMPLETE} refresh={() => undefined} />);
+
+    const emailer = await screen.findByRole('switch', { name: 'emailer' });
+    expect(emailer).not.toBeChecked();
+    await userEvent.click(emailer);
+    expect(screen.getByText('will be added')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add to setup' })).toBeEnabled();
+
+    const chatbot = screen.getByRole('switch', { name: 'chatbot' });
+    expect(chatbot).toBeChecked();
+    await userEvent.click(chatbot);
+    expect(screen.queryByRole('switch', { name: 'chatbot' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete chatbot' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('replaces switches with delete icons in remove mode', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? 'GET' });
+      if (url === '/api/v1/setup/config/effective') {
+        return json({
+          bootedOverlayVersion: 1,
+          latestOverlay: { version: 1, overlay: { interfaces: ['chatbot'] } },
+          history: [],
+          running: { profile: 'assistant', modules: { chat: { enabled: true } }, capabilities: {} },
+          authMode: 'disabled',
+          authModeSource: 'setting',
+        });
+      }
+      if (url === '/api/v1/setup/secrets') return json({ available: true, secrets: [] });
+      if (url === '/api/v1/setup/remove') return json({ removed: ['chatbot'] });
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<ConfigView status={COMPLETE} refresh={() => undefined} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove interfaces' }));
+    expect(screen.queryByRole('switch', { name: 'chatbot' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete emailer' })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete chatbot' }));
+    expect(await screen.findByText('Removed chatbot.')).toBeInTheDocument();
+    expect(calls).toEqual(
+      expect.arrayContaining([{ url: '/api/v1/setup/remove', method: 'POST' }]),
+    );
+  });
+});
+
+describe('model settings and danger zone', () => {
+  it('edits model settings and resets the overlay with typed confirmation', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? 'GET' });
+      if (url === '/api/v1/setup/config/effective') {
+        return json({
+          bootedOverlayVersion: 1,
+          latestOverlay: null,
+          history: [],
+          running: { profile: 'assistant', modules: {}, capabilities: {} },
+          authMode: 'disabled',
+          authModeSource: 'setting',
+        });
+      }
+      if (url === '/api/v1/setup/secrets') return json({ available: true, secrets: [] });
+      if (url === '/api/v1/system/data-policy') return json({ classes: [], sendGate: {} });
+      if (url === '/api/v1/setup/model-settings' && (init?.method ?? 'GET') === 'GET') {
+        return json({
+          generator: {
+            adapter: 'ollama',
+            model: 'qwen2.5:1.5b',
+            baseUrl: 'http://localhost:11434',
+            temperature: 0.2,
+            maxTokens: 384,
+            timeoutMs: 120000,
+          },
+          chat: { maxAnswerTokens: 384 },
+          retriever: { threshold: 0.35, margin: 0.05 },
+          overlayVersion: 1,
+          latestOverlayVersion: 1,
+          restartRequired: false,
+        });
+      }
+      if (url === '/api/v1/setup/model-settings') return json({ saved: true, version: 2 });
+      if (url === '/api/v1/setup/restart') return json({ restarted: true });
+      if (url === '/api/v1/setup/reset') return json({ reset: true, version: 3 });
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<ConfigView status={COMPLETE} refresh={() => undefined} />);
+    expect(await screen.findByRole('heading', { name: 'Models' })).toBeInTheDocument();
+    const temperature = screen.getByLabelText('Temperature');
+    await userEvent.clear(temperature);
+    await userEvent.type(temperature, '0.7');
+    await userEvent.click(screen.getByRole('button', { name: 'Save model settings' }));
+    expect(
+      await screen.findByText('Saved. Restart the API to use the new model settings.'),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Restart API' }));
+    expect(
+      await screen.findByText('Restart requested. The API is restarting…'),
+    ).toBeInTheDocument();
+
+    const confirm = screen.getByLabelText('type RESET to confirm');
+    await userEvent.type(confirm, 'RESET');
+    await userEvent.click(screen.getByRole('button', { name: 'Reset configuration' }));
+    expect(
+      await screen.findByText('Configuration reset saved. Restart the API to apply defaults.'),
+    ).toBeInTheDocument();
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { url: '/api/v1/setup/model-settings', method: 'PUT' },
+        { url: '/api/v1/setup/restart', method: 'POST' },
+        { url: '/api/v1/setup/reset', method: 'POST' },
+      ]),
     );
   });
 });
@@ -174,7 +344,7 @@ describe('review step', () => {
     render(<Wizard status={{ ...PENDING, tokenRequired: false }} onApplied={() => undefined} />);
 
     await screen.findByRole('heading', { name: 'Machine check' });
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       await userEvent.click(await screen.findByRole('button', { name: 'Continue' }));
     }
 
@@ -182,5 +352,36 @@ describe('review step', () => {
     expect(await screen.findByText('Fix these before applying:')).toBeInTheDocument();
     expect(screen.getByText(/Sign-in needs a JWT secret/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Apply setup' })).toBeDisabled();
+  });
+});
+
+describe('agent naming step', () => {
+  it('pre-fills NASA names and keeps a rename', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url === '/api/v1/setup/hardware') return json(HARDWARE);
+      if (url.startsWith('/api/v1/setup/agent-defaults')) {
+        return json({
+          agents: [{ interface: 'chatbot', displayName: 'Voyager', color: '#3b6fd4' }],
+        });
+      }
+      if (url.startsWith('/api/v1/setup/models')) return json({ models: [] });
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<Wizard status={{ ...PENDING, tokenRequired: false }} onApplied={() => undefined} />);
+    await screen.findByRole('heading', { name: 'Machine check' });
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('heading', { name: 'What should it do?' });
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByRole('heading', { name: 'Name your agents' })).toBeInTheDocument();
+    const name = await screen.findByLabelText('Name');
+    expect(name).toHaveValue('Voyager');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Odyssey');
+    expect(name).toHaveValue('Odyssey');
+    expect(calls.some((url) => url.startsWith('/api/v1/setup/agent-defaults'))).toBe(true);
   });
 });
