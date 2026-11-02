@@ -5,6 +5,10 @@ import type {
   AppearanceFontSize,
   AppearanceMotion,
   AppearanceTheme,
+  KbChunkStrategy,
+  KbDataProcessing,
+  KbImageExtraction,
+  KbPdfExtraction,
   ModelRuntimeDto,
   SetupAnswers,
   SkillListResponse,
@@ -98,6 +102,99 @@ const SETUP_INTERFACES = [
   'public-api',
 ] as const;
 
+const CHUNK_STRATEGIES: Array<{
+  id: KbChunkStrategy;
+  label: string;
+  detail: string;
+  bestFor: string;
+}> = [
+  {
+    id: 'structure-700',
+    label: 'Structure-aware · 700 chars',
+    detail:
+      'Splits on Markdown headings and keeps lists, tables and code blocks with their section.',
+    bestFor: 'Mixed documents, runbooks and policy pages.',
+  },
+  {
+    id: 'structure-1200',
+    label: 'Structure-aware · 1,200 chars',
+    detail: 'The same section boundaries with larger chunks and more surrounding context.',
+    bestFor: 'Long manuals and narrative documentation.',
+  },
+  {
+    id: 'sentence-500',
+    label: 'Sentence · 500 chars',
+    detail: 'Packs whole sentences into smaller chunks without cutting mid-sentence.',
+    bestFor: 'FAQ, Q&A and precise fact lookups.',
+  },
+  {
+    id: 'fixed-1000',
+    label: 'Fixed window · 1,000 chars',
+    detail: 'Ignores document structure and cuts fixed windows with a 150-character overlap.',
+    bestFor: 'Transcripts, logs and unstructured text.',
+  },
+];
+
+const PDF_EXTRACTIONS: Array<{
+  id: KbPdfExtraction;
+  label: string;
+  detail: string;
+  bestFor: string;
+  available: boolean;
+}> = [
+  {
+    id: 'text-layer',
+    label: 'Text layer (recommended)',
+    detail: 'Reads the text embedded in the PDF without OCR.',
+    bestFor: 'Digital PDFs; fast and deterministic.',
+    available: true,
+  },
+  {
+    id: 'text-layer-strict',
+    label: 'Text layer, reject scans',
+    detail: 'Uses the text layer but fails a PDF that has no extractable text.',
+    bestFor: 'Catching scanned files instead of indexing nothing.',
+    available: true,
+  },
+  {
+    id: 'ocr',
+    label: 'OCR',
+    detail: 'Renders pages and recognises characters; needs the optional AI service OCR adapter.',
+    bestFor: 'Scanned PDFs and screenshots.',
+    available: false,
+  },
+];
+
+const IMAGE_EXTRACTIONS: Array<{
+  id: KbImageExtraction;
+  label: string;
+  detail: string;
+  bestFor: string;
+  available: boolean;
+}> = [
+  {
+    id: 'skip',
+    label: 'Skip images',
+    detail: 'Stores the image but does not index any text from it.',
+    bestFor: 'Decorative images and diagrams.',
+    available: true,
+  },
+  {
+    id: 'metadata',
+    label: 'Filename + metadata',
+    detail: 'Indexes the source title and media type only.',
+    bestFor: 'Image libraries with descriptive filenames.',
+    available: true,
+  },
+  {
+    id: 'ocr',
+    label: 'OCR',
+    detail: 'Extracts text from the image; needs the optional AI service OCR adapter.',
+    bestFor: 'Screenshots and scanned photos.',
+    available: false,
+  },
+];
+
 interface DataPolicyOverride {
   retentionDays?: number | null;
   modelUse?: string;
@@ -155,6 +252,7 @@ function SettingsView({ status, refresh }: { status: SetupStatus; refresh: () =>
   const [effective, setEffective] = useState<Effective | null>(null);
   const [secrets, setSecrets] = useState<SecretList | null>(null);
   const [dataPolicy, setDataPolicy] = useState<DataPolicy | null>(null);
+  const [dataProcessing, setDataProcessing] = useState<KbDataProcessing | null>(null);
   const [models, setModels] = useState<ModelSettings | null>(null);
   const [modelNote, setModelNote] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
@@ -176,6 +274,10 @@ function SettingsView({ status, refresh }: { status: SetupStatus; refresh: () =>
     );
     setupJson<SecretList>('/api/v1/setup/secrets').then(setSecrets, () => undefined);
     setupJson<DataPolicy>('/api/v1/system/data-policy').then(setDataPolicy, () => undefined);
+    setupJson<KbDataProcessing>('/api/v1/system/data-processing').then(
+      setDataProcessing,
+      () => undefined,
+    );
     setupJson<ModelSettings>('/api/v1/setup/model-settings').then(
       (data) => {
         if (data.generator && data.chat && data.retriever) setModels(data);
@@ -626,6 +728,9 @@ function SettingsView({ status, refresh }: { status: SetupStatus; refresh: () =>
         </div>
       )}
       <ModelRuntimePanel />
+      {dataProcessing ? (
+        <DataProcessingCard data={dataProcessing} onSaved={() => setNonce((n) => n + 1)} />
+      ) : null}
       {dataPolicy && <DataPolicyCard data={dataPolicy} onSaved={() => setNonce((n) => n + 1)} />}
       {effective && effective.history.length > 0 && (
         <div className="cfg-card">
@@ -858,7 +963,33 @@ function AboutCard() {
   );
 }
 
-function ModelRuntimePanel() {
+export function Toggle({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      className={`cfg-toggle${checked ? ' cfg-toggle--on' : ''}`}
+      onClick={onChange}
+    >
+      <span aria-hidden="true" />
+    </button>
+  );
+}
+
+export function ModelRuntimePanel() {
   const [state, setState] = useState<{
     runtimes: ModelRuntimeDto[];
     controls: { llmDisabled: boolean; disabledRuntimes: string[] };
@@ -918,10 +1049,8 @@ function ModelRuntimePanel() {
             {controls.llmDisabled ? 'generation is off' : 'generation is on'}
           </span>
         </span>
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label="Turn off all LLMs"
+        <Toggle
+          label="Turn off all LLMs"
           checked={controls.llmDisabled}
           disabled={busy}
           onChange={() => void update({ llmDisabled: !controls.llmDisabled })}
@@ -946,17 +1075,20 @@ function ModelRuntimePanel() {
                     {runtime.contextWindow ? ` · ${runtime.contextWindow} ctx` : ''}
                   </span>
                 </span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  aria-label={`${runtime.id} enabled`}
+                <Toggle
+                  label={`${runtime.id} enabled`}
                   checked={!off}
                   disabled={busy || controls.llmDisabled}
                   onChange={() => {
                     const next = new Set(controls.disabledRuntimes);
                     if (next.has(runtime.id)) next.delete(runtime.id);
                     else next.add(runtime.id);
-                    void update({ disabledRuntimes: [...next] });
+                    const allDisabled =
+                      runtimes.length > 0 && runtimes.every((entry) => next.has(entry.id));
+                    void update({
+                      disabledRuntimes: [...next],
+                      ...(allDisabled ? { llmDisabled: true } : {}),
+                    });
                   }}
                 />
               </label>
@@ -964,6 +1096,112 @@ function ModelRuntimePanel() {
           })}
         </div>
       )}
+      {note ? <p aria-live="polite">{note}</p> : null}
+    </div>
+  );
+}
+
+function DataProcessingCard({ data, onSaved }: { data: KbDataProcessing; onSaved: () => void }) {
+  const [draft, setDraft] = useState(data);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => setDraft(data), [data]);
+  const update = <K extends keyof KbDataProcessing>(key: K, value: KbDataProcessing[K]) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  const save = async () => {
+    try {
+      const saved = await setupJson<KbDataProcessing>('/api/v1/system/data-processing', {
+        method: 'PUT',
+        body: JSON.stringify(draft),
+      });
+      setDraft(saved);
+      setNote('Saved. New sources use these settings; re-ingest a source to apply them to it.');
+      onSaved();
+    } catch (err) {
+      setNote((err as Error).message);
+    }
+  };
+  return (
+    <div className="cfg-card">
+      <h2>Data processing</h2>
+      <p className="cfg-hint">
+        How new knowledge sources are extracted and chunked. Existing sources keep the method they
+        were ingested with; re-ingest a source to apply a new choice.
+      </p>
+      <div className="cfg-processing-grid">
+        <label className="cfg-field">
+          <span>Chunking strategy</span>
+          <select
+            aria-label="Chunking strategy"
+            value={draft.chunking}
+            onChange={(event) => update('chunking', event.target.value as KbChunkStrategy)}
+          >
+            {CHUNK_STRATEGIES.map((strategy) => (
+              <option key={strategy.id} value={strategy.id}>
+                {strategy.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="cfg-field">
+          <span>PDF extraction</span>
+          <select
+            aria-label="PDF extraction"
+            value={draft.pdfExtraction}
+            onChange={(event) => update('pdfExtraction', event.target.value as KbPdfExtraction)}
+          >
+            {PDF_EXTRACTIONS.map((option) => (
+              <option key={option.id} value={option.id} disabled={!option.available}>
+                {option.available ? option.label : `${option.label} (unavailable)`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="cfg-field">
+          <span>Image extraction</span>
+          <select
+            aria-label="Image extraction"
+            value={draft.imageExtraction}
+            onChange={(event) => update('imageExtraction', event.target.value as KbImageExtraction)}
+          >
+            {IMAGE_EXTRACTIONS.map((option) => (
+              <option key={option.id} value={option.id} disabled={!option.available}>
+                {option.available ? option.label : `${option.label} (unavailable)`}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="cfg-notes">
+        <h3>Chunking strategies</h3>
+        <ul>
+          {CHUNK_STRATEGIES.map((strategy) => (
+            <li key={strategy.id}>
+              <strong>{strategy.label}</strong> {strategy.detail}{' '}
+              <em>Best for: {strategy.bestFor}</em>
+            </li>
+          ))}
+        </ul>
+        <h3>Extraction methods</h3>
+        <ul>
+          {[
+            ...PDF_EXTRACTIONS.map((option) => ({ ...option, section: 'PDF' })),
+            ...IMAGE_EXTRACTIONS.map((option) => ({ ...option, section: 'Image' })),
+          ].map((option) => (
+            <li key={`${option.section}-${option.id}`}>
+              <strong>
+                {option.section}: {option.label}
+              </strong>{' '}
+              {option.detail} <em>Best for: {option.bestFor}</em>
+              {option.available ? null : <span className="cfg-notes__off"> Unavailable here.</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="cfg-actions">
+        <button type="button" className="cfg-button" onClick={() => void save()}>
+          Save data processing
+        </button>
+      </div>
       {note ? <p aria-live="polite">{note}</p> : null}
     </div>
   );
@@ -1170,11 +1408,12 @@ interface SkillSourcesResponse {
   }>;
 }
 
-function SkillsSettingsCard() {
+export function SkillsSettingsCard() {
   const [data, setData] = useState<SkillListResponse | null>(null);
   const [sources, setSources] = useState<SkillSourcesResponse | null>(null);
   const [url, setUrl] = useState('');
   const [note, setNote] = useState<string | null>(null);
+  const [tab, setTab] = useState<'list' | 'add'>('list');
 
   const load = () => {
     setupJson<SkillListResponse>('/api/v1/skills').then(setData, (err: Error) =>
@@ -1193,6 +1432,17 @@ function SkillsSettingsCard() {
     });
     setNote(`${skill.name} is now ${skill.enabled ? 'off' : 'on'}.`);
     await load();
+  };
+
+  const removeSkill = async (skill: UserSkill) => {
+    if (!globalThis.confirm?.(`Delete the skill “${skill.name}”?`)) return;
+    try {
+      await setupJson(`/api/v1/skills/${skill.id}`, { method: 'DELETE' });
+      setNote(`${skill.name} deleted.`);
+      await load();
+    } catch (err) {
+      setNote((err as Error).message);
+    }
   };
 
   const importSkill = async () => {
@@ -1218,60 +1468,94 @@ function SkillsSettingsCard() {
         Content-only instructions shared with chat. Imported GitHub content is untrusted until you
         enable it; nothing is executed.
       </p>
-      <h3>Default sources</h3>
-      <ul className="cfg-list">
-        {sourceList.map((source) => (
-          <li key={source.repo}>
-            {source.name} · {source.repo} · {source.status}
-            {source.pinned.length > 0
-              ? ` · pinned ${source.pinned.map((pin) => `${pin.name} v${pin.version}`).join(', ')}`
-              : ''}
-          </li>
-        ))}
-      </ul>
-      <h3>Installed skills</h3>
-      {skills.length > 0 ? (
-        <div className="cfg-switch-list">
-          {skills.map((skill) => (
-            <label key={skill.id} className="cfg-switch-row">
-              <span className="cfg-switch-row__text">
-                <span className="cfg-switch-row__name">{skill.name}</span>
-                <span className="cfg-switch-row__state">
-                  v{skill.version} · {skill.provenance} · {skill.scope} ·{' '}
-                  {skill.enabled ? 'on' : 'off'}
-                </span>
-              </span>
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label={`${skill.name} enabled`}
-                checked={skill.enabled}
-                onChange={() => void toggle(skill)}
-              />
-            </label>
-          ))}
-        </div>
-      ) : (
-        <p className="cfg-hint">No user skills yet.</p>
-      )}
-      <div className="cfg-inline">
-        <label className="cfg-field">
-          <span>Add from GitHub</span>
-          <input
-            value={url}
-            placeholder="https://github.com/owner/repo/blob/main/SKILL.md"
-            onChange={(event) => setUrl(event.target.value)}
-          />
-        </label>
+      <div className="cfg-tabs" role="tablist" aria-label="Skills sections">
         <button
           type="button"
-          className="cfg-button"
-          disabled={!url.trim()}
-          onClick={() => void importSkill()}
+          role="tab"
+          aria-selected={tab === 'list'}
+          className={tab === 'list' ? 'cfg-tab cfg-tab--active' : 'cfg-tab'}
+          onClick={() => setTab('list')}
         >
-          Import
+          List of skills
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'add'}
+          className={tab === 'add' ? 'cfg-tab cfg-tab--active' : 'cfg-tab'}
+          onClick={() => setTab('add')}
+        >
+          Add skills
         </button>
       </div>
+      {tab === 'list' ? (
+        <section aria-label="List of skills">
+          {skills.length > 0 ? (
+            <div className="cfg-switch-list">
+              {skills.map((skill) => (
+                <div key={skill.id} className="cfg-switch-row">
+                  <span className="cfg-switch-row__text">
+                    <span className="cfg-switch-row__name">{skill.name}</span>
+                    <span className="cfg-switch-row__state">
+                      v{skill.version} · {skill.provenance} · {skill.scope} ·{' '}
+                      {skill.enabled ? 'on' : 'off'}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label={`${skill.name} enabled`}
+                    checked={skill.enabled}
+                    onChange={() => void toggle(skill)}
+                  />
+                  <button
+                    type="button"
+                    className="cfg-button cfg-button--danger"
+                    aria-label={`Delete ${skill.name}`}
+                    onClick={() => void removeSkill(skill)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="cfg-hint">No user skills yet. Add one under “Add skills”.</p>
+          )}
+        </section>
+      ) : (
+        <section aria-label="Add skills">
+          <h3>Default sources</h3>
+          <ul className="cfg-list">
+            {sourceList.map((source) => (
+              <li key={source.repo}>
+                {source.name} · {source.repo} · {source.status}
+                {source.pinned.length > 0
+                  ? ` · pinned ${source.pinned.map((pin) => `${pin.name} v${pin.version}`).join(', ')}`
+                  : ''}
+              </li>
+            ))}
+          </ul>
+          <div className="cfg-inline">
+            <label className="cfg-field">
+              <span>Add from GitHub</span>
+              <input
+                value={url}
+                placeholder="https://github.com/owner/repo/blob/main/SKILL.md"
+                onChange={(event) => setUrl(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="cfg-button"
+              disabled={!url.trim()}
+              onClick={() => void importSkill()}
+            >
+              Import
+            </button>
+          </div>
+        </section>
+      )}
       {note ? <p aria-live="polite">{note}</p> : null}
     </div>
   );

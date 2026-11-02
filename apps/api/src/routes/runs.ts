@@ -10,7 +10,12 @@ import type { FastifyInstance } from 'fastify';
 
 import type { Kernel } from '@triageai/kernel';
 import { notFound } from '@triageai/kernel';
-import { DecisionRecordDtoSchema, RunDtoSchema, StageRunDtoSchema } from '@triageai/contracts';
+import {
+  DecisionRecordDtoSchema,
+  RunDailySummarySchema,
+  RunDtoSchema,
+  StageRunDtoSchema,
+} from '@triageai/contracts';
 
 interface RunRow {
   [key: string]: unknown;
@@ -89,6 +94,62 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
       [query.workflowId ?? null, query.status ?? null, limit],
     )) as unknown as RunRow[];
     return rows.map(toRunDto);
+  });
+
+  app.get('/api/v1/system/runs/daily', async (request) => {
+    const query = request.query as { days?: string };
+    const requested = Number(query.days ?? 14);
+    const days = Number.isFinite(requested) ? Math.min(Math.max(1, requested), 90) : 14;
+    const rows = await kernel.database.query<{
+      date: string;
+      total_runs: number;
+      succeeded: number;
+      failed: number;
+      workflows: string[];
+    }>(
+      `SELECT to_char(created_at::date, 'YYYY-MM-DD') AS date,
+              COUNT(*)::int AS total_runs,
+              COUNT(*) FILTER (WHERE status = 'SUCCEEDED')::int AS succeeded,
+              COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+              array_agg(DISTINCT workflow_id) AS workflows
+         FROM workflow_runs
+        WHERE created_at > now() - ($1 || ' days')::interval
+        GROUP BY 1 ORDER BY 1 DESC`,
+      [days],
+    );
+    const flags = await kernel.database.query<{
+      date: string;
+      sensitive_runs: number;
+      data_touched_runs: number;
+    }>(
+      `SELECT to_char(r.created_at::date, 'YYYY-MM-DD') AS date,
+              COUNT(DISTINCT r.id) FILTER (
+                WHERE d.evidence::text ~* '"(sensitivity|dataClass)"[[:space:]]*:[[:space:]]*"(restricted|secret)"'
+              )::int AS sensitive_runs,
+              COUNT(DISTINCT r.id) FILTER (
+                WHERE d.evidence->>'kind' IN ('tool', 'tool_call', 'data_access')
+                   OR d.evidence ? 'tool'
+                   OR d.evidence ? 'dataClass'
+                   OR d.deterministic ? 'dataClass'
+              )::int AS data_touched_runs
+         FROM workflow_runs r
+         LEFT JOIN decision_records d ON d.run_id = r.id
+        WHERE r.created_at > now() - ($1 || ' days')::interval
+        GROUP BY 1`,
+      [days],
+    );
+    const byDate = new Map(flags.map((row) => [row.date, row]));
+    return RunDailySummarySchema.parse({
+      days: rows.map((row) => ({
+        date: row.date,
+        totalRuns: Number(row.total_runs),
+        workflows: row.workflows ?? [],
+        succeeded: Number(row.succeeded),
+        failed: Number(row.failed),
+        sensitiveRuns: Number(byDate.get(row.date)?.sensitive_runs ?? 0),
+        dataTouchedRuns: Number(byDate.get(row.date)?.data_touched_runs ?? 0),
+      })),
+    });
   });
 
   app.get('/api/v1/system/runs/:id', async (request) => {

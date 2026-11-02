@@ -45,7 +45,12 @@ import { registerSystemTools } from './services/systemTools.js';
 import { readConnections } from './routes/connections.js';
 import { EgressClient } from './services/egress.js';
 import { checkForUpdate } from './services/update.js';
-import { startUptimeProbes, uptimeTargets } from './services/uptime.js';
+import {
+  recordBoot,
+  runUptimeMaintenance,
+  startUptimeProbes,
+  uptimeTargets,
+} from './services/uptime.js';
 import { DbModelRegistry } from './services/modelRegistry.js';
 import { getControls } from './services/controls.js';
 import { PluginStore } from './services/plugins.js';
@@ -441,6 +446,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.decorate('kernel', generation.kernel);
 
     let retentionTimer: NodeJS.Timeout | undefined;
+    let uptimeMaintenanceTimer: NodeJS.Timeout | undefined;
     if (generation.kernel.config.retention?.enabled) {
       retentionTimer = setInterval(
         () => {
@@ -453,6 +459,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         generation.kernel.config.retention.intervalHours * 60 * 60 * 1000,
       );
       retentionTimer.unref();
+    }
+
+    if (config.nodeEnv !== 'test') {
+      await recordBoot(database).catch((err: unknown) =>
+        kernelLogger.warn({ err: (err as Error).message }, 'could not record API boot'),
+      );
+      void runUptimeMaintenance(database).catch((err: unknown) =>
+        kernelLogger.warn({ err: (err as Error).message }, 'uptime maintenance failed'),
+      );
+      uptimeMaintenanceTimer = setInterval(
+        () => {
+          void runUptimeMaintenance(database).catch((err: unknown) =>
+            kernelLogger.warn({ err: (err as Error).message }, 'uptime maintenance failed'),
+          );
+        },
+        24 * 60 * 60 * 1000,
+      );
+      uptimeMaintenanceTimer.unref();
     }
 
     const stopUptimeProbes =
@@ -496,6 +520,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await baseMemory.sync(app.kernel ?? generation.kernel, 'manual');
       return { refreshed: true };
     });
+
+    // The operational snapshot is time-sensitive (ADR-0057); refresh it on the
+    // dashboard interval in addition to config-change debounces.
+    if (config.nodeEnv !== 'test' && runtime.state === 'complete') {
+      baseMemory.startPeriodic(() => app.kernel ?? generation.kernel);
+    }
 
     // Base memory follows config changes. Tests trigger the service explicitly;
     // production boots and successful config writes debounce one sync.
@@ -596,6 +626,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
     app.addHook('onClose', async () => {
       if (retentionTimer) clearInterval(retentionTimer);
+      if (uptimeMaintenanceTimer) clearInterval(uptimeMaintenanceTimer);
+      baseMemory.stopPeriodic();
       stopUptimeProbes();
       clearInterval(approvalTimer);
       await generation.kernel.shutdown();

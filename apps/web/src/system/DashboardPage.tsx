@@ -41,6 +41,30 @@ function BarChart({
   );
 }
 
+export function AgentShareBar({ agents }: { agents: SystemDashboard['agents'] }) {
+  const visible = agents.filter((agent) => agent.runs > 0);
+  const total = visible.reduce((sum, agent) => sum + agent.runs, 0);
+  if (total === 0) return null;
+  return (
+    <figure className="dashboard__share" aria-label="Agent activity share">
+      <div
+        className="dashboard__share-bar"
+        role="img"
+        aria-label={visible.map((agent) => `${agent.displayName}: ${agent.runs} runs`).join(', ')}
+      >
+        {visible.map((agent) => (
+          <span
+            key={agent.id}
+            style={{ background: agent.color, width: `${(agent.runs / total) * 100}%` }}
+            title={`${agent.displayName}: ${agent.runs} runs`}
+          />
+        ))}
+      </div>
+      <figcaption>Runs by agent (last 24 h)</figcaption>
+    </figure>
+  );
+}
+
 function totalUsers(data: SystemDashboard): number {
   const { customer, agent, admin } = data.security.usersByRole;
   return customer + agent + admin;
@@ -723,24 +747,27 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
             {data.agents.length === 0 ? (
               <p className="dashboard__empty">No agents have run yet.</p>
             ) : (
-              <ul className="dashboard__list dashboard__agents" aria-label="Agents">
-                {data.agents.map((agent) => (
-                  <li key={agent.id}>
-                    <span className="dashboard__agent-name">
-                      <span
-                        className="dashboard__agent-dot"
-                        style={{ background: agent.color }}
-                        aria-hidden="true"
-                      />
-                      {agent.displayName}
-                    </span>
-                    <span>
-                      {agent.runs} runs · {agent.tokens.toLocaleString()} tokens · $
-                      {agent.cost.toFixed(4)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <AgentShareBar agents={data.agents} />
+                <ul className="dashboard__list dashboard__agents" aria-label="Agents">
+                  {data.agents.map((agent) => (
+                    <li key={agent.id}>
+                      <span className="dashboard__agent-name">
+                        <span
+                          className="dashboard__agent-dot"
+                          style={{ background: agent.color }}
+                          aria-hidden="true"
+                        />
+                        {agent.displayName}
+                      </span>
+                      <span>
+                        {agent.runs} runs · {agent.tokens.toLocaleString()} tokens · $
+                        {agent.cost.toFixed(4)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
             <button className="dashboard__link" type="button" onClick={() => navigate('/runs')}>
               Open agent runs

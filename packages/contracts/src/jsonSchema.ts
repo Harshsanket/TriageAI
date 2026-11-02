@@ -56,6 +56,8 @@ export function exportJsonSchemas(): Record<string, unknown> {
     KbSourceDto: zodToJsonSchema(kb.KbSourceDtoSchema),
     KbSourceCreateRequest: zodToJsonSchema(kb.KbSourceCreateRequestSchema),
     KbSourceUpdateRequest: zodToJsonSchema(kb.KbSourceUpdateRequestSchema),
+    KbDataProcessing: zodToJsonSchema(kb.KbDataProcessingSchema),
+    KbStorageStats: zodToJsonSchema(kb.KbStorageStatsSchema),
     KbImportRequest: zodToJsonSchema(kb.KbImportRequestSchema),
     KbImportResponse: zodToJsonSchema(kb.KbImportResponseSchema),
     JobDto: zodToJsonSchema(jobs.JobDtoSchema),

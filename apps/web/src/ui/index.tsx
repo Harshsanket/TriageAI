@@ -33,20 +33,25 @@ export function Page({
 
 export function Card({
   title,
+  titleAccessory,
   actions,
   children,
   className,
 }: {
   title?: string;
+  titleAccessory?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
   return (
     <section className={className ? `ui-card ${className}` : 'ui-card'}>
-      {(title || actions) && (
+      {(title || titleAccessory || actions) && (
         <header className="ui-card__header">
-          {title ? <h3 className="ui-card__title">{title}</h3> : null}
+          <div className="ui-card__title-group">
+            {title ? <h3 className="ui-card__title">{title}</h3> : null}
+            {titleAccessory}
+          </div>
           {actions ? <div className="ui-card__actions">{actions}</div> : null}
         </header>
       )}

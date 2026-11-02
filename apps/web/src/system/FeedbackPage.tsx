@@ -25,31 +25,33 @@ function Bars({
   label: string;
   points: Array<{ label: string; values: Record<string, number> }>;
 }) {
-  const max = Math.max(
-    1,
-    ...points.map((point) => Object.values(point.values).reduce((s, v) => s + v, 0)),
+  const totals = points.map((point) =>
+    Object.values(point.values).reduce((sum, value) => sum + value, 0),
   );
+  const max = Math.max(1, ...totals);
+  const shown = points.slice(-14);
   return (
-    <figure className="dashboard__chart" aria-label={label}>
-      <figcaption className="visually-hidden">{label}</figcaption>
-      {points.length === 0 ? (
+    <figure className="feedback-chart" aria-label={label}>
+      <figcaption>{label}</figcaption>
+      {shown.length === 0 ? (
         <p className="dashboard__empty">No data yet.</p>
       ) : (
         <ul>
-          {points.slice(-14).map((point) => {
-            const total = Object.values(point.values).reduce((sum, value) => sum + value, 0);
+          {shown.map((point, index) => {
+            const total = totals[points.length - shown.length + index] ?? 0;
             return (
               <li key={point.label}>
-                <span className="dashboard__chart-bar" aria-hidden="true">
-                  <span style={{ height: `${Math.max(4, (total / max) * 100)}%` }} />
+                <span className="feedback-chart__label">{point.label}</span>
+                <span className="feedback-chart__bar" aria-hidden="true">
+                  <span style={{ width: `${Math.max(4, (total / max) * 100)}%` }} />
                 </span>
-                <span className="dashboard__chart-label">{point.label}</span>
-                <span className="dashboard__chart-value">{total}</span>
+                <span className="feedback-chart__value">{total}</span>
               </li>
             );
           })}
         </ul>
       )}
+      <p className="feedback-chart__range">Last 14 days · peak {max}</p>
     </figure>
   );
 }
@@ -114,38 +116,68 @@ export default function FeedbackPage() {
         <p role="alert">{typeof error === 'string' ? error : error.envelope.userMessage}</p>
       )}
       {note ? <p aria-live="polite">{note}</p> : null}
-      <div className="dashboard__controls">
-        <label>
-          Source{' '}
-          <select
-            aria-label="Feedback source"
-            value={source}
-            onChange={(event) => setSource(event.target.value)}
-          >
-            <option value="">All sources</option>
+      {insights ? (
+        <section className="feedback-sources" aria-labelledby="feedback-sources-title">
+          <div className="feedback-sources__head">
+            <div>
+              <h3 id="feedback-sources-title">Sources and status</h3>
+              <p className="kb-muted">
+                {insights.items.length} item{insights.items.length === 1 ? '' : 's'} in this view
+                {sources.length > 0
+                  ? ` · ${sources.length} source${sources.length === 1 ? '' : 's'}`
+                  : ''}
+              </p>
+            </div>
+            <div className="feedback-sources__filters">
+              <label>
+                Source{' '}
+                <select
+                  aria-label="Feedback source"
+                  value={source}
+                  onChange={(event) => setSource(event.target.value)}
+                >
+                  <option value="">All sources</option>
+                  {sources.map((entry) => (
+                    <option key={entry} value={entry}>
+                      {entry}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Status{' '}
+                <select
+                  aria-label="Feedback status"
+                  value={status}
+                  onChange={(event) => setStatus(event.target.value)}
+                >
+                  <option value="">All statuses</option>
+                  {['proposed', 'approved', 'rejected'].map((entry) => (
+                    <option key={entry} value={entry}>
+                      {entry}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+          <ul className="feedback-source-chips" aria-label="Feedback sources">
+            {['proposed', 'approved', 'rejected'].map((state) => {
+              const count = insights.items.filter((item) => item.status === state).length;
+              return (
+                <li key={state} className={`feedback-pill feedback-pill--${state}`}>
+                  {state}: {count}
+                </li>
+              );
+            })}
             {sources.map((entry) => (
-              <option key={entry} value={entry}>
-                {entry}
-              </option>
+              <li key={entry} className="feedback-pill">
+                {entry}: {insights.items.filter((item) => item.source === entry).length}
+              </li>
             ))}
-          </select>
-        </label>
-        <label>
-          Status{' '}
-          <select
-            aria-label="Feedback status"
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="">All statuses</option>
-            {['proposed', 'approved', 'rejected'].map((entry) => (
-              <option key={entry} value={entry}>
-                {entry}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+          </ul>
+        </section>
+      ) : null}
 
       {insights && (
         <>
@@ -224,18 +256,26 @@ export default function FeedbackPage() {
               <ul className="feedback-items">
                 {insights.items.map((item) => (
                   <li key={item.id} className="feedback-item">
-                    <header>
-                      <strong>{item.source}</strong> · {item.status} · {item.rating}
-                      {item.reason ? ` · ${item.reason}` : ''}
-                      {item.module ? ` · ${item.module}` : ''}
-                      {item.agent ? ` · ${item.agent}` : ''}
-                      {item.model ? ` · ${item.model}` : ''}
+                    <header className="feedback-item__head">
+                      <div className="feedback-item__pills">
+                        <span className="feedback-pill feedback-pill--source">{item.source}</span>
+                        <span className={`feedback-pill feedback-pill--${item.status}`}>
+                          {item.status}
+                        </span>
+                        <span className="feedback-pill">{item.rating}</span>
+                        {item.reason ? <span className="feedback-pill">{item.reason}</span> : null}
+                      </div>
+                      <span className="feedback-item__meta">
+                        {[item.module, item.agent, item.model].filter(Boolean).join(' · ')}
+                      </span>
                     </header>
-                    <p>{item.text}</p>
-                    {item.answer ? <p className="kb-muted">Answer: {item.answer}</p> : null}
-                    {item.citations.length > 0 ? (
-                      <p className="kb-muted">Sources: {item.citations.join(', ')}</p>
-                    ) : null}
+                    <div className="feedback-item__content">
+                      <p>{item.text}</p>
+                      {item.answer ? <p className="kb-muted">Answer: {item.answer}</p> : null}
+                      {item.citations.length > 0 ? (
+                        <p className="kb-muted">Sources: {item.citations.join(', ')}</p>
+                      ) : null}
+                    </div>
                     <ol className="feedback-timeline" aria-label="Processing timeline">
                       {item.timeline.map((step) => (
                         <li
@@ -244,7 +284,6 @@ export default function FeedbackPage() {
                         >
                           <strong>{STEP_LABEL[step.step]}</strong> · {step.detail ?? ''} ·{' '}
                           {new Date(step.at).toLocaleString()}
-                          {step.href ? <a href={step.href}> open</a> : null}
                         </li>
                       ))}
                     </ol>

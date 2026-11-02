@@ -133,6 +133,11 @@ export default function HomePage({
     setConversationId(paramConversationId);
   }, [paramConversationId]);
 
+  // The history sidebar and skills drawer are mutually exclusive surfaces.
+  useEffect(() => {
+    if (sidebarOpen) setSkillsOpen(false);
+  }, [sidebarOpen]);
+
   const openConversation = (id: string | null) => {
     setConversationId(id);
     navigate(id ? `/?c=${encodeURIComponent(id)}` : '/', { replace: true });
@@ -256,23 +261,25 @@ export default function HomePage({
           <PanelLeftIcon />
         </button>
       ) : null}
-      <button
-        className="home__skills-toggle"
-        type="button"
-        aria-label="Open skills"
-        title="Skills"
-        aria-expanded={skillsOpen}
-        onClick={() => setSkillsOpen(true)}
-      >
-        <span aria-hidden="true">✦</span>
-      </button>
+      {sidebarOpen ? null : (
+        <button
+          className="home__skills-toggle"
+          type="button"
+          aria-label="Open skills"
+          title="Skills"
+          aria-expanded={skillsOpen}
+          onClick={() => setSkillsOpen(true)}
+        >
+          <span aria-hidden="true">✦</span>
+        </button>
+      )}
     </>
   ) : null;
 
   if (chatEnabled && conversationId) {
     return (
       <main className={`home home--conversation${sidebarOpen ? ' home--with-sidebar' : ''}`}>
-        {sidebarToggle}
+        {skillsOpen ? null : sidebarToggle}
         {skillsOpen ? <SkillsDrawer onClose={() => setSkillsOpen(false)} /> : null}
         <section className="home__conversation" aria-label="Conversation">
           <ChatApp
@@ -289,7 +296,7 @@ export default function HomePage({
 
   return (
     <main className={`home${sidebarOpen ? ' home--drawer' : ''}`}>
-      {sidebarToggle}
+      {skillsOpen ? null : sidebarToggle}
       {skillsOpen ? <SkillsDrawer onClose={() => setSkillsOpen(false)} /> : null}
       {chatEnabled && sidebarOpen ? (
         <div className="home__drawer" role="dialog" aria-label="Conversation history">

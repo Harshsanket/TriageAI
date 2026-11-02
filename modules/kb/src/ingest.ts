@@ -7,12 +7,14 @@ import { createHash } from 'node:crypto';
 
 import { ulid } from 'ulid';
 
-import { KbDocumentDtoSchema } from '@triageai/contracts';
+import { KbDataProcessingSchema, KbDocumentDtoSchema } from '@triageai/contracts';
+import type { KbDataProcessing } from '@triageai/contracts';
 import type { KernelContext, StageHandlerContext } from '@triageai/kernel';
 import { AppError, internal } from '@triageai/kernel';
-import { chunkDocument, extractText, type DocumentChunk } from '@triageai/rag';
+import { chunkByPreset, extractText, type DocumentChunk } from '@triageai/rag';
 
 export const CHUNK_PRESET = 'structure-700';
+export const DATA_PROCESSING_KEY = 'dataProcessing';
 const BATCH = 32;
 const WAIT_MS = 30_000;
 
@@ -27,10 +29,13 @@ export interface SourceRow {
   content_hash: string;
   embedding_model: string;
   chunk_preset: string;
+  extraction_method: string;
   sensitivity: 'public' | 'internal' | 'restricted' | 'secret';
   audience: 'public' | 'operator';
   managed_key: string | null;
   read_only: boolean;
+  model_use: 'send' | 'redact' | 'withhold';
+  retention_days: number | null;
   enabled: boolean;
   status: 'pending' | 'ready' | 'partial' | 'failed';
   item_count: number;
@@ -48,7 +53,6 @@ export interface DocumentRow {
   title: string;
   body: string;
   source: string;
-  approved: boolean;
   version: number;
   sha256: string | null;
   source_id: string | null;
@@ -83,7 +87,6 @@ export interface SourceCreateInput {
   audience?: SourceRow['audience'];
   managedKey?: string | null;
   readOnly?: boolean;
-  approved?: boolean;
   body?: string;
   bytes?: Uint8Array;
   contentHash?: string;
@@ -107,12 +110,49 @@ export function embeddingKey(ctx: KernelContext): string {
   return ctx.env.EMBEDDING_MODEL ?? ctx.env.AI_EMBEDDING_MODEL ?? 'default';
 }
 
+export async function readDataProcessing(ctx: KernelContext): Promise<KbDataProcessing> {
+  const stored = await ctx.settings.get<unknown>(DATA_PROCESSING_KEY).catch(() => null);
+  const parsed = KbDataProcessingSchema.safeParse(stored ?? {});
+  return parsed.success ? parsed.data : KbDataProcessingSchema.parse({});
+}
+
+export function extractionMethodFor(
+  mediaType: string | null | undefined,
+  kind: string,
+  processing: KbDataProcessing,
+): string {
+  const type = (mediaType ?? '').toLowerCase();
+  if (type === 'application/pdf') return processing.pdfExtraction;
+  if (type.startsWith('image/')) return processing.imageExtraction;
+  return baseExtraction(mediaType, kind);
+}
+
+function baseExtraction(mediaType: string | null | undefined, kind: string): string {
+  const type = (mediaType ?? '').toLowerCase();
+  if (type === 'application/pdf') return 'text-layer';
+  if (type.startsWith('image/')) return 'skip';
+  if (type.includes('wordprocessingml')) return 'docx-xml';
+  if (type.includes('spreadsheetml')) return 'xlsx-xml';
+  if (type === 'text/html') return 'html-text';
+  if (type.startsWith('text/') || type === 'application/json') return 'direct';
+  if (kind === 'note' || kind === 'url' || kind === 'github') return 'direct';
+  return 'best-effort';
+}
+
+/** Where each source lives: metadata/text in Postgres, embeddings in pgvector,
+ * original bytes in the blob store when one was captured. */
+export function storageForSource(row: SourceRow): string[] {
+  const labels = ['PostgreSQL'];
+  if (row.blob_ref) labels.push('Blob store');
+  if (row.status === 'ready' || row.status === 'partial') labels.push('pgvector');
+  return labels;
+}
+
 export function documentDto(row: DocumentRow) {
   return KbDocumentDtoSchema.parse({
     id: row.id,
     title: row.title,
     source: row.source,
-    approved: row.approved,
     version: row.version,
     sha256: row.sha256,
     sourceId: row.source_id,
@@ -140,6 +180,14 @@ export function toSourceDto(row: SourceRow) {
     audience: row.audience ?? 'public',
     managedKey: row.managed_key ?? null,
     readOnly: Boolean(row.read_only),
+    chunkPreset: row.chunk_preset ?? CHUNK_PRESET,
+    extraction:
+      row.extraction_method && row.extraction_method !== 'text-layer'
+        ? row.extraction_method
+        : baseExtraction(row.media_type, row.kind),
+    storage: storageForSource(row),
+    modelUse: row.model_use ?? 'redact',
+    retentionDays: row.retention_days == null ? null : Number(row.retention_days),
     lastSyncAt: row.last_sync_at ? new Date(row.last_sync_at).toISOString() : null,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -151,13 +199,16 @@ export async function createSource(
   input: SourceCreateInput,
 ): Promise<{ source: SourceRow; document: DocumentRow; deduped: boolean }> {
   const model = embeddingKey(ctx);
+  const processing = await readDataProcessing(ctx);
+  const chunkPreset = processing.chunking;
+  const extractionMethod = extractionMethodFor(input.mediaType, input.kind, processing);
   const body = input.body === undefined ? '' : normalizeText(input.body);
   const bytes = input.bytes;
   const contentHash =
     input.contentHash ??
     (bytes ? hashBytes(bytes) : hashText(body || `${input.kind}:${input.title}`));
 
-  const existing = await findDuplicate(ctx, contentHash, model);
+  const existing = await findDuplicate(ctx, contentHash, model, chunkPreset);
   if (existing) return { ...existing, deduped: true };
 
   let blobRef: string | null = null;
@@ -185,9 +236,9 @@ export async function createSource(
     await ctx.database.query(
       `INSERT INTO kb_sources
          (id, title, kind, label, uri, media_type, content_hash, embedding_model, chunk_preset,
-          sensitivity, audience, managed_key, read_only, status, item_count, size_bytes, blob_ref,
-          owner_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14,$15,$16,$17)`,
+          extraction_method, sensitivity, audience, managed_key, read_only, status, item_count,
+          size_bytes, blob_ref, owner_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15,$16,$17,$18)`,
       [
         sourceId,
         input.title,
@@ -197,7 +248,8 @@ export async function createSource(
         input.mediaType ?? null,
         contentHash,
         model,
-        CHUNK_PRESET,
+        chunkPreset,
+        extractionMethod,
         input.sensitivity ?? 'internal',
         input.audience ?? 'public',
         input.managedKey ?? null,
@@ -210,14 +262,13 @@ export async function createSource(
     );
     await ctx.database.query(
       `INSERT INTO kb_documents
-         (id, title, body, source, approved, source_id, label, media_type, owner_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (id, title, body, source, source_id, label, media_type, owner_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         documentId,
         input.title,
         body,
         input.kind,
-        true,
         sourceId,
         input.label ?? input.kind,
         input.mediaType ?? null,
@@ -226,7 +277,7 @@ export async function createSource(
     );
   } catch (err) {
     if ((err as { code?: string }).code === '23505') {
-      const raced = await findDuplicate(ctx, contentHash, model);
+      const raced = await findDuplicate(ctx, contentHash, model, chunkPreset);
       if (raced) return { ...raced, deduped: true };
       // The source still exists but its document was deleted; reuse it instead
       // of failing the unique dedupe index.
@@ -235,21 +286,20 @@ export async function createSource(
           WHERE content_hash = $1 AND embedding_model = $2 AND chunk_preset = $3
             AND status IN ('pending','ready','partial')
           LIMIT 1`,
-        [contentHash, model, CHUNK_PRESET],
+        [contentHash, model, chunkPreset],
       );
       const orphan = sources[0];
       if (orphan) {
         const documentId = ulid();
         await ctx.database.query(
           `INSERT INTO kb_documents
-             (id, title, body, source, approved, source_id, label, media_type, owner_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+             (id, title, body, source, source_id, label, media_type, owner_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [
             documentId,
             input.title,
             body,
             input.kind,
-            true,
             orphan.id,
             input.label ?? input.kind,
             input.mediaType ?? null,
@@ -274,6 +324,7 @@ async function findDuplicate(
   ctx: KernelContext,
   contentHash: string,
   model: string,
+  chunkPreset: string,
 ): Promise<{ source: SourceRow; document: DocumentRow; deduped: boolean } | null> {
   const rows = await ctx.database.query<SourceRow & { document_id: string }>(
     `SELECT s.*, d.id AS document_id
@@ -281,7 +332,7 @@ async function findDuplicate(
       WHERE s.content_hash = $1 AND s.embedding_model = $2 AND s.chunk_preset = $3
         AND s.status IN ('pending','ready','partial')
       LIMIT 1`,
-    [contentHash, model, CHUNK_PRESET],
+    [contentHash, model, chunkPreset],
   );
   const source = rows[0];
   if (!source) return null;
@@ -303,23 +354,6 @@ export async function loadDocument(
     id,
   ]);
   return rows[0];
-}
-
-export async function setApproved(
-  ctx: KernelContext,
-  documentId: string,
-  approved: boolean,
-): Promise<void> {
-  const document = await loadDocument(ctx, documentId);
-  if (!document) return;
-  await ctx.database.query(
-    `UPDATE kb_documents SET approved = $2, updated_at = now() WHERE id = $1`,
-    [documentId, approved],
-  );
-  const vectorStore = ctx.capabilities.vectorStore;
-  const collection = ctx.moduleOptions.collection as string;
-  await vectorStore?.updateMetadata?.(collection, documentId, { approved });
-  ctx.capabilities.retriever?.invalidate?.();
 }
 
 export interface IngestSummary {
@@ -430,21 +464,38 @@ export function registerIngestWorkflow(ctx: KernelContext, collection: string): 
           );
           const document = documentRows[0];
           if (!document) throw internal('document row missing');
+          const mediaType = (source.media_type ?? '').toLowerCase();
           let text = document.body;
+          if (mediaType.startsWith('image/')) {
+            if (source.extraction_method === 'skip') {
+              throw internal('image extraction is off for this source');
+            }
+            if (source.extraction_method === 'metadata') text = `[Image: ${source.title}]`;
+          }
           if (!text.trim() && source.blob_ref) {
             const blobStore = ctx.capabilities.blobStore;
             if (!blobStore) throw internal('blob store unavailable');
             const bytes = await blobStore.get(source.blob_ref);
             const extracted = extractText(bytes, source.media_type ?? 'text/plain');
             text = extracted.text;
-            if (!text.trim()) throw internal('no text layer found');
+            if (!text.trim()) {
+              if (source.extraction_method === 'ocr') {
+                throw internal(
+                  'OCR extraction is not available in this build; install the optional AI service OCR adapter',
+                );
+              }
+              if (mediaType === 'application/pdf') {
+                throw internal('PDF has no text layer; upload a text-based PDF or enable OCR');
+              }
+              throw internal('no text layer found');
+            }
             await ctx.database.query(`UPDATE kb_documents SET body = $2 WHERE id = $1`, [
               document.id,
               text,
             ]);
           }
           if (!text.trim()) throw internal('source has no extractable text');
-          const chunks = chunkDocument(text);
+          const chunks = chunkByPreset(text, source.chunk_preset);
           await ctx.database.query(
             `INSERT INTO kb_ingest_items
                (id, run_id, source_id, document_id, position, text, chunks, chunk_count, status)
@@ -531,9 +582,9 @@ export function registerIngestWorkflow(ctx: KernelContext, collection: string): 
                   title: document.title,
                   source: document.source,
                   label: source.label,
-                  approved: document.approved,
                   sensitivity: source.sensitivity,
                   audience: source.audience ?? 'public',
+                  modelUse: source.model_use ?? 'redact',
                   managedKey: source.managed_key ?? null,
                   readOnly: Boolean(source.read_only),
                   version,

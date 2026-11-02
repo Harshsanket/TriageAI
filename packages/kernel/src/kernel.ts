@@ -6,7 +6,7 @@
 import { ModuleInfoSchema, SystemManifestSchema } from '@triageai/contracts';
 import type { ModuleInfo, SystemManifest } from '@triageai/contracts';
 
-import { appendAudit, createCoreContextApis } from './coreApis.js';
+import { appendAudit, createCoreContextApis, createKnowledgeReadApi } from './coreApis.js';
 import { AppError, bootValidationError, configInvalid } from './errors.js';
 import {
   diffPermissions,
@@ -691,6 +691,19 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       }
       const target = options.modules[id];
       if (!target) throw new AppError('kernel.NOT_FOUND', `module "${id}" not known`);
+      if (target.lifecycle.onUninstall) {
+        const storage = await provisionModuleStorage(database, target);
+        const rawOptions = (config.modules[id]?.options ?? {}) as Record<string, unknown>;
+        const parsedOptions = target.configSchema?.safeParse(rawOptions);
+        await target.lifecycle.onUninstall({
+          database: storage?.database ?? database,
+          options: parsedOptions?.success
+            ? (parsedOptions.data as Record<string, unknown>)
+            : rawOptions,
+          capabilities,
+          knowledge: createKnowledgeReadApi(database),
+        });
+      }
       const schemaDrops = await dropModuleStorage(database, target);
       const dropped = await runner.uninstall(id, target.migrations ?? []);
       return { dropped: [...schemaDrops, ...dropped] };

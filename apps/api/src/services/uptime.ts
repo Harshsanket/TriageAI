@@ -131,3 +131,89 @@ export function startUptimeProbes(
     clearInterval(timer);
   };
 }
+
+/**
+ * Records one API boot. The dashboard derives "restarts in the window" from
+ * these rows; the current process is part of the count, so the display
+ * subtracts it.
+ */
+export async function recordBoot(database: Database, at = new Date()): Promise<void> {
+  await database.query(`INSERT INTO app_boots (at) VALUES ($1)`, [at]);
+}
+
+export async function countRestarts(database: Database, since: Date): Promise<number> {
+  const rows = await database
+    .query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM app_boots WHERE at > $1`, [since])
+    .catch(() => []);
+  return Math.max(0, Number(rows[0]?.count ?? 0) - 1);
+}
+
+/**
+ * Downsampling (Phase 23.2): raw minute probes stay for 30 days, then each
+ * target/hour keeps one aggregate row. Re-running the pass is idempotent.
+ */
+export async function downsampleUptimeProbes(
+  database: Database,
+  olderThanDays = 30,
+  now = new Date(),
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - olderThanDays * 24 * 60 * 60 * 1000);
+  const existing = await database
+    .query<{ min_bucket: Date | string | null }>(
+      `SELECT date_trunc('hour', MIN(at)) AS min_bucket
+         FROM uptime_probes WHERE downsampled = false AND at < $1`,
+      [cutoff],
+    )
+    .catch(() => []);
+  const minBucket = existing[0]?.min_bucket ? new Date(existing[0].min_bucket) : null;
+  if (!minBucket) return 0;
+
+  await database.query(
+    `DELETE FROM uptime_probes
+      WHERE downsampled = true AND at >= $1 AND at < $2`,
+    [minBucket, cutoff],
+  );
+  const inserted = await database.query<{ count: number }>(
+    `WITH aggregated AS (
+       INSERT INTO uptime_probes (target, at, ok, latency_ms, downsampled)
+       SELECT target,
+              date_trunc('hour', at) AS bucket,
+              bool_and(ok) AS ok,
+              GREATEST(0, ROUND(AVG(latency_ms)))::int AS latency_ms,
+              true
+         FROM uptime_probes
+        WHERE downsampled = false AND at < $1
+        GROUP BY target, bucket
+       RETURNING 1
+     )
+     SELECT COUNT(*)::int AS count FROM aggregated`,
+    [cutoff],
+  );
+  await database.query(`DELETE FROM uptime_probes WHERE downsampled = false AND at < $1`, [cutoff]);
+  return Number(inserted[0]?.count ?? 0);
+}
+
+/** Retention (Phase 18.8): probes older than the class retention are deleted. */
+export async function pruneUptimeProbes(
+  database: Database,
+  olderThanDays = 400,
+  now = new Date(),
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - olderThanDays * 24 * 60 * 60 * 1000);
+  const rows = await database.query<{ count: number }>(
+    `WITH deleted AS (DELETE FROM uptime_probes WHERE at < $1 RETURNING 1)
+     SELECT COUNT(*)::int AS count FROM deleted`,
+    [cutoff],
+  );
+  return Number(rows[0]?.count ?? 0);
+}
+
+/** Maintenance pass: downsample old raw probes, then prune the retention tail. */
+export async function runUptimeMaintenance(
+  database: Database,
+  now = new Date(),
+): Promise<{ downsampled: number; pruned: number }> {
+  const downsampled = await downsampleUptimeProbes(database, 30, now);
+  const pruned = await pruneUptimeProbes(database, 400, now);
+  return { downsampled, pruned };
+}

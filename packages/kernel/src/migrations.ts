@@ -653,4 +653,39 @@ export const CORE_MIGRATIONS: Migration[] = [
     `,
     dropSql: 'DROP TABLE IF EXISTS user_skills;',
   },
+  {
+    id: '0027-uptime-downsample-boots',
+    sql: `
+      ALTER TABLE uptime_probes
+        ADD COLUMN IF NOT EXISTS downsampled BOOLEAN NOT NULL DEFAULT false;
+      CREATE TABLE IF NOT EXISTS app_boots (
+        id BIGSERIAL PRIMARY KEY,
+        at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS app_boots_at ON app_boots (at DESC);
+    `,
+    dropSql: 'DROP TABLE IF EXISTS app_boots;',
+  },
+  {
+    id: '0028-workflow-run-notify',
+    sql: `
+      CREATE OR REPLACE FUNCTION triageai_notify_workflow_runs() RETURNS trigger AS $$
+      BEGIN
+        PERFORM pg_notify(
+          'triageai_events',
+          json_build_object(
+            'table', 'workflow_runs',
+            'id', COALESCE(NEW.id, OLD.id),
+            'op', TG_OP
+          )::text
+        );
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS workflow_runs_notify ON workflow_runs;
+      CREATE TRIGGER workflow_runs_notify
+        AFTER INSERT OR UPDATE OF status ON workflow_runs
+        FOR EACH ROW EXECUTE FUNCTION triageai_notify_workflow_runs();
+    `,
+  },
 ];

@@ -228,6 +228,7 @@ export function buildSystemStatusDocument(snapshot: {
 
 export class BaseMemoryService {
   private timer: NodeJS.Timeout | null = null;
+  private statusTimer: NodeJS.Timeout | null = null;
   private pending: Promise<void> | null = null;
 
   constructor(
@@ -242,6 +243,45 @@ export class BaseMemoryService {
       void this.sync(kernel, reason);
     }, 400);
     this.timer.unref();
+  }
+
+  /**
+   * ADR-0057: the operational `system-status` source is a snapshot, so refresh
+   * it on the dashboard interval (default 5 min) rather than only on boot or a
+   * config change. The timer is unref'd so it cannot hold the process open.
+   */
+  startPeriodic(getKernel: () => Kernel, intervalMs = 5 * 60_000): void {
+    this.stopPeriodic();
+    this.statusTimer = setInterval(() => {
+      void this.refreshStatus(getKernel()).catch((err: unknown) =>
+        this.logger.warn({ err: (err as Error).message }, 'operational memory refresh failed'),
+      );
+    }, intervalMs);
+    this.statusTimer.unref();
+  }
+
+  stopPeriodic(): void {
+    if (this.statusTimer) clearInterval(this.statusTimer);
+    this.statusTimer = null;
+  }
+
+  async refreshStatus(kernel: Kernel): Promise<void> {
+    if (!kernel.modules.includes('kb')) return;
+    const route = kernel
+      .routes()
+      .find((entry) => entry.method === 'POST' && entry.url === '/api/v1/kb/managed');
+    if (!route) return;
+    const connections = await readConnections(kernel, this.runtime).catch(() => ({
+      connections: [],
+      secrets: [],
+    }));
+    const connectionFacts: ConnectedApiFact[] = connections.connections.map((connection) => ({
+      name: connection.name,
+      type: connection.type,
+      status: connection.status,
+      ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+    }));
+    await this.syncStatus(kernel, route, connectionFacts);
   }
 
   async sync(kernel: Kernel, reason: string): Promise<void> {

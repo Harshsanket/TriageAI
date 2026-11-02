@@ -2,6 +2,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
+import { KbDataProcessingSchema } from '@triageai/contracts';
 import type { DataClass, Kernel, ModelUse, Sensitivity } from '@triageai/kernel';
 
 import { DEFAULT_DATA_CLASSES, invalid } from '@triageai/kernel';
@@ -9,11 +10,12 @@ import { DEFAULT_DATA_CLASSES, invalid } from '@triageai/kernel';
 import { config } from '../platform/config.js';
 import { writeAudit } from '../services/audit.js';
 import { readModelRuntimes } from '../services/modelRuntimes.js';
-import { getControls, setControls } from '../services/controls.js';
+import { getControls, resolveLlmSwitch, setControls } from '../services/controls.js';
 import { redactValue } from '../platform/redact.js';
 import type { SetupRuntime } from '../setup/boot.js';
 
 const DATA_POLICY_KEY = 'dataPolicy';
+const DATA_PROCESSING_KEY = 'dataProcessing';
 const MODEL_USE_RANK: Record<ModelUse, number> = {
   never: 0,
   local_only: 1,
@@ -74,6 +76,14 @@ async function readDataPolicy(kernel: Kernel): Promise<StoredDataPolicy> {
         activePreset: stored.activePreset ?? null,
       }
     : { version: 0, overrides: {}, presets: {}, activePreset: null };
+}
+
+async function readDataProcessing(kernel: Kernel) {
+  const rows = await kernel.database
+    .query<{ value: unknown }>(`SELECT value FROM settings WHERE key = $1`, [DATA_PROCESSING_KEY])
+    .catch(() => []);
+  const parsed = KbDataProcessingSchema.safeParse(rows[0]?.value ?? {});
+  return parsed.success ? parsed.data : KbDataProcessingSchema.parse({});
 }
 
 function validateOverride(cls: DataClass, override: DataClassOverride): string | null {
@@ -160,6 +170,24 @@ export function registerSystemRoutes(
       action: 'dashboard.settings_update',
       subject: 'dashboard.settings',
       payload: { refreshMs: body.refreshMs },
+    });
+    return body;
+  });
+
+  app.get('/api/v1/system/data-processing', async () => readDataProcessing(kernel));
+
+  app.put('/api/v1/system/data-processing', async (request) => {
+    const body = KbDataProcessingSchema.parse(request.body ?? {});
+    await kernel.database.query(
+      `INSERT INTO settings (key, value, updated_by, updated_at) VALUES ($1, $2, $3, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [DATA_PROCESSING_KEY, body, request.principal?.email ?? 'system'],
+    );
+    await writeAudit(kernel.database, {
+      actor: request.principal?.email ?? null,
+      action: 'data_processing.update',
+      subject: DATA_PROCESSING_KEY,
+      payload: body,
     });
     return body;
   });
@@ -251,7 +279,12 @@ export function registerSystemRoutes(
     ) {
       throw invalid('disabledRuntimes must be a list of runtime ids');
     }
-    const next = await setControls(kernel.database, body ?? {}, request.principal?.email ?? null);
+    const runtimes = body.disabledRuntimes !== undefined ? await readModelRuntimes(kernel) : [];
+    const patch = resolveLlmSwitch(
+      body ?? {},
+      runtimes.map((runtime) => runtime.id),
+    );
+    const next = await setControls(kernel.database, patch, request.principal?.email ?? null);
     kernel.tools.setReadOnly(next.readOnly);
     return next;
   });

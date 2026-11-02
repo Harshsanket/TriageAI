@@ -469,6 +469,17 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     modelUse: 'never',
   }),
 
+  app_boots: cls({
+    id: 'app_boots',
+    description: 'API process boot records used for restart counts',
+    owner: 'kernel',
+    retention: { mode: 'days', days: 400, legalHoldable: false, personalData: false },
+    retrieval: { methods: ['range'], contextFields: ['at'], defaultLimit: 500 },
+    sensitivity: 'internal',
+    modelUse: 'never',
+    trust: 'trusted',
+  }),
+
   outbox_events: cls({
     id: 'outbox_events',
     description: 'Transactional outbox events',

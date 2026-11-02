@@ -204,6 +204,8 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | PUT | `/api/v1/system/dashboard-settings` | admin |
 | GET | `/api/v1/system/data-policy` | admin |
 | PUT | `/api/v1/system/data-policy` | admin |
+| GET | `/api/v1/system/data-processing` | admin |
+| PUT | `/api/v1/system/data-processing` | admin |
 | GET | `/api/v1/system/deadletters` | admin |
 | DELETE | `/api/v1/system/deadletters/:id` | admin |
 | POST | `/api/v1/system/deadletters/:id/replay` | admin |
@@ -224,6 +226,7 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | GET | `/api/v1/system/runs/:id` | agent, admin |
 | POST | `/api/v1/system/runs/:id/cancel` | agent, admin |
 | GET | `/api/v1/system/runs/:id/graph` | agent, admin |
+| GET | `/api/v1/system/runs/daily` | agent, admin |
 | GET | `/api/v1/system/storage` | admin |
 | GET | `/api/v1/system/update` | admin |
 | POST | `/api/v1/system/update/apply` | admin |

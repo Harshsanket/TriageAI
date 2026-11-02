@@ -746,6 +746,13 @@ export interface TriageModule {
     onDisable?(): Promise<void>;
     onStart?(): Promise<void>;
     onStop?(): Promise<void>;
+    /** Runs before module tables are dropped on explicit uninstall. */
+    onUninstall?(input: {
+      database: Database;
+      options: Record<string, unknown>;
+      capabilities: Capabilities;
+      knowledge: { deleteCollection(collection: string): Promise<void> };
+    }): Promise<void>;
     health?(): Promise<HealthDetail>;
   };
 
@@ -765,6 +772,8 @@ export interface Database {
     params?: unknown[],
   ): Promise<Array<T>>;
   transaction<T>(fn: (tx: TxDatabase) => Promise<T>): Promise<T>;
+  /** Optional LISTEN/NOTIFY seam (Postgres); absent adapters fall back to polling. */
+  listen?(channel: string, onNotify: (payload: string) => void): Promise<() => Promise<void>>;
 }
 
 export type TxDatabase = Pick<Database, 'query'>;

@@ -411,6 +411,7 @@ export const aiPipelineModule: TriageModule = {
               text: chunk.text,
               score: Number(chunk.score.toFixed(4)),
               documentId: chunk.documentId,
+              modelUse: (chunk.metadata.modelUse as string | undefined) ?? 'send',
             })),
             gate: result.gate,
             sufficient: result.gate.sufficient,
@@ -446,7 +447,12 @@ export const aiPipelineModule: TriageModule = {
         if (!chatModel && !generator) throw internal('generator capability is not configured');
         const input = stage.input as {
           question?: string;
-          chunks?: Array<{ ref?: string; text?: string; score?: number }>;
+          chunks?: Array<{
+            ref?: string;
+            text?: string;
+            score?: number;
+            modelUse?: 'send' | 'redact' | 'withhold';
+          }>;
           style?: 'assistant' | 'docs';
           maxTokens?: number;
           task?: string;
@@ -470,7 +476,13 @@ export const aiPipelineModule: TriageModule = {
             ref: chunk.ref as string,
             text: chunk.text as string,
             score: chunk.score,
+            modelUse: chunk.modelUse ?? 'send',
           }));
+        const sourceModelUse = chunks.some((chunk) => chunk.modelUse === 'withhold')
+          ? 'never'
+          : chunks.some((chunk) => chunk.modelUse === 'redact')
+            ? 'redacted'
+            : 'allowed';
         const activeModel = await ctx.capabilities.modelRegistry?.active('generator');
         const mode = input.mode ?? 'grounded';
         const prompt = buildRagPrompt({
@@ -515,7 +527,7 @@ export const aiPipelineModule: TriageModule = {
         const gate = classifySend({
           sensitivity,
           hosted,
-          modelUse: hosted ? 'redacted' : 'allowed',
+          modelUse: sourceModelUse === 'never' ? 'never' : hosted ? 'redacted' : sourceModelUse,
         });
         if (gate.decision === 'withheld') {
           throw policyBlocked(`send gate withheld ${sensitivity} content (${gate.reason})`);

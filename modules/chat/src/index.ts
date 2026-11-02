@@ -190,6 +190,14 @@ export const chatModule: TriageModule = {
   },
   lifecycle: {
     health: async () => ({ status: 'healthy', detail: 'grounded chat with citations' }),
+    onUninstall: async ({ database, knowledge }) => {
+      const rows = await database
+        .query<{ id: string }>(`SELECT id FROM chat_conversations`)
+        .catch(() => []);
+      for (const row of rows) {
+        await knowledge.deleteCollection(`chat_bootstrap_${row.id}`).catch(() => undefined);
+      }
+    },
   },
   register(ctx) {
     const options = configSchema.parse(ctx.moduleOptions ?? {});

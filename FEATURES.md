@@ -1,6 +1,6 @@
 # TriageAI — Features
 
-What TriageAI does today (v1.1.0), grouped by layer, plus what is planned.
+What TriageAI does today (v1.2.0), grouped by layer, plus what is planned.
 Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 [DEVELOPMENT_PLAN.md](./docs/DEVELOPMENT_PLAN.md)). Setup: [SETUP.md](./SETUP.md).
 
@@ -73,19 +73,26 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 
 ### Knowledge base — `kb`
 
-| Feature                                                                 | Status |
-| ----------------------------------------------------------------------- | :----: |
-| Document create / re-ingest / delete                                    |   ✅   |
-| Deterministic chunking + embedding into pgvector                        |   ✅   |
-| Enabled-source retrieval (no approval step; On means used)              |   ✅   |
-| Storage totals (originals, text, chunks + vectors) per source           |   ✅   |
-| Delete icon with confirmation; source, chunks, vectors and blob cleanup |   ✅   |
-| Content-hash dedupe: the same file/note is ingested once                |   ✅   |
-| File upload (PDF/DOCX/XLSX/CSV/MD/TXT/HTML), URL, GitHub repo, notes    |   ✅   |
-| Per-source On/Off (pre-filter) + labels + source list/search            |   ✅   |
-| Ingestion workflow with per-item progress and jobs tray                 |   ✅   |
-| Source plugins (`KnowledgeSource`) with contract suite                  |   ✅   |
-| OCR for scanned PDFs / folder import / plugin marketplace sources       |   🗺️   |
+| Feature                                                                                                     | Status |
+| ----------------------------------------------------------------------------------------------------------- | :----: |
+| Document create / re-ingest / delete                                                                        |   ✅   |
+| Deterministic chunking + embedding into pgvector                                                            |   ✅   |
+| Enabled-source retrieval (no approval step; On means used)                                                  |   ✅   |
+| Storage totals (originals, text, chunks + vectors) per source                                               |   ✅   |
+| Data processing metrics: chunking, contextual retrieval, ingest errors, access mode, PDF extraction, graphs |   ✅   |
+| Configurable chunking presets (structure 700/1,200, sentence 500, fixed 1,000) for new sources              |   ✅   |
+| Per-source chunking, extraction and storage provenance badges + database label next to the source           |   ✅   |
+| Storage backends shown: PostgreSQL, pgvector, queue adapter and blob store                                  |   ✅   |
+| PDF extraction: text layer or strict text layer; OCR is wired but needs the optional AI-service adapter     |   🟡   |
+| Image extraction: skip or filename/metadata; OCR needs the optional AI-service adapter                      |   🟡   |
+| Per-source model use (Full access / Redact / Withhold) + retention days/unlimited + delete date             |   ✅   |
+| Delete mode with trash buttons; source, chunks, vectors and blob cleanup                                    |   ✅   |
+| Content-hash dedupe: the same file/note is ingested once                                                    |   ✅   |
+| File upload (PDF/DOCX/XLSX/CSV/MD/TXT/HTML), URL, GitHub repo, notes                                        |   ✅   |
+| Per-source On/Off (pre-filter) + labels + source list/search                                                |   ✅   |
+| Ingestion workflow with per-item progress and jobs tray                                                     |   ✅   |
+| Source plugins (`KnowledgeSource`) with contract suite                                                      |   ✅   |
+| OCR for scanned PDFs / folder import / plugin marketplace sources                                           |   🗺️   |
 
 ### Datasets — `data-extract`
 
@@ -191,14 +198,14 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 
 ## 5. Improvement loop (host)
 
-| Feature                                                                         | Status |
-| ------------------------------------------------------------------------------- | :----: |
-| Corrections → candidate examples with provenance                                |   ✅   |
-| Review queue (approve/reject, terminal, audited)                                |   ✅   |
-| Deterministic, leakage-guarded dataset builder + export                         |   ✅   |
-| Linear-probe trainer (CPU), merged eval reports, gated promotion                |   ✅   |
-| Eval harnesses: classification, retrieval, generation, merged report            |   ✅   |
-| Feedback insights: source, detail, processing timeline, filters and four graphs |   ✅   |
+| Feature                                                                                                          | Status |
+| ---------------------------------------------------------------------------------------------------------------- | :----: |
+| Corrections → candidate examples with provenance                                                                 |   ✅   |
+| Review queue (approve/reject, terminal, audited)                                                                 |   ✅   |
+| Deterministic, leakage-guarded dataset builder + export                                                          |   ✅   |
+| Linear-probe trainer (CPU), merged eval reports, gated promotion                                                 |   ✅   |
+| Eval harnesses: classification, retrieval, generation, merged report                                             |   ✅   |
+| Feedback insights: source/status summary, redesigned graphs and item cards (no Open button), processing timeline |   ✅   |
 
 ## 6. Operations & security
 
@@ -218,6 +225,8 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 | Config overlay: versioned, audited DB answers above the file, below env; encrypted secret store (key file by default); restart-to-apply               |              ✅              |
 | Connected APIs: list/add/test/rotate/disable/remove external APIs with secret status                                                                  |              ✅              |
 | Admin dashboard: health, activity, knowledge, security, tokens/performance, uptime, storage, machine, dead letters and connected APIs; manifest-gated |              ✅              |
+| Runs page daily summary: runs, workflows, success/failure, sensitive-data and data-touched counts by date                                             |              ✅              |
+| Model runtimes: switches (not checkboxes), global off switch engaged when the last runtime is turned off                                              |              ✅              |
 | Committed `WORKFLOW.md` project map + `pnpm docs:workflow` with a CI drift/line-budget check                                                          |              ✅              |
 | Appearance: Light/Dark/Auto theme, four font sizes, animations On/Off/Auto, per-user agent names/colours, admin defaults                              |              ✅              |
 | Notification tray for long jobs (progress, ETA, cancel; survives reload)                                                                              |              ✅              |
@@ -252,6 +261,6 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 | Chat context budget + compaction  |   ✅   | Per-call budget from the active window, shared packer, 80–85 % high-water compaction, durable summary, deterministic fallback         |
 | Context usage ring                |   ✅   | Composer ring shows used/total tokens, warning near the high-water mark, "not measured" before the first call                         |
 | User skills                       |   ✅   | Owner-scoped store, On/Off, GitHub import with pin/ETag, custom creation, suggestions from chat                                       |
-| Skills surfaces                   |   ✅   | Home drawer below the sidebar toggle and `/config` → Skills share one registry                                                        |
+| Skills surfaces                   |   ✅   | Home drawer below the sidebar toggle; mutually exclusive with history; `/config` → Skills has List/Add tabs, switches and delete      |
 | Skill KB mirror                   |   ✅   | Enabled skills become managed read-only operator `skill:` sources and are removed on disable/delete                                   |
 | Default skill sources             |   🟡   | Listed with import state; automatic boot fetch is not enabled                                                                         |

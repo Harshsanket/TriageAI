@@ -114,6 +114,21 @@ export const RunDtoSchema = z.object({
 });
 export type RunDto = z.infer<typeof RunDtoSchema>;
 
+export const RunDailySummarySchema = z.object({
+  days: z.array(
+    z.object({
+      date: z.string(),
+      totalRuns: z.number().int().nonnegative(),
+      workflows: z.array(z.string()),
+      succeeded: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      sensitiveRuns: z.number().int().nonnegative(),
+      dataTouchedRuns: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type RunDailySummary = z.infer<typeof RunDailySummarySchema>;
+
 export const DecisionRecordDtoSchema = z.object({
   id: UlidSchema,
   runId: UlidSchema,

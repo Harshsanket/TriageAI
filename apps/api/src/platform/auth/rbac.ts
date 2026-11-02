@@ -70,6 +70,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/v1/mcp', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/system/controls', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/system/data-policy', roles: ADMIN },
+  { method: 'GET', pattern: '/api/v1/system/data-processing', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/system/dashboard-settings', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/system/update', roles: ADMIN },
   { method: 'POST', pattern: '/api/v1/system/update/check', roles: ADMIN },
@@ -83,6 +84,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/v1/connections/:id/disable', roles: ADMIN },
   { method: 'DELETE', pattern: '/api/v1/connections/:id', roles: ADMIN },
   { method: 'PUT', pattern: '/api/v1/system/data-policy', roles: ADMIN },
+  { method: 'PUT', pattern: '/api/v1/system/data-processing', roles: ADMIN },
   { method: 'PUT', pattern: '/api/v1/system/controls', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/approvals', roles: AGENT },
   { method: 'POST', pattern: '/api/v1/approvals/:id/approve', roles: ADMIN },
@@ -125,6 +127,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'PUT', pattern: '/api/v1/support/auto-reply-policies/:category', roles: ADMIN },
 
   { method: 'GET', pattern: '/api/v1/system/runs', roles: AGENT },
+  { method: 'GET', pattern: '/api/v1/system/runs/daily', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/system/runs/:id', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/system/runs/:id/graph', roles: AGENT },
   { method: 'POST', pattern: '/api/v1/system/runs/:id/cancel', roles: AGENT },

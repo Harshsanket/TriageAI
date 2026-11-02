@@ -60,21 +60,68 @@ function failNetwork(error: unknown, codePrefix: string, label: string): never {
   throw fetchFailure({ codePrefix, label, cause: error });
 }
 
+interface EmbedCacheEntry {
+  vector: number[];
+  modelVersion: string;
+}
+
 export class HttpEmbedder {
+  private hits = 0;
+  private misses = 0;
+
   constructor(
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    private readonly cache: import('@triageai/kernel').Cache = new MemoryCache(5_000),
   ) {}
 
+  private key(text: string): string {
+    return `embed:${this.baseUrl}:${createHash('sha256').update(text).digest('hex')}`;
+  }
+
   async embed(texts: string[]): Promise<EmbedResult> {
-    const res = await this.fetchImpl(`${this.baseUrl}/ai/v1/embed`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ texts }),
-      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
-    }).catch((error: unknown) => failNetwork(error, 'ai', 'ai-service'));
-    if (!res.ok) await failResponse(res, 'ai', 'ai-service');
-    return AiEmbedResponseSchema.parse(await res.json());
+    const results = new Array<EmbedCacheEntry | undefined>(texts.length);
+    const missing: Array<{ index: number; text: string }> = [];
+    for (const [index, text] of texts.entries()) {
+      const cached = await this.cache.get<EmbedCacheEntry>(this.key(text));
+      if (cached) {
+        this.hits += 1;
+        results[index] = cached;
+      } else {
+        this.misses += 1;
+        missing.push({ index, text });
+      }
+    }
+    if (missing.length > 0) {
+      const res = await this.fetchImpl(`${this.baseUrl}/ai/v1/embed`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ texts: missing.map((entry) => entry.text) }),
+        signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+      }).catch((error: unknown) => failNetwork(error, 'ai', 'ai-service'));
+      if (!res.ok) await failResponse(res, 'ai', 'ai-service');
+      const parsed = AiEmbedResponseSchema.parse(await res.json());
+      for (const [offset, entry] of missing.entries()) {
+        const vector = parsed.vectors[offset];
+        if (!vector) continue;
+        const cached = { vector, modelVersion: parsed.modelVersion };
+        results[entry.index] = cached;
+        await this.cache.set(this.key(entry.text), cached, 24 * 60 * 60 * 1000);
+      }
+      return {
+        vectors: results.map((entry) => entry?.vector ?? []),
+        modelVersion: parsed.modelVersion,
+      };
+    }
+    return {
+      vectors: results.map((entry) => entry?.vector ?? []),
+      modelVersion: results[0]?.modelVersion ?? 'cache',
+    };
+  }
+
+  stats(): { hits: number; misses: number; hitRate: number } {
+    const total = this.hits + this.misses;
+    return { hits: this.hits, misses: this.misses, hitRate: total === 0 ? 1 : this.hits / total };
   }
 }
 
@@ -299,7 +346,7 @@ function rerankChunks(
       : now;
     const ageDays = Math.max(0, (now - updated) / 86_400_000);
     const freshness = ageDays > maxAgeDays ? 0.5 : 1;
-    const authority = chunk.metadata.approved === true ? 1 : 0.7;
+    const authority = 1;
     const combined =
       chunk.score * (1 - freshnessWeight - authorityWeight) +
       lexical * 0.6 +

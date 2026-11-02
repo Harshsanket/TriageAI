@@ -8,7 +8,6 @@ export const KbDocumentDtoSchema = z.object({
   id: z.string(),
   title: z.string(),
   source: z.string(),
-  approved: z.boolean(),
   version: z.number().int(),
   sha256: z.string().nullable(),
   sourceId: z.string().nullable().optional(),
@@ -48,6 +47,35 @@ export type KbDocumentWriteResponse = z.infer<typeof KbDocumentWriteResponseSche
 export const KbSourceKindSchema = z.enum(['file', 'note', 'url', 'github', 'plugin']);
 export type KbSourceKind = z.infer<typeof KbSourceKindSchema>;
 
+/** Manual data-processing strategies (config → KB ingestion). */
+export const KbChunkStrategySchema = z.enum([
+  'structure-700',
+  'structure-1200',
+  'sentence-500',
+  'fixed-1000',
+]);
+export type KbChunkStrategy = z.infer<typeof KbChunkStrategySchema>;
+
+export const KbPdfExtractionSchema = z.enum(['text-layer', 'text-layer-strict', 'ocr']);
+export type KbPdfExtraction = z.infer<typeof KbPdfExtractionSchema>;
+
+export const KbImageExtractionSchema = z.enum(['skip', 'metadata', 'ocr']);
+export type KbImageExtraction = z.infer<typeof KbImageExtractionSchema>;
+
+export const KbDataProcessingSchema = z.object({
+  chunking: KbChunkStrategySchema.default('structure-700'),
+  pdfExtraction: KbPdfExtractionSchema.default('text-layer'),
+  imageExtraction: KbImageExtractionSchema.default('skip'),
+});
+export type KbDataProcessing = z.infer<typeof KbDataProcessingSchema>;
+
+/** Read-only storage facts shown on the KB page (Postgres, pgvector, blobs…). */
+export const KbStorageBackendSchema = z.object({
+  label: z.string(),
+  value: z.string(),
+});
+export type KbStorageBackend = z.infer<typeof KbStorageBackendSchema>;
+
 export const KbSourceStatusSchema = z.enum(['pending', 'ready', 'partial', 'failed']);
 export type KbSourceStatus = z.infer<typeof KbSourceStatusSchema>;
 
@@ -71,6 +99,11 @@ export const KbSourceDtoSchema = z.object({
   audience: KbAudienceSchema.default('public'),
   managedKey: z.string().nullable().default(null),
   readOnly: z.boolean().default(false),
+  chunkPreset: z.string().default('structure-700'),
+  extraction: z.string().default('text-layer'),
+  storage: z.array(z.string()).default([]),
+  modelUse: z.enum(['send', 'redact', 'withhold']).default('redact'),
+  retentionDays: z.number().int().positive().nullable().default(null),
   lastSyncAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -129,6 +162,8 @@ export const KbSourceUpdateRequestSchema = z
   .object({
     enabled: z.boolean().optional(),
     label: z.string().trim().min(1).max(120).optional(),
+    modelUse: z.enum(['send', 'redact', 'withhold']).optional(),
+    retentionDays: z.number().int().positive().max(3650).nullable().optional(),
   })
   .strict();
 export type KbSourceUpdateRequest = z.infer<typeof KbSourceUpdateRequestSchema>;
@@ -188,6 +223,25 @@ export const KbSourceStorageSchema = z.object({
 });
 export type KbSourceStorage = z.infer<typeof KbSourceStorageSchema>;
 
+export const KbProcessingMetricSchema = z.object({
+  label: z.string(),
+  value: z.number().nonnegative(),
+});
+export type KbProcessingMetric = z.infer<typeof KbProcessingMetricSchema>;
+
+export const KbProcessingStatsSchema = z.object({
+  chunkStrategies: z.array(KbProcessingMetricSchema).default([]),
+  ingestStatus: z.array(KbProcessingMetricSchema).default([]),
+  accessModes: z.array(KbProcessingMetricSchema).default([]),
+  mediaTypes: z.array(KbProcessingMetricSchema).default([]),
+  contextualChunks: z.number().int().nonnegative().default(0),
+  totalChunks: z.number().int().nonnegative().default(0),
+  contextualRate: z.number().min(0).max(100).default(0),
+  errorRate: z.number().min(0).max(100).default(0),
+  pdfExtraction: z.string().default('deterministic text layer'),
+});
+export type KbProcessingStats = z.infer<typeof KbProcessingStatsSchema>;
+
 export const KbStorageStatsSchema = z.object({
   totalBytes: z.number().int().nonnegative(),
   originalsBytes: z.number().int().nonnegative(),
@@ -197,5 +251,7 @@ export const KbStorageStatsSchema = z.object({
   documents: z.number().int().nonnegative(),
   chunks: z.number().int().nonnegative(),
   sources: z.array(KbSourceStorageSchema),
+  backends: z.array(KbStorageBackendSchema).default([]),
+  processing: KbProcessingStatsSchema.optional(),
 });
 export type KbStorageStats = z.infer<typeof KbStorageStatsSchema>;

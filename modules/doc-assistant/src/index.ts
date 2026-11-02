@@ -79,6 +79,11 @@ export const docAssistantModule: TriageModule = {
       status: 'degraded',
       detail: 'requires docs ingestion + a local generator',
     }),
+    onUninstall: async ({ options, knowledge }) => {
+      const collection =
+        typeof options.collection === 'string' ? options.collection : 'project_docs';
+      await knowledge.deleteCollection(collection);
+    },
   },
   register(ctx) {
     const options = configSchema.parse(ctx.moduleOptions ?? {});

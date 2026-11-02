@@ -1,6 +1,6 @@
 # TriageAI
 
-> **v1.1.0** — module isolation with signed plugins, hosted model APIs, tools/skills, base memory, runtime model controls, a consolidated dashboard, connected APIs, data extraction, and a single chat home.
+> **v1.2.0** — knowledge-base data-processing controls with per-source extraction, chunking and storage provenance; a skills drawer and refreshed chat home; model-runtime switches; and redesigned feedback and run summaries.
 
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
@@ -149,6 +149,7 @@ Auto-reply is per-category and versioned (`GET/PUT /api/v1/support/auto-reply-po
 ## Knowledge, memory, and data
 
 - **Knowledge base** (`kb`) ingests PDF, DOCX, XLSX, CSV, Markdown, text, HTML, URLs, GitHub repositories and notes. Every source has an On/Off switch (On means used), labels, search and storage totals; identical content is deduplicated, and deleting a source removes its chunks, vectors and stored original.
+- **Data processing** is configurable per new source: chunking presets (structure-aware 700/1,200, sentence 500, fixed 1,000), PDF extraction (text layer or strict text layer; OCR when the optional AI-service adapter is installed) and image extraction. The KB source list shows the chunking, extraction and storage backends each source actually used, and `/config` explains which strategy fits which corpus.
 - **Base memory** is generated from setup as managed `base-memory.public` / `base-memory.operator` KB sources. Customer surfaces (chat, support, public API) retrieve public entries only; operator surfaces see both. An operational `system-status` snapshot backs read-only `system.get_status/get_uptime/get_storage` tools.
 - **Data extraction** (`data-extract`) turns CSV/XLSX/PDF files into typed `transactions` or `generic-table` datasets with deterministic mapping, saved confirmations and user rules. A balance reconciliation gate keeps `needs_review` rows out of charts; dataset views (totals, categories, months, merchants, rows) can be pinned, and a fixed-schema `data_extract.query_dataset` tool is restricted by default.
 
@@ -205,7 +206,7 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 ## Dashboard, setup, and operations
 
 - `/dashboard` consolidates health, activity, knowledge, security, token usage, performance (tokens/s, TTFT), uptime, storage, machine, dead letters and connected APIs. Graphs support day/month/year/custom ranges; the refresh interval is configurable (default 10 min).
-- `/config` is the first-run wizard and then the settings home. Answers are written as a versioned, audited overlay above the config file and below environment variables, so secrets stay out of files. It also covers connected APIs (add/test/rotate/disable/remove), per-class data policy with named presets, model runtimes, skills, and appearance (Light/Dark/Auto, four font sizes, animations, agent names and colours).
+- `/config` is the first-run wizard and then the settings home. Answers are written as a versioned, audited overlay above the config file and below environment variables, so secrets stay out of files. It also covers connected APIs (add/test/rotate/disable/remove), knowledge data-processing strategies, per-class data policy with named presets, model runtimes, skills, and appearance (Light/Dark/Auto, four font sizes, animations, agent names and colours).
 - Setup is exact scoped: add or remove interfaces, or run **Reset** / **Reset and erase** from the danger zone. Applied changes are audited and restart-time unless they use a supported hot-reload path.
 - Long jobs (knowledge ingestion, datasets) report progress, ETA and cancel in the notification tray, and the tray survives a reload.
 - [WORKFLOW.md](./WORKFLOW.md) is the committed project map; `pnpm docs:workflow` regenerates its tables and CI fails on drift, a missing section, or a line-budget breach.
@@ -234,7 +235,7 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 
 **TriageAI** is an open-source project focused on building modular, self-hosted AI automation systems. It prioritizes extensibility, local inference, and transparent decision-making.
 
-Current release: **v1.1.0**.
+Current release: **v1.2.0**.
 
 Developed and maintained by **Harsh Sanket**.  
 **DeepSeek 4.1** was used during development.

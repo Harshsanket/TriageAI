@@ -86,6 +86,10 @@ describeIfDb('first-run setup (phase 11)', () => {
 
       const blocked = await app.inject({ method: 'GET', url: '/api/v1/system/manifest' });
       expect(blocked.statusCode).toBe(409);
+      const vectors = await app.kernel!.database.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM vector_chunks WHERE collection = 'kb_docs'`,
+      );
+      expect(vectors[0]?.count ?? 0).toBe(0);
       expect(blocked.json()).toMatchObject({ title: 'setup.REQUIRED' });
 
       const noToken = await app.inject({
@@ -363,6 +367,11 @@ describeIfDb('first-run setup (phase 11)', () => {
     }
     const app = await boot();
     try {
+      await app.kernel!.database.query(
+        `INSERT INTO vector_chunks (collection, id, document_id, text, embedding)
+         VALUES ('kb_docs', 'erase-fixture', 'erase-doc', 'erase me', '[1,2,3]'::vector)
+         ON CONFLICT (collection, id) DO NOTHING`,
+      );
       const erased = await app.inject({
         method: 'POST',
         url: '/api/v1/setup/erase',
@@ -375,6 +384,10 @@ describeIfDb('first-run setup (phase 11)', () => {
       expect(status.json()).toMatchObject({ state: 'pending', tokenRequired: true });
       const blocked = await app.inject({ method: 'GET', url: '/api/v1/system/manifest' });
       expect(blocked.statusCode).toBe(409);
+      const vectors = await app.kernel!.database.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM vector_chunks WHERE collection = 'kb_docs'`,
+      );
+      expect(vectors[0]?.count ?? 0).toBe(0);
     } finally {
       await app.close();
     }

@@ -2,7 +2,7 @@
  * Chat-surface Skills drawer (ADR-0060): list, On/Off, GitHub import, custom
  * creation, suggestion review and delete. Everything is content-only.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { SkillListResponse, UserSkill } from '@triageai/contracts';
 
@@ -17,8 +17,9 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [githubUrl, setGithubUrl] = useState('');
-  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState('');
   const [instructions, setInstructions] = useState('');
+  const instructionsRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
     const res = await apiFetch<SkillListResponse>('/api/v1/skills');
@@ -33,6 +34,13 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const input = instructionsRef.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 240)}px`;
+  }, [instructions]);
 
   const call = async (url: string, init: RequestInit, success: string) => {
     setBusy(true);
@@ -77,24 +85,38 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
       if (ok) setGithubUrl('');
     });
 
-  const create = () =>
-    call(
+  const create = () => {
+    const cleanTitle = title.trim();
+    const cleanInstructions = instructions.trim();
+    const description = (
+      cleanTitle.length >= 10 ? cleanTitle : `${cleanTitle} — ${cleanInstructions}`
+    )
+      .trim()
+      .slice(0, 400);
+    return call(
       '/api/v1/skills',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          description: description.trim(),
-          instructions: instructions.trim(),
+          name: cleanTitle
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 60),
+          description,
+          instructions: cleanInstructions,
         }),
       },
       'Skill created and enabled.',
     ).then((ok) => {
       if (ok) {
-        setDescription('');
+        setTitle('');
         setInstructions('');
+        if (instructionsRef.current) instructionsRef.current.style.height = '';
       }
     });
+  };
 
   const resolve = (skill: UserSkill, action: 'accept' | 'ignore') =>
     call(
@@ -161,68 +183,71 @@ export function SkillsDrawer({ onClose }: { onClose: () => void }) {
             ×
           </button>
         </header>
-        {error ? <ErrorNotice error={error} /> : null}
-        {note ? (
-          <p className="skills__note" role="status">
-            {note}
-          </p>
-        ) : null}
-        {suggestions.length > 0 ? (
-          <section>
-            <h3>Suggested from chat</h3>
-            <ul className="skills__list">{suggestions.map(renderSkill)}</ul>
-          </section>
-        ) : null}
-        <section>
-          <h3>Your skills</h3>
-          {skills.length === 0 ? (
-            <p className="skills__empty">No skills yet. Create one below or import a SKILL.md.</p>
-          ) : (
-            <ul className="skills__list">{skills.map(renderSkill)}</ul>
-          )}
-          {builtIn.length > 0 ? (
-            <p className="skills__meta">
-              Built in: {builtIn.map((skill) => skill.name).join(', ')}
+        <div className="skills__body">
+          {error ? <ErrorNotice error={error} /> : null}
+          {note ? (
+            <p className="skills__note" role="status">
+              {note}
             </p>
           ) : null}
-        </section>
-        <section>
-          <h3>Add from GitHub</h3>
-          <div className="skills__inline">
+          {suggestions.length > 0 ? (
+            <section>
+              <h3>Suggested from chat</h3>
+              <ul className="skills__list">{suggestions.map(renderSkill)}</ul>
+            </section>
+          ) : null}
+          <section>
+            <h3>Your skills</h3>
+            {skills.length === 0 ? (
+              <p className="skills__empty">No skills yet. Create one below or import a SKILL.md.</p>
+            ) : (
+              <ul className="skills__list">{skills.map(renderSkill)}</ul>
+            )}
+            {builtIn.length > 0 ? (
+              <p className="skills__meta">
+                Built in: {builtIn.map((skill) => skill.name).join(', ')}
+              </p>
+            ) : null}
+          </section>
+          <section>
+            <h3>Add from GitHub</h3>
+            <div className="skills__inline">
+              <input
+                aria-label="GitHub SKILL.md URL"
+                placeholder="https://github.com/owner/repo/blob/main/SKILL.md"
+                value={githubUrl}
+                onChange={(event) => setGithubUrl(event.target.value)}
+              />
+              <Button disabled={busy || !githubUrl.trim()} onClick={() => void importUrl()}>
+                Import
+              </Button>
+            </div>
+          </section>
+          <section>
+            <h3>Create with AI</h3>
             <input
-              aria-label="GitHub SKILL.md URL"
-              placeholder="https://github.com/owner/repo/blob/main/SKILL.md"
-              value={githubUrl}
-              onChange={(event) => setGithubUrl(event.target.value)}
+              className="skills__title"
+              aria-label="Skill title"
+              placeholder="Title"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
             />
-            <Button disabled={busy || !githubUrl.trim()} onClick={() => void importUrl()}>
-              Import
+            <textarea
+              ref={instructionsRef}
+              aria-label="Skill instructions"
+              placeholder="Instructions, e.g. answer in bullet points and cite the policy name."
+              rows={1}
+              value={instructions}
+              onChange={(event) => setInstructions(event.target.value)}
+            />
+            <Button
+              disabled={busy || !title.trim() || !instructions.trim()}
+              onClick={() => void create()}
+            >
+              Create skill
             </Button>
-          </div>
-        </section>
-        <section>
-          <h3>Create with AI</h3>
-          <textarea
-            aria-label="Describe the skill"
-            placeholder="Describe what the assistant should always do…"
-            rows={2}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-          <textarea
-            aria-label="Skill instructions"
-            placeholder="Instructions, e.g. answer in bullet points and cite the policy name."
-            rows={3}
-            value={instructions}
-            onChange={(event) => setInstructions(event.target.value)}
-          />
-          <Button
-            disabled={busy || description.trim().length < 10 || !instructions.trim()}
-            onClick={() => void create()}
-          >
-            Create skill
-          </Button>
-        </section>
+          </section>
+        </div>
       </div>
     </div>
   );

@@ -92,8 +92,10 @@ export function moduleSchemaName(moduleId: string): string {
 
 export class PostgresDatabase implements Database {
   private sql: postgres.Sql;
+  private readonly databaseUrl: string;
 
   constructor(databaseUrl: string) {
+    this.databaseUrl = databaseUrl;
     this.sql = postgres(databaseUrl, { max: 10, idle_timeout: 20, connect_timeout: 10 });
   }
 
@@ -115,6 +117,14 @@ export class PostgresDatabase implements Database {
       }),
     );
     return promise as Promise<T>;
+  }
+
+  async listen(channel: string, onNotify: (payload: string) => void): Promise<() => Promise<void>> {
+    const listener = postgres(this.databaseUrl, { max: 1, idle_timeout: 20, connect_timeout: 10 });
+    await listener.listen(channel, (payload) => onNotify(payload));
+    return async () => {
+      await listener.end({ timeout: 5 }).catch(() => undefined);
+    };
   }
 
   async close(): Promise<void> {

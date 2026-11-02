@@ -117,4 +117,30 @@ export const KB_MIGRATIONS: Migration[] = [
       ALTER TABLE IF EXISTS kb_sources DROP COLUMN IF EXISTS managed_key;
     `,
   },
+  {
+    id: '0006-kb-drop-approved',
+    sql: `ALTER TABLE kb_documents DROP COLUMN IF EXISTS approved;`,
+    dropSql: '',
+  },
+  {
+    id: '0007-kb-source-policy',
+    sql: `
+      ALTER TABLE kb_sources ADD COLUMN IF NOT EXISTS model_use TEXT NOT NULL DEFAULT 'redact'
+        CHECK (model_use IN ('send','redact','withhold'));
+      ALTER TABLE kb_sources ADD COLUMN IF NOT EXISTS retention_days INT;
+    `,
+    dropSql: `
+      ALTER TABLE IF EXISTS kb_sources DROP COLUMN IF EXISTS retention_days;
+      ALTER TABLE IF EXISTS kb_sources DROP COLUMN IF EXISTS model_use;
+    `,
+  },
+  {
+    id: '0008-kb-source-extraction',
+    sql: `
+      ALTER TABLE kb_sources ADD COLUMN IF NOT EXISTS extraction_method TEXT NOT NULL DEFAULT 'text-layer';
+    `,
+    dropSql: `
+      ALTER TABLE IF EXISTS kb_sources DROP COLUMN IF EXISTS extraction_method;
+    `,
+  },
 ];

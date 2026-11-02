@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { KbStorageStatsSchema } from '@triageai/contracts';
+import { KbSourceListResponseSchema, KbStorageStatsSchema } from '@triageai/contracts';
 import type { Capabilities, Kernel, VectorStore } from '@triageai/kernel';
 import { PostgresDatabase } from '@triageai/kernel';
 
@@ -96,7 +96,7 @@ describeIfDb('knowledge sources (phase 20)', () => {
     });
     expect(created.statusCode).toBe(200);
     const first = created.json() as {
-      document: { id: string; approved: boolean };
+      document: { id: string };
       ingest: { chunks: number; deduped: boolean };
     };
     documentId = first.document.id;
@@ -108,9 +108,12 @@ describeIfDb('knowledge sources (phase 20)', () => {
       url: `/api/v1/kb/sources?q=${encodeURIComponent(TITLE)}`,
     });
     expect(sources.statusCode).toBe(200);
-    const source = (sources.json() as { sources: Array<{ id: string; status: string }> })
-      .sources[0];
+    const sourceList = KbSourceListResponseSchema.parse(sources.json());
+    const source = sourceList.sources[0];
     expect(source?.status).toBe('ready');
+    expect(source?.storage).toContain('PostgreSQL');
+    expect(source?.chunkPreset).toBeTruthy();
+    expect(source?.extraction).toBeTruthy();
     sourceId = source?.id ?? '';
 
     const storage = await app.inject({ method: 'GET', url: '/api/v1/kb/storage' });

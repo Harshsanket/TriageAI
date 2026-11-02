@@ -205,6 +205,11 @@ export const dataExtractModule: TriageModule = {
   },
   lifecycle: {
     health: async () => ({ status: 'healthy', detail: 'deterministic extraction + SQL queries' }),
+    onUninstall: async ({ options, knowledge }) => {
+      const collection =
+        typeof options.collection === 'string' ? options.collection : 'data_extract_datasets';
+      await knowledge.deleteCollection(collection);
+    },
   },
   register(ctx) {
     const options = configSchema.parse(ctx.moduleOptions ?? {});

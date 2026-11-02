@@ -68,9 +68,11 @@ describe('feedback insights page', () => {
     expect(screen.getByRole('heading', { name: 'Positive vs negative' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Top reasons' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Processing funnel' })).toBeInTheDocument();
-    expect(screen.getByText('wrong_category')).toBeInTheDocument();
+    expect(screen.getAllByText('wrong_category').length).toBeGreaterThan(0);
     expect(screen.getByText(/Billing answer/)).toBeInTheDocument();
     expect(screen.getByLabelText('Processing timeline')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open/i })).not.toBeInTheDocument();
     expect(screen.getByText(/Voyager/)).toBeInTheDocument();
   });
 

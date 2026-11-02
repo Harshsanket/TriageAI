@@ -133,6 +133,43 @@ function signedOut(): void {
   globalThis.dispatchEvent?.(new Event('triageai:signed-out'));
 }
 
+/** Same auth/refresh/error handling as `apiFetch`, but keeps the response body for SSE. */
+export async function apiStream(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<ApiResult<Response>> {
+  const session = getSession();
+  let response: Response;
+  try {
+    response = session?.accessToken
+      ? await fetch(input, withAuthorization(init, session.accessToken))
+      : await fetch(input, init);
+  } catch {
+    return { ok: false, error: { status: 0, envelope: fallbackEnvelope(0, 'offline') } };
+  }
+  if (response.status === 401 && session && !urlOf(input).includes('/api/v1/auth/')) {
+    const refreshed = await refreshSession();
+    if (!refreshed) {
+      signedOut();
+    } else {
+      try {
+        response = await fetch(input, withAuthorization(init, refreshed.accessToken));
+      } catch {
+        return { ok: false, error: { status: 0, envelope: fallbackEnvelope(0, 'offline') } };
+      }
+    }
+  } else if (response.status === 401) {
+    signedOut();
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: { status: response.status, envelope: await readEnvelope(response) },
+    };
+  }
+  return { ok: true, data: response, response };
+}
+
 export async function apiFetch<T = unknown>(
   input: RequestInfo | URL,
   init?: RequestInit,

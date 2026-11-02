@@ -194,7 +194,7 @@ describeIfDb('system dashboard (phase 19 v1)', () => {
     try {
       await app.kernel!.database.query(
         `INSERT INTO mod_kb.kb_documents (id, title, body) VALUES ($1, $2, $3)
-         ON CONFLICT (id) DO UPDATE SET approved = true`,
+         ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title`,
         [DOC_ID, 'Dashboard test', 'Pending approval'],
       );
 

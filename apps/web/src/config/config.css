@@ -147,6 +147,55 @@
   font-size: 0.85rem;
 }
 
+.cfg-notes {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line, rgba(20, 22, 26, 0.12));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--paper, #fbfbf8) 82%, transparent);
+}
+
+.cfg-notes h3 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft, #5f636b);
+}
+
+.cfg-notes ul {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.cfg-notes em {
+  color: var(--ink-soft, #5f636b);
+}
+
+.cfg-notes__off {
+  color: #b42318;
+  font-size: 0.78rem;
+}
+
+.cfg-processing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+@media (max-width: 700px) {
+  .cfg-processing-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 560px) {
   .cfg-choice-grid {
     display: grid;
@@ -174,7 +223,8 @@
   font-size: 0.9rem;
 }
 
-.cfg-field input {
+.cfg-field input,
+.cfg-field select {
   min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--line, rgba(20, 22, 26, 0.2));
@@ -639,4 +689,78 @@
   background: transparent;
   border-color: var(--line);
   color: var(--ink);
+}
+
+.cfg-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0.75rem 0 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.cfg-tab {
+  padding: 0.45rem 0.8rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cfg-tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--link);
+}
+
+.cfg-button--danger {
+  color: #b42318;
+  border-color: color-mix(in srgb, #b42318 35%, var(--line));
+}
+
+.cfg-switch-row {
+  gap: 0.6rem;
+}
+
+.cfg-toggle {
+  position: relative;
+  flex: none;
+  width: 2.4rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 45%, transparent);
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.cfg-toggle span {
+  position: absolute;
+  top: 0.12rem;
+  left: 0.12rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 1px 3px rgba(20, 24, 32, 0.25);
+  transition: transform 140ms ease;
+}
+
+.cfg-toggle--on {
+  background: var(--link);
+}
+
+.cfg-toggle--on span {
+  transform: translateX(1.02rem);
+}
+
+.cfg-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.cfg-toggle:focus-visible {
+  outline: 2px solid rgba(35, 92, 180, 0.65);
+  outline-offset: 2px;
 }

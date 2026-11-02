@@ -2,6 +2,15 @@
  * headings, lists, tables and fenced code blocks are kept with their section. */
 export const DEFAULT_MAX_CHARS = 700;
 
+export type ChunkPreset = 'structure-700' | 'structure-1200' | 'sentence-500' | 'fixed-1000';
+
+export const CHUNK_PRESET_MAX_CHARS: Record<ChunkPreset, number> = {
+  'structure-700': 700,
+  'structure-1200': 1200,
+  'sentence-500': 500,
+  'fixed-1000': 1000,
+};
+
 export interface DocumentChunk {
   text: string;
   headingPath: string;
@@ -129,4 +138,31 @@ export function chunkDocument(text: string, maxChars = DEFAULT_MAX_CHARS): Docum
 
 export function chunkText(text: string, maxChars = DEFAULT_MAX_CHARS): string[] {
   return chunkDocument(text, maxChars).map((chunk) => chunk.text);
+}
+
+/** Fixed-width windows with a small overlap; ignores document structure. */
+function fixedChunks(text: string, maxChars: number, overlap: number): DocumentChunk[] {
+  const normalized = text.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+  const step = Math.max(1, maxChars - overlap);
+  const chunks: DocumentChunk[] = [];
+  for (let start = 0; start < normalized.length; start += step) {
+    const value = normalized.slice(start, start + maxChars).trim();
+    if (value) chunks.push({ text: value, headingPath: '' });
+    if (start + maxChars >= normalized.length) break;
+  }
+  return chunks;
+}
+
+/** Apply a stored chunk preset; unknown values fall back to the default. */
+export function chunkByPreset(text: string, preset: ChunkPreset | string): DocumentChunk[] {
+  switch (preset) {
+    case 'structure-1200':
+    case 'sentence-500':
+      return chunkDocument(text, CHUNK_PRESET_MAX_CHARS[preset]);
+    case 'fixed-1000':
+      return fixedChunks(text, CHUNK_PRESET_MAX_CHARS['fixed-1000'], 150);
+    default:
+      return chunkDocument(text, DEFAULT_MAX_CHARS);
+  }
 }

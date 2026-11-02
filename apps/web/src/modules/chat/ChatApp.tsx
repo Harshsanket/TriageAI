@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent } from 'react';
 
 import { PreferencesResponseSchema } from '@triageai/contracts';
 
-import { apiFetch, type ApiFailure } from '../../host/api';
+import { apiFetch, apiStream, type ApiFailure } from '../../host/api';
 import { readChatFiles, saveAttachmentsToKb, type ChatAttachment } from '../../host/attachments';
 import { ProgressStatus } from '../../ui/ProgressStatus';
 import { Button, Card, EmptyState, ErrorNotice, Field, Input, Page } from '../../ui';
@@ -169,14 +169,6 @@ export default function ChatApp({
   }, [initialConversationId, load]);
 
   useEffect(() => {
-    if (!conversationId) return;
-    const timer = setInterval(() => {
-      if (!busy.current) void load(conversationId);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [conversationId, load]);
-
-  useEffect(() => {
     const input = composerInput.current;
     if (!input) return;
     input.style.height = 'auto';
@@ -197,23 +189,90 @@ export default function ChatApp({
     setWaiting(true);
     try {
       if (kbEnabled) await saveAttachmentsToKb(attachments);
-      const res = await apiFetch<{ conversationId: string }>('/api/v1/chat/messages', {
+      const res = await apiStream('/api/v1/chat/stream', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
         body: JSON.stringify({ conversationId: conversationId ?? undefined, text: message }),
       });
       if (!res.ok) {
         setError(res.error);
         return;
       }
-      setConversationId(res.data.conversationId);
-      onConversationChange?.(res.data.conversationId);
       setText('');
       setAttachments([]);
-      await load(res.data.conversationId);
+      const reader = res.data.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamedConversationId = conversationId;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          const eventName = /^event: (.+)$/m.exec(frame)?.[1];
+          const dataLine = /^data: (.+)$/m.exec(frame)?.[1];
+          if (!eventName || !dataLine) continue;
+          const payload = JSON.parse(dataLine) as Record<string, unknown>;
+          if (eventName === 'status') {
+            const id = String(payload.conversationId ?? '');
+            if (id) {
+              streamedConversationId = id;
+              setConversationId(id);
+              onConversationChange?.(id);
+            }
+          } else if (eventName === 'message') {
+            const incoming = payload as unknown as Message;
+            setMessages((current) =>
+              current.some((entry) => entry.id === incoming.id)
+                ? current.map((entry) => (entry.id === incoming.id ? incoming : entry))
+                : [...current, incoming],
+            );
+          } else if (eventName === 'error') {
+            setError({
+              status: 503,
+              envelope: {
+                type: 'https://triageai.dev/errors/chat.STREAM_FAILED',
+                title: 'chat.STREAM_FAILED',
+                status: 503,
+                code: 'chat.STREAM_FAILED',
+                category: 'dependency_unavailable',
+                retryable: true,
+                userMessage: String(payload.userMessage ?? 'The answer took too long.'),
+                correlationId: String(payload.runId ?? 'unknown'),
+              },
+            });
+          } else if (eventName === 'done') {
+            const id = String(payload.conversationId ?? streamedConversationId ?? '');
+            if (id) {
+              streamedConversationId = id;
+              setConversationId(id);
+              onConversationChange?.(id);
+              await load(id);
+            }
+          }
+        }
+      }
+      if (streamedConversationId) await load(streamedConversationId);
       await loadList();
-      setWaiting(false);
+    } catch {
+      setError({
+        status: 0,
+        envelope: {
+          type: 'https://triageai.dev/errors/chat.STREAM_FAILED',
+          title: 'chat.STREAM_FAILED',
+          status: 0,
+          code: 'chat.STREAM_FAILED',
+          category: 'dependency_unavailable',
+          retryable: true,
+          userMessage: 'The answer stream ended unexpectedly. Try again.',
+          correlationId: 'stream',
+        },
+      });
     } finally {
+      setWaiting(false);
       busy.current = false;
     }
   };
@@ -380,6 +439,29 @@ export default function ChatApp({
 
   if (sidebarOnly) return sidebarPanel;
 
+  const contextRing = context ? (
+    <button
+      type="button"
+      className={`ui-context-ring${context.percent >= (context.highWaterPercent ?? 83) ? ' ui-context-ring--warning' : ''}`}
+      style={{ '--context-percent': `${context.percent}%` } as CSSProperties}
+      aria-label={`Context used ${context.usedTokens} of ${context.totalTokens} tokens (${context.percent}%). ${context.compacted ? 'Compaction has run.' : 'No compaction yet.'}`}
+      title={`${context.usedTokens} / ${context.totalTokens} tokens · ${context.percent}%${context.compacted ? ' · compacted' : ''}`}
+      onClick={() => setShowContext((value) => !value)}
+      onBlur={() => setShowContext(false)}
+    >
+      <span aria-hidden="true">{context.percent}%</span>
+    </button>
+  ) : (
+    <button
+      type="button"
+      className="ui-context-ring ui-context-ring--empty"
+      aria-label="Context usage not measured yet"
+      title="Context usage not measured yet"
+    >
+      <span aria-hidden="true">–</span>
+    </button>
+  );
+
   return (
     <Page title="Chat" subtitle="Answers are grounded in approved knowledge or refused explicitly.">
       <ErrorNotice
@@ -392,11 +474,12 @@ export default function ChatApp({
 
         <Card
           title={conversationId ? 'Conversation' : 'New conversation'}
+          titleAccessory={conversationId ? contextRing : null}
           actions={
             showSidebar ? undefined : (
               <Button
                 type="button"
-                variant="ghost"
+                variant={conversationId ? 'primary' : 'ghost'}
                 onClick={() => {
                   setConversationId(null);
                   setMessages([]);
@@ -509,29 +592,8 @@ export default function ChatApp({
               >
                 <PlusIcon />
               </button>
-              {context ? (
-                <button
-                  type="button"
-                  className={`ui-context-ring${context.percent >= (context.highWaterPercent ?? 83) ? ' ui-context-ring--warning' : ''}`}
-                  style={{ '--context-percent': `${context.percent}%` } as CSSProperties}
-                  aria-label={`Context used ${context.usedTokens} of ${context.totalTokens} tokens (${context.percent}%). ${context.compacted ? 'Compaction has run.' : 'No compaction yet.'}`}
-                  title={`${context.usedTokens} / ${context.totalTokens} tokens · ${context.percent}%${context.compacted ? ' · compacted' : ''}`}
-                  onClick={() => setShowContext((value) => !value)}
-                  onBlur={() => setShowContext(false)}
-                >
-                  <span aria-hidden="true">{context.percent}%</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="ui-context-ring ui-context-ring--empty"
-                  aria-label="Context usage not measured yet"
-                  title="Context usage not measured yet"
-                >
-                  <span aria-hidden="true">–</span>
-                </button>
-              )}
-              {showContext && context ? (
+              {conversationId ? null : contextRing}
+              {showContext && !conversationId && context ? (
                 <span className="ui-context-tip" role="status">
                   {context.usedTokens} / {context.totalTokens} tokens ({context.percent}%)
                   {context.compacted ? ` · compacted to v${context.summaryVersion}` : ''}

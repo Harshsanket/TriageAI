@@ -4,8 +4,6 @@
  * setup they are admin-only like the rest of the system surface.
  */
 import { randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
-
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
@@ -17,7 +15,7 @@ import {
   type ParsedSetupAnswers,
   type SetupPlan,
 } from '@triageai/contracts';
-import { AppError, FilesystemBlobStore, parseConfigOverlay } from '@triageai/kernel';
+import { AppError, parseConfigOverlay } from '@triageai/kernel';
 import type { ConfigFile, Kernel, TriageModule } from '@triageai/kernel';
 
 import { config } from '../platform/config.js';
@@ -445,12 +443,6 @@ export function registerSetupRoutes(
       .parse(request.body ?? {});
     void body;
     const actor = actorOf(request);
-    // Remember blob refs before the KB module tables are dropped.
-    const blobRows = await kernel.database
-      .query<{ blob_ref: string }>(
-        `SELECT DISTINCT blob_ref FROM kb_sources WHERE blob_ref IS NOT NULL`,
-      )
-      .catch(() => []);
     const overlay = {
       interfaces: [],
       modules: Object.fromEntries(Object.keys(deps.modules).map((id) => [id, { enabled: false }])),
@@ -466,17 +458,9 @@ export function registerSetupRoutes(
           if ((err as AppError).code !== 'kernel.NOT_FOUND') throw err;
         }
       }
-      await kernel.database.query(`DELETE FROM vector_chunks`);
       await kernel.database.query(`DELETE FROM datasets`).catch(() => undefined);
       await kernel.database.query(`DELETE FROM candidate_examples`).catch(() => undefined);
       await kernel.database.query(`DELETE FROM user_skills`).catch(() => undefined);
-      const blobs = new FilesystemBlobStore(
-        process.env.TRIAGEAI_BLOB_ROOT ??
-          resolve(process.env.TRIAGEAI_DATA_DIR ?? process.cwd(), 'data/blobs'),
-      );
-      for (const row of blobRows) {
-        await blobs.delete(row.blob_ref).catch(() => undefined);
-      }
     }
     await runtime.store.saveDraft({}, actor);
     await kernel.database.query(`DELETE FROM setup_imports`).catch(() => undefined);

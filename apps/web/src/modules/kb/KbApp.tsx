@@ -35,6 +35,75 @@ const SOURCE_KINDS = [
   { kind: 'github', label: 'GitHub', hint: 'Public (or token) repository' },
 ] as const;
 
+const CHUNK_LABELS: Record<string, string> = {
+  'structure-700': 'Chunks: structure 700',
+  'structure-1200': 'Chunks: structure 1,200',
+  'sentence-500': 'Chunks: sentence 500',
+  'fixed-1000': 'Chunks: fixed 1,000',
+};
+
+const EXTRACTION_LABELS: Record<string, string> = {
+  'text-layer': 'Extract: PDF text layer',
+  'text-layer-strict': 'Extract: PDF text layer (strict)',
+  ocr: 'Extract: OCR',
+  'docx-xml': 'Extract: DOCX XML',
+  'xlsx-xml': 'Extract: XLSX XML',
+  'html-text': 'Extract: HTML → text',
+  direct: 'Extract: direct decode',
+  'best-effort': 'Extract: best effort',
+  metadata: 'Extract: filename only',
+  skip: 'Extract: skipped',
+};
+
+interface SourceLabel {
+  key: string;
+  title: string;
+  text: string;
+}
+
+function sourceLabels(source: KbSourceDto): SourceLabel[] {
+  return [
+    ...(source.managedKey
+      ? [{ key: 'managed', title: 'Created and refreshed by the host', text: 'Host-maintained' }]
+      : []),
+    {
+      key: 'chunk',
+      title: 'Chunking strategy',
+      text: CHUNK_LABELS[source.chunkPreset] ?? `Chunks: ${source.chunkPreset}`,
+    },
+    {
+      key: 'extract',
+      title: 'Extraction method',
+      text: EXTRACTION_LABELS[source.extraction] ?? `Extract: ${source.extraction}`,
+    },
+    ...source.storage.slice(1).map((backend) => ({
+      key: `storage-${backend}`,
+      title: 'Storage backend',
+      text: backend,
+    })),
+  ];
+}
+
+function SourceLabels({ source }: { source: KbSourceDto }) {
+  const labels = sourceLabels(source);
+  const rows = Array.from({ length: Math.ceil(labels.length / 3) }, (_, index) =>
+    labels.slice(index * 3, index * 3 + 3),
+  );
+  return (
+    <div className="kb-source-labels">
+      {rows.map((row, index) => (
+        <div className="kb-source-label-row" key={index}>
+          {row.map((label) => (
+            <span key={label.key} className="kb-badge" title={label.title}>
+              {label.text}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 type PickerKind = (typeof SOURCE_KINDS)[number]['kind'];
 
 interface PickerState {
@@ -69,6 +138,36 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function ProcessingBars({
+  label,
+  points,
+}: {
+  label: string;
+  points: Array<{ label: string; value: number }>;
+}) {
+  const max = Math.max(1, ...points.map((point) => point.value));
+  return (
+    <figure className="kb-processing__chart" aria-label={label}>
+      <figcaption>{label}</figcaption>
+      {points.length === 0 ? (
+        <p className="kb-muted">No data yet.</p>
+      ) : (
+        <ul>
+          {points.map((point) => (
+            <li key={point.label}>
+              <span className="kb-processing__label">{point.label}</span>
+              <span className="kb-processing__bar" aria-hidden="true">
+                <span style={{ width: `${Math.max(4, (point.value / max) * 100)}%` }} />
+              </span>
+              <span className="kb-processing__value">{point.value}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </figure>
+  );
+}
+
 export default function KbApp() {
   const [sources, setSources] = useState<KbSourceDto[]>([]);
   const [query, setQuery] = useState('');
@@ -81,6 +180,7 @@ export default function KbApp() {
   const [storage, setStorage] = useState<KbStorageStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [deleteMode, setDeleteMode] = useState(false);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams();
@@ -128,6 +228,22 @@ export default function KbApp() {
       return;
     }
     setNotice(`${source.title} is now ${source.enabled ? 'off' : 'on'}.`);
+    await load();
+  };
+
+  const updateSource = async (
+    source: KbSourceDto,
+    patch: { modelUse?: 'send' | 'redact' | 'withhold'; retentionDays?: number | null },
+  ) => {
+    const res = await apiFetch(`/api/v1/kb/sources/${source.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
     await load();
   };
 
@@ -244,6 +360,12 @@ export default function KbApp() {
     }
   };
 
+  const deleteDate = (source: KbSourceDto): string => {
+    if (source.retentionDays == null) return 'Unlimited';
+    const date = new Date(new Date(source.createdAt).getTime() + source.retentionDays * 86_400_000);
+    return date.toLocaleDateString('en-GB');
+  };
+
   return (
     <Page
       title="Knowledge base"
@@ -286,9 +408,57 @@ export default function KbApp() {
                 {storage.documents} / {storage.chunks}
               </dd>
             </div>
+            {storage.backends.map((backend) => (
+              <div key={backend.label}>
+                <dt>{backend.label}</dt>
+                <dd>{backend.value}</dd>
+              </div>
+            ))}
           </dl>
         ) : (
           <p className="kb-muted">Storage totals are unavailable.</p>
+        )}
+      </Card>
+
+      <Card title="Data processing">
+        {storage?.processing ? (
+          <>
+            <dl className="kb-storage" aria-label="Knowledge processing metrics">
+              <div>
+                <dt>Contextual retrieval</dt>
+                <dd>
+                  {storage.processing.contextualRate}% ({storage.processing.contextualChunks} /{' '}
+                  {storage.processing.totalChunks} chunks)
+                </dd>
+              </div>
+              <div>
+                <dt>Ingest error rate</dt>
+                <dd>{storage.processing.errorRate}%</dd>
+              </div>
+              <div>
+                <dt>Access mode</dt>
+                <dd>
+                  {storage.processing.accessModes
+                    .map((entry) => `${entry.label}: ${entry.value}`)
+                    .join(' · ') || 'No sources'}
+                </dd>
+              </div>
+              <div>
+                <dt>PDF extraction</dt>
+                <dd>{storage.processing.pdfExtraction}</dd>
+              </div>
+            </dl>
+            <div className="kb-processing">
+              <ProcessingBars
+                label="Chunking strategy"
+                points={storage.processing.chunkStrategies}
+              />
+              <ProcessingBars label="Ingest outcomes" points={storage.processing.ingestStatus} />
+              <ProcessingBars label="Source types" points={storage.processing.mediaTypes} />
+            </div>
+          </>
+        ) : (
+          <p className="kb-muted">Processing metrics are unavailable.</p>
         )}
       </Card>
 
@@ -349,6 +519,11 @@ export default function KbApp() {
         )}
       </Card>
 
+      {deleteMode ? (
+        <p className="kb-notice" role="status">
+          Delete mode: use the trash button beside a source to remove it and its chunks.
+        </p>
+      ) : null}
       <Card
         title="Sources"
         actions={
@@ -357,92 +532,138 @@ export default function KbApp() {
               {refreshing ? 'Refreshing…' : 'Refresh base memory'}
             </Button>
             <Button onClick={() => void load()}>Refresh</Button>
+            <Button
+              variant={deleteMode ? 'primary' : 'ghost'}
+              aria-pressed={deleteMode}
+              onClick={() => setDeleteMode((value) => !value)}
+            >
+              {deleteMode ? 'Done deleting' : 'Delete sources'}
+            </Button>
           </div>
         }
       >
         {sources.length === 0 && !error ? (
           <EmptyState>No sources yet. Use “Add knowledge” to start.</EmptyState>
         ) : (
-          <Table>
-            <thead>
-              <tr>
-                <th>Source</th>
-                <th>Uploaded</th>
-                <th>Items</th>
-                <th>Size</th>
-                <th>Status</th>
-                <th>Use</th>
-                <th className="kb-delete-cell">Delete</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources.map((source) => (
-                <tr key={source.id}>
-                  <td>
-                    <strong>{source.title}</strong>
-                    <div className="kb-muted">
-                      {source.kind}
-                      {source.managedKey ? (
-                        <span
-                          className="kb-badge"
-                          title="Generated from setup and refreshed by the host"
-                        >
-                          Managed
-                        </span>
-                      ) : null}
-                      {source.readOnly ? <span className="kb-badge">Read-only</span> : null}
-                      {source.audience === 'operator' ? (
-                        <span className="kb-badge">Operator</span>
-                      ) : null}
-                    </div>
-                  </td>
-                  <td>{new Date(source.createdAt).toLocaleDateString('en-GB')}</td>
-                  <td>{source.itemCount}</td>
-                  <td>{formatBytes(source.sizeBytes)}</td>
-                  <td>
-                    <span className={`kb-status kb-status--${source.status}`}>{source.status}</span>
-                  </td>
-                  <td className="kb-actions-cell">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={source.enabled}
-                      aria-label={`${source.title} enabled`}
-                      className={`kb-switch${source.enabled ? ' kb-switch--on' : ''}`}
-                      onClick={() => void toggleSource(source)}
-                    >
-                      <span />
-                    </button>
-                  </td>
-                  <td className="kb-delete-cell">
-                    {source.managedKey || source.readOnly ? (
-                      <span className="kb-muted" title="Managed sources cannot be deleted here">
-                        —
+          <div className="kb-sources-table">
+            <Table>
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Uploaded</th>
+                  <th>Size</th>
+                  <th>Status</th>
+                  <th>Model use</th>
+                  <th>Retention</th>
+                  <th>Delete date</th>
+                  <th>Use</th>
+                  {deleteMode ? <th className="kb-delete-cell">Delete</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {sources.map((source) => (
+                  <tr key={source.id}>
+                    <td>
+                      <div className="kb-source-title">
+                        <strong>{source.title}</strong>
+                        {source.storage[0] ? (
+                          <span className="kb-badge" title="Database">
+                            {source.storage[0]}
+                          </span>
+                        ) : null}
+                      </div>
+                      <SourceLabels source={source} />
+                    </td>
+                    <td>{new Date(source.createdAt).toLocaleDateString('en-GB')}</td>
+                    <td>{formatBytes(source.sizeBytes)}</td>
+                    <td>
+                      <span className={`kb-status kb-status--${source.status}`}>
+                        {source.status}
                       </span>
-                    ) : (
+                    </td>
+                    <td>
+                      <select
+                        aria-label={`${source.title} model use`}
+                        value={source.modelUse}
+                        disabled={source.readOnly}
+                        onChange={(event) =>
+                          void updateSource(source, {
+                            modelUse: event.target.value as 'send' | 'redact' | 'withhold',
+                          })
+                        }
+                      >
+                        <option value="send">Full access</option>
+                        <option value="redact">Redact</option>
+                        <option value="withhold">Withhold</option>
+                      </select>
+                    </td>
+                    <td>
+                      <select
+                        aria-label={`${source.title} retention`}
+                        value={source.retentionDays ?? ''}
+                        disabled={source.readOnly}
+                        onChange={(event) =>
+                          void updateSource(source, {
+                            retentionDays: event.target.value ? Number(event.target.value) : null,
+                          })
+                        }
+                      >
+                        <option value="">Unlimited</option>
+                        <option value="30">30 days</option>
+                        <option value="90">90 days</option>
+                        <option value="180">180 days</option>
+                        <option value="365">365 days</option>
+                        <option value="730">730 days</option>
+                      </select>
+                    </td>
+                    <td>{deleteDate(source)}</td>
+                    <td className="kb-actions-cell">
                       <button
                         type="button"
-                        className="kb-delete"
-                        aria-label={`Delete ${source.title}`}
-                        title="Delete this source and its chunks"
-                        onClick={() => void removeSource(source)}
+                        role="switch"
+                        aria-checked={source.enabled}
+                        aria-label={`${source.title} enabled`}
+                        className={`kb-switch${source.enabled ? ' kb-switch--on' : ''}`}
+                        onClick={() => void toggleSource(source)}
                       >
-                        <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
-                          <path
-                            d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10M9 9v4M11 9v4"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.4"
-                            strokeLinecap="round"
-                          />
-                        </svg>
+                        <span />
                       </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
+                    </td>
+                    {deleteMode ? (
+                      <td className="kb-delete-cell">
+                        {source.managedKey || source.readOnly ? (
+                          <span
+                            className="kb-muted"
+                            title="Host-maintained sources cannot be deleted here"
+                          >
+                            —
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="kb-delete"
+                            aria-label={`Delete ${source.title}`}
+                            title="Delete this source and its chunks"
+                            onClick={() => void removeSource(source)}
+                          >
+                            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                              <path
+                                d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10M9 9v4M11 9v4"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.4"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                          </button>
+                        )}
+                      </td>
+                    ) : null}
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </div>
         )}
       </Card>
 

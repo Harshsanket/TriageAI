@@ -23,6 +23,41 @@ function throwFetch(error: unknown): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
+describe('embedding cache (phase 19.3)', () => {
+  it('reuses vectors for repeated texts and only sends the uncached ones', async () => {
+    let calls = 0;
+    const bodies: string[][] = [];
+    const fetchMock = (async (_url: string, init?: RequestInit) => {
+      calls += 1;
+      const body = JSON.parse(String(init?.body ?? '{}')) as { texts?: string[] };
+      const texts = body.texts ?? [];
+      bodies.push(texts);
+      return new Response(
+        JSON.stringify({ vectors: texts.map(() => [1, 2]), modelVersion: 'fake-embed' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+    const embedder = new HttpEmbedder('http://ai.test', fetchMock);
+
+    const first = await embedder.embed(['alpha', 'beta']);
+    expect(first.vectors).toEqual([
+      [1, 2],
+      [1, 2],
+    ]);
+    expect(calls).toBe(1);
+
+    const second = await embedder.embed(['alpha', 'beta']);
+    expect(second.modelVersion).toBe('fake-embed');
+    expect(calls).toBe(1);
+    expect(embedder.stats()).toMatchObject({ hits: 2, misses: 2, hitRate: 0.5 });
+
+    await embedder.embed(['alpha', 'gamma']);
+    expect(calls).toBe(2);
+    expect(bodies[1]).toEqual(['gamma']);
+    expect(embedder.stats().hits).toBe(3);
+  });
+});
+
 describe('capability adapter failure classification (phase 10c)', () => {
   it('classifies ai-service rate limits and preserves Retry-After', async () => {
     const embedder = new HttpEmbedder('http://ai.test', fail(429, { 'retry-after': '2' }));

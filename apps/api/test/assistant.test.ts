@@ -137,11 +137,10 @@ describeIfDb('assistant profile (phase 4)', () => {
     });
     expect(created.statusCode).toBe(200);
     const createdBody = created.json() as {
-      document: { id: string; approved: boolean };
+      document: { id: string };
       ingest: { chunks: number };
     };
     expect(createdBody.ingest.chunks).toBeGreaterThan(0);
-    expect(createdBody.document.approved).toBe(true);
     const after = await app.inject({
       method: 'POST',
       url: '/api/v1/kb/search',
@@ -152,7 +151,7 @@ describeIfDb('assistant profile (phase 4)', () => {
     expect(afterBody.gate.sufficient).toBe(true);
   }, 30_000);
 
-  it('answers chat questions with citations from approved KB docs', async () => {
+  it('answers chat questions with citations from KB docs', async () => {
     const sent = await app.inject({
       method: 'POST',
       url: '/api/v1/chat/messages',

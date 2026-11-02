@@ -18,7 +18,7 @@ import { resolve } from 'node:path';
 
 import type { SetupRuntime } from '../setup/boot.js';
 import { readStorage } from '../services/storage.js';
-import { summarizeUptime, type UptimeProbeRow } from '../services/uptime.js';
+import { countRestarts, summarizeUptime, type UptimeProbeRow } from '../services/uptime.js';
 import { readModelRuntimes } from '../services/modelRuntimes.js';
 import { getControls } from '../services/controls.js';
 
@@ -275,7 +275,7 @@ const AGENT_PALETTE = [
 ];
 
 async function readAgents(kernel: Kernel): Promise<DashboardAgent[]> {
-  const [definitions, usage] = await Promise.all([
+  const [definitions, usage, statuses, series] = await Promise.all([
     kernel.database
       .query<{ id: string; display_name: string; definition: Record<string, unknown> }>(
         `SELECT id, display_name, definition FROM agent_definitions ORDER BY updated_at DESC LIMIT 50`,
@@ -291,23 +291,62 @@ async function readAgents(kernel: Kernel): Promise<DashboardAgent[]> {
           GROUP BY agent_id`,
       )
       .catch(() => []),
+    kernel.database
+      .query<{ agent_id: string; running: number; succeeded: number; failed: number }>(
+        `SELECT c.agent_id,
+                COUNT(DISTINCT c.run_id) FILTER
+                  (WHERE r.status IN ('PENDING','RUNNING','AWAITING'))::int AS running,
+                COUNT(DISTINCT c.run_id) FILTER (WHERE r.status = 'SUCCEEDED')::int AS succeeded,
+                COUNT(DISTINCT c.run_id) FILTER (WHERE r.status = 'FAILED')::int AS failed
+           FROM cost_ledger c
+           JOIN workflow_runs r ON r.id = c.run_id
+          WHERE c.agent_id IS NOT NULL AND c.at > now() - interval '24 hours'
+          GROUP BY c.agent_id`,
+      )
+      .catch(() => []),
+    kernel.database
+      .query<{ agent_id: string; bucket: string; runs: number; tokens: number; cost: number }>(
+        `SELECT agent_id,
+                to_char(date_trunc('hour', at), 'YYYY-MM-DD"T"HH24:00') AS bucket,
+                COUNT(DISTINCT run_id)::int AS runs,
+                COALESCE(SUM(tokens_in + tokens_out), 0)::int AS tokens,
+                COALESCE(SUM(est_cost), 0)::float AS cost
+           FROM cost_ledger
+          WHERE agent_id IS NOT NULL AND at > now() - interval '24 hours'
+          GROUP BY 1, 2 ORDER BY 2`,
+      )
+      .catch(() => []),
   ]);
   const byAgent = new Map(usage.map((row) => [row.agent_id, row]));
+  const byStatus = new Map(statuses.map((row) => [row.agent_id, row]));
+  const seriesByAgent = new Map<string, DashboardAgent['series']>();
+  for (const point of series) {
+    seriesByAgent.set(point.agent_id, [
+      ...(seriesByAgent.get(point.agent_id) ?? []),
+      {
+        bucket: point.bucket,
+        runs: count(point.runs),
+        tokens: count(point.tokens),
+        cost: Number(point.cost ?? 0),
+      },
+    ]);
+  }
   return definitions.map((definition, index) => {
     const used = byAgent.get(definition.id);
+    const status = byStatus.get(definition.id);
     return {
       id: definition.id,
       displayName: definition.display_name,
       color:
         (definition.definition.color as string | undefined) ??
         (AGENT_PALETTE[index % AGENT_PALETTE.length] as string),
-      running: 0,
+      running: count(status?.running),
       runs: count(used?.runs),
       tokens: count(used?.tokens),
       cost: Number(used?.cost ?? 0),
-      succeeded: 0,
-      failed: 0,
-      series: [],
+      succeeded: count(status?.succeeded),
+      failed: count(status?.failed),
+      series: seriesByAgent.get(definition.id) ?? [],
     };
   });
 }
@@ -476,7 +515,13 @@ export function registerDashboardRoutes(
                 WHERE at > now() - interval '24 hours' ORDER BY at`,
             )
             .catch(() => []);
-    const uptime = { ...summarizeUptime(uptimeRows, Math.floor(process.uptime())), restarts: 0 };
+    const restarts =
+      database === 'down'
+        ? 0
+        : await countRestarts(kernel.database, new Date(Date.now() - 24 * 60 * 60 * 1000)).catch(
+            () => 0,
+          );
+    const uptime = { ...summarizeUptime(uptimeRows, Math.floor(process.uptime())), restarts };
     const storage = await readStorage(kernel.database, {
       blobRoot:
         process.env.TRIAGEAI_BLOB_ROOT ??

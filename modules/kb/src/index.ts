@@ -30,6 +30,7 @@ import {
   hashText,
   loadDocument,
   loadSource,
+  readDataProcessing,
   registerIngestWorkflow,
   runIngest,
   toSourceDto,
@@ -109,6 +110,18 @@ export const kbModule: TriageModule = {
   },
   lifecycle: {
     health: async () => ({ status: 'healthy', detail: 'sources + hybrid retrieval' }),
+    onUninstall: async ({ database, options, capabilities, knowledge }) => {
+      const collection = typeof options.collection === 'string' ? options.collection : 'kb_docs';
+      await knowledge.deleteCollection(collection);
+      const blobs = await database
+        .query<{ blob_ref: string }>(
+          `SELECT DISTINCT blob_ref FROM kb_sources WHERE blob_ref IS NOT NULL`,
+        )
+        .catch(() => []);
+      for (const row of blobs) {
+        await capabilities.blobStore?.delete(row.blob_ref).catch(() => undefined);
+      }
+    },
   },
   register(ctx) {
     const options = configSchema.parse(ctx.moduleOptions ?? {});
@@ -515,6 +528,26 @@ export const kbModule: TriageModule = {
             [source.id, patch.label],
           );
         }
+        if (patch.modelUse !== undefined) {
+          await ctx.database.query(
+            `UPDATE kb_sources SET model_use = $2, updated_at = now() WHERE id = $1`,
+            [source.id, patch.modelUse],
+          );
+          for (const doc of await ctx.database.query<{ id: string }>(
+            `SELECT id FROM kb_documents WHERE source_id = $1`,
+            [source.id],
+          )) {
+            await ctx.capabilities.vectorStore?.updateMetadata?.(collection, doc.id, {
+              modelUse: patch.modelUse,
+            });
+          }
+        }
+        if (patch.retentionDays !== undefined) {
+          await ctx.database.query(
+            `UPDATE kb_sources SET retention_days = $2, updated_at = now() WHERE id = $1`,
+            [source.id, patch.retentionDays],
+          );
+        }
         if (patch.enabled !== undefined && patch.enabled !== source.enabled) {
           const docs = await ctx.database.query<{ id: string }>(
             `SELECT id FROM kb_documents WHERE source_id = $1`,
@@ -575,17 +608,44 @@ export const kbModule: TriageModule = {
       method: 'GET',
       url: '/api/v1/kb/storage',
       handler: async () => {
-        const [sources, documents, knowledge, docStats] = await Promise.all([
-          ctx.database.query<{ id: string; title: string; size_bytes: string }>(
-            `SELECT id, title, size_bytes FROM kb_sources ORDER BY created_at DESC`,
-          ),
-          ctx.database.query<{ source_id: string | null; bytes: string }>(
-            `SELECT source_id, COALESCE(SUM(octet_length(body)), 0)::bigint AS bytes
-               FROM kb_documents GROUP BY source_id`,
-          ),
-          ctx.knowledge.storageStats(collection),
-          ctx.knowledge.documentStats(collection),
-        ]);
+        const processing = await readDataProcessing(ctx);
+        const [sources, documents, knowledge, docStats, chunking, ingest, access, media, context] =
+          await Promise.all([
+            ctx.database.query<{ id: string; title: string; size_bytes: string }>(
+              `SELECT id, title, size_bytes FROM kb_sources ORDER BY created_at DESC`,
+            ),
+            ctx.database.query<{ source_id: string | null; bytes: string }>(
+              `SELECT source_id, COALESCE(SUM(octet_length(body)), 0)::bigint AS bytes
+                 FROM kb_documents GROUP BY source_id`,
+            ),
+            ctx.knowledge.storageStats(collection),
+            ctx.knowledge.documentStats(collection),
+            ctx.database.query<{ label: string; value: number }>(
+              `SELECT chunk_preset AS label, COUNT(*)::int AS value
+                 FROM kb_sources GROUP BY 1 ORDER BY value DESC`,
+            ),
+            ctx.database.query<{ label: string; value: number }>(
+              `SELECT status AS label, COUNT(*)::int AS value
+                 FROM kb_ingest_runs GROUP BY 1 ORDER BY value DESC`,
+            ),
+            ctx.database.query<{ label: string; value: number }>(
+              `SELECT CASE WHEN read_only THEN 'Read-only' ELSE 'Editable' END AS label,
+                      COUNT(*)::int AS value
+                 FROM kb_sources GROUP BY 1 ORDER BY value DESC`,
+            ),
+            ctx.database.query<{ label: string; value: number }>(
+              `SELECT COALESCE(media_type, 'unknown') AS label, COUNT(*)::int AS value
+                 FROM kb_sources GROUP BY 1 ORDER BY value DESC`,
+            ),
+            ctx.database.query<{ total: number; contextual: number }>(
+              `SELECT COALESCE(SUM(jsonb_array_length(chunks)), 0)::int AS total,
+                      COALESCE(SUM((
+                        SELECT COUNT(*) FROM jsonb_array_elements(chunks) AS chunk
+                         WHERE COALESCE(chunk->>'headingPath', '') <> ''
+                      )), 0)::int AS contextual
+                 FROM kb_ingest_items`,
+            ),
+          ]);
         const textBySource = new Map(
           documents.map((row) => [row.source_id ?? '', Number(row.bytes)]),
         );
@@ -596,6 +656,32 @@ export const kbModule: TriageModule = {
         }));
         const originalsBytes = sources.reduce((sum, row) => sum + Number(row.size_bytes), 0);
         const textBytes = documents.reduce((sum, row) => sum + Number(row.bytes), 0);
+        const ingestTotal = ingest.reduce((sum, row) => sum + Number(row.value), 0);
+        const ingestFailed = ingest
+          .filter((row) => row.label === 'failed')
+          .reduce((sum, row) => sum + Number(row.value), 0);
+        const totalChunks = Number(context[0]?.total ?? 0);
+        const contextualChunks = Math.min(totalChunks, Number(context[0]?.contextual ?? 0));
+        const backends = [
+          { label: 'Database', value: 'PostgreSQL' },
+          {
+            label: 'Vectors',
+            value: `${ctx.config.capabilities.vectorStore?.adapter ?? 'pgvector'} (PostgreSQL)`,
+          },
+          {
+            label: 'Queue',
+            value:
+              ctx.config.queue.adapter === 'bullmq'
+                ? 'Redis (BullMQ)'
+                : ctx.config.queue.adapter === 'inline'
+                  ? 'In-process (inline)'
+                  : 'PostgreSQL (pg-queue)',
+          },
+          {
+            label: 'Files',
+            value: ctx.capabilities.blobStore ? 'Blob store' : 'PostgreSQL text only',
+          },
+        ];
         return KbStorageStatsSchema.parse({
           totalBytes: originalsBytes + textBytes + knowledge.textBytes + knowledge.vectorBytes,
           originalsBytes,
@@ -605,6 +691,25 @@ export const kbModule: TriageModule = {
           documents: docStats.documents,
           chunks: knowledge.chunks,
           sources: perSource,
+          backends,
+          processing: {
+            chunkStrategies: chunking,
+            ingestStatus: ingest,
+            accessModes: access,
+            mediaTypes: media,
+            contextualChunks,
+            totalChunks,
+            contextualRate:
+              totalChunks === 0 ? 0 : Number(((contextualChunks / totalChunks) * 100).toFixed(1)),
+            errorRate:
+              ingestTotal === 0 ? 0 : Number(((ingestFailed / ingestTotal) * 100).toFixed(1)),
+            pdfExtraction:
+              processing.pdfExtraction === 'ocr'
+                ? 'OCR (requires the AI service OCR adapter)'
+                : processing.pdfExtraction === 'text-layer-strict'
+                  ? 'deterministic text layer (rejects scans)'
+                  : 'deterministic text layer (no OCR)',
+          },
         });
       },
     });
@@ -621,6 +726,7 @@ export const kbModule: TriageModule = {
           throw new AppError('FORBIDDEN', 'managed KB sources are written by the host only');
         }
         const input = KbManagedSourceUpsertSchema.parse(request.body);
+        const processing = await readDataProcessing(ctx);
         const contentHash = hashText(input.body);
         const label = input.label ?? 'Setup context';
         const existingRows = await ctx.database.query<SourceRow>(
@@ -635,16 +741,16 @@ export const kbModule: TriageModule = {
           await ctx.database.query(
             `INSERT INTO kb_sources
                (id, title, kind, label, content_hash, embedding_model, chunk_preset,
-                sensitivity, audience, managed_key, read_only, enabled, status, item_count,
-                size_bytes)
-             VALUES ($1,$2,'note',$3,$4,$5,$6,$7,$8,$9,true,$10,'pending',1,$11)`,
+                extraction_method, sensitivity, audience, managed_key, read_only, enabled,
+                status, item_count, size_bytes)
+             VALUES ($1,$2,'note',$3,$4,$5,$6,'direct',$7,$8,$9,true,$10,'pending',1,$11)`,
             [
               sourceId,
               input.title,
               label,
               contentHash,
               embeddingKey(ctx),
-              'structure-700',
+              processing.chunking,
               input.sensitivity,
               input.audience,
               input.managedKey,
@@ -654,8 +760,8 @@ export const kbModule: TriageModule = {
           );
           await ctx.database.query(
             `INSERT INTO kb_documents
-               (id, title, body, source, approved, source_id, label, media_type)
-             VALUES ($1,$2,$3,'managed',true,$4,$5,'text/markdown')`,
+               (id, title, body, source, source_id, label, media_type)
+             VALUES ($1,$2,$3,'managed',$4,$5,'text/markdown')`,
             [documentId, input.title, input.body, sourceId, label],
           );
           source = (await loadSource(ctx, sourceId)) as SourceRow;
@@ -747,6 +853,38 @@ export const kbModule: TriageModule = {
         });
       },
     });
+    ctx.registerRetentionTask({
+      id: 'kb.sources',
+      apply: async ({ database }) => {
+        const expired = await database.query<{ id: string; blob_ref: string | null }>(
+          `SELECT id, blob_ref FROM kb_sources
+            WHERE retention_days IS NOT NULL
+              AND created_at < now() - (retention_days || ' days')::interval`,
+        );
+        for (const source of expired) {
+          const docs = await database.query<{ id: string }>(
+            `SELECT id FROM kb_documents WHERE source_id = $1`,
+            [source.id],
+          );
+          for (const doc of docs) {
+            await ctx.capabilities.vectorStore?.deleteByDocument(collection, doc.id);
+          }
+          await database.query(`DELETE FROM kb_ingest_items WHERE source_id = $1`, [source.id]);
+          await database.query(`DELETE FROM kb_documents WHERE source_id = $1`, [source.id]);
+          await database.query(`DELETE FROM kb_sources WHERE id = $1`, [source.id]);
+          if (source.blob_ref) {
+            const refs = await database.query<{ count: string }>(
+              `SELECT COUNT(*)::text AS count FROM kb_sources WHERE blob_ref = $1`,
+              [source.blob_ref],
+            );
+            if (Number(refs[0]?.count ?? 0) === 0) {
+              await ctx.capabilities.blobStore?.delete(source.blob_ref).catch(() => undefined);
+            }
+          }
+        }
+        return expired.length;
+      },
+    });
   },
 };
 
@@ -757,14 +895,22 @@ async function runIngestFromDocument(
 ): Promise<Awaited<ReturnType<typeof runIngest>>> {
   // Legacy documents created before sources existed: give them a source first.
   const model = embeddingKey(ctx);
+  const processing = await readDataProcessing(ctx);
   const { createHash } = await import('node:crypto');
   const sourceId = `legacy_${document.id}`;
   await ctx.database.query(
     `INSERT INTO kb_sources
-       (id, title, kind, label, content_hash, embedding_model, chunk_preset, status, sensitivity)
-     VALUES ($1,$2,'note','Note',$3,$4,'structure-700','pending','internal')
+       (id, title, kind, label, content_hash, embedding_model, chunk_preset, extraction_method,
+        status, sensitivity)
+     VALUES ($1,$2,'note','Note',$3,$4,$5,'direct','pending','internal')
      ON CONFLICT (id) DO NOTHING`,
-    [sourceId, document.title, createHash('sha256').update(document.body).digest('hex'), model],
+    [
+      sourceId,
+      document.title,
+      createHash('sha256').update(document.body).digest('hex'),
+      model,
+      processing.chunking,
+    ],
   );
   await ctx.database.query(`UPDATE kb_documents SET source_id = $2 WHERE id = $1`, [
     document.id,

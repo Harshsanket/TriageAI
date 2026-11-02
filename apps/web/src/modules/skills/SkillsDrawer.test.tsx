@@ -71,7 +71,7 @@ describe('Skills drawer', () => {
     expect(screen.getByText('Ignore')).toBeTruthy();
   });
 
-  it('creates a skill from the description and instructions', async () => {
+  it('creates a skill from the title and instructions', async () => {
     const calls: Array<{ url: string; body?: string }> = [];
     vi.stubGlobal(
       'fetch',
@@ -84,8 +84,8 @@ describe('Skills drawer', () => {
       }),
     );
     render(<SkillsDrawer onClose={() => undefined} />);
-    fireEvent.change(screen.getByLabelText('Describe the skill'), {
-      target: { value: 'Answer with a short summary first.' },
+    fireEvent.change(screen.getByLabelText('Skill title'), {
+      target: { value: 'Short summaries' },
     });
     fireEvent.change(screen.getByLabelText('Skill instructions'), {
       target: { value: 'Answer with a short summary first, then details.' },

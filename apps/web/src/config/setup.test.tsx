@@ -324,6 +324,52 @@ describe('model settings and danger zone', () => {
   });
 });
 
+describe('data processing settings', () => {
+  it('saves manual chunking and extraction choices with strategy notes', async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({
+        url,
+        method: init?.method ?? 'GET',
+        body: init?.body ? String(init.body) : undefined,
+      });
+      if (url === '/api/v1/setup/config/effective') {
+        return json({
+          bootedOverlayVersion: 1,
+          latestOverlay: null,
+          history: [],
+          running: { profile: 'assistant', modules: {}, capabilities: {} },
+          authMode: 'disabled',
+          authModeSource: 'setting',
+        });
+      }
+      if (url === '/api/v1/setup/secrets') return json({ available: true, secrets: [] });
+      if (url === '/api/v1/system/data-policy') return json({ classes: [], sendGate: {} });
+      if (url === '/api/v1/system/data-processing') {
+        return json({
+          chunking: 'structure-700',
+          pdfExtraction: 'text-layer',
+          imageExtraction: 'skip',
+        });
+      }
+      return json({});
+    }) as unknown as typeof fetch;
+
+    render(<ConfigView status={COMPLETE} refresh={() => undefined} />);
+
+    expect(await screen.findByRole('heading', { name: 'Data processing' })).toBeInTheDocument();
+    expect(screen.getAllByText(/Structure-aware · 700 chars/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Best for: Digital PDFs/)).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText('Chunking strategy'), 'sentence-500');
+    await userEvent.click(screen.getByRole('button', { name: 'Save data processing' }));
+    expect(await screen.findByText(/Saved\. New sources use these settings/)).toBeInTheDocument();
+    const put = calls.find(
+      (call) => call.url === '/api/v1/system/data-processing' && call.method === 'PUT',
+    );
+    expect(put?.body).toContain('"chunking":"sentence-500"');
+  });
+});
+
 describe('review step', () => {
   it('shows plan problems and disables Apply', async () => {
     globalThis.fetch = vi.fn(async (url: string) => {

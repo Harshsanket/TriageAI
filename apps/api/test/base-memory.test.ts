@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,11 @@ import type { Capabilities, Kernel, KernelRouteDef, VectorStore } from '@triagea
 import { PostgresDatabase } from '@triageai/kernel';
 
 import { buildApp } from '../src/app.js';
-import { buildBaseMemoryDocuments, buildSystemStatusDocument } from '../src/services/baseMemory.js';
+import {
+  BaseMemoryService,
+  buildBaseMemoryDocuments,
+  buildSystemStatusDocument,
+} from '../src/services/baseMemory.js';
 import { PgRetriever, PgVectorStore, type HttpEmbedder } from '../src/services/capabilities.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
@@ -34,6 +38,27 @@ const fakeEmbedder = {
     modelVersion: 'fake-embed-384',
   }),
 };
+
+describe('base memory refresh schedule (phase 24.8)', () => {
+  it('refreshes the operational snapshot on the configured interval and stops cleanly', async () => {
+    vi.useFakeTimers();
+    const service = new BaseMemoryService(
+      { info: () => undefined, warn: () => undefined, error: () => undefined },
+      {} as never,
+    );
+    let calls = 0;
+    service.refreshStatus = async () => {
+      calls += 1;
+    };
+    service.startPeriodic(() => ({}) as Kernel, 1_000);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(calls).toBe(3);
+    service.stopPeriodic();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(calls).toBe(3);
+    vi.useRealTimers();
+  });
+});
 
 describe('base memory builder', () => {
   const docs = buildBaseMemoryDocuments({

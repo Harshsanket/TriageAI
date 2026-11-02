@@ -210,6 +210,36 @@ describeIfDb('bootKernel', () => {
     await kernel2.shutdown();
     await database2.close();
   }, 30000);
+
+  it('runs a module uninstall hook before dropping its storage', async () => {
+    const database = new PostgresDatabase(DATABASE_URL);
+    let calls = 0;
+    const module = demoModule();
+    module.lifecycle = {
+      onUninstall: async ({ options }) => {
+        calls += 1;
+        expect(options.greet).toBe('hello');
+      },
+    };
+    const kernel = await bootKernel({
+      config: {
+        profile: 'core',
+        queue: { adapter: 'inline' },
+        modules: { demo: { enabled: false } },
+        capabilities: {},
+      },
+      database,
+      logger: noopLogger,
+      modules: { demo: module },
+    });
+    try {
+      await kernel.uninstallModule('demo');
+      expect(calls).toBe(1);
+    } finally {
+      await kernel.shutdown();
+      await database.close();
+    }
+  }, 30000);
 });
 
 describeIfDb('bootKernel capability validation', () => {

@@ -54,3 +54,11 @@ export async function setControls(
   });
   return next;
 }
+
+/** 32.2: turning every runtime off engages the global kill switch. */
+export function resolveLlmSwitch<T extends Partial<Controls>>(patch: T, runtimeIds: string[]): T {
+  if (!patch.disabledRuntimes || runtimeIds.length === 0) return patch;
+  return runtimeIds.every((id) => patch.disabledRuntimes?.includes(id))
+    ? { ...patch, llmDisabled: true }
+    : patch;
+}

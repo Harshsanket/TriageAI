@@ -75,8 +75,14 @@ export function buildRagPrompt(input: RagPromptInput): string {
   ].join('\n');
 }
 
-export { chunkText, chunkDocument, DEFAULT_MAX_CHARS } from './chunk.js';
-export type { DocumentChunk } from './chunk.js';
+export {
+  chunkText,
+  chunkDocument,
+  chunkByPreset,
+  DEFAULT_MAX_CHARS,
+  CHUNK_PRESET_MAX_CHARS,
+} from './chunk.js';
+export type { ChunkPreset, DocumentChunk } from './chunk.js';
 export {
   assessAnswer,
   finalizeAnswer,

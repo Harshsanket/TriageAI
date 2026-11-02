@@ -1,4 +1,4 @@
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 
 import type { SystemManifest } from '@triageai/contracts';
@@ -59,6 +59,26 @@ export function App() {
   const manifestState = useSystemManifest();
   const route = useRoute();
   const setup = useSetupStatus();
+  const headerRef = useRef<HTMLElement>(null);
+
+  // Keep overlay panels clear of the fixed header even when it wraps.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    const apply = () =>
+      document.documentElement.style.setProperty(
+        '--app-header-height',
+        `${Math.ceil(header.getBoundingClientRect().height)}px`,
+      );
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(header);
+    window.addEventListener('resize', apply);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', apply);
+    };
+  }, []);
 
   // 23.3: one chat. Legacy /chat paths move to the home conversation.
   const legacyChatId = /^\/chat\/(.+)$/.exec(route)?.[1] ?? null;
@@ -168,7 +188,7 @@ export function App() {
   return (
     <div className={isHome ? 'app-shell app-shell--home' : 'app-shell'}>
       <OfflineBanner />
-      <header className={isHome ? 'app-header app-header--overlay' : 'app-header'}>
+      <header ref={headerRef} className={isHome ? 'app-header app-header--overlay' : 'app-header'}>
         <button className="app-brand" type="button" onClick={() => navigate('/')}>
           TriageAI
         </button>

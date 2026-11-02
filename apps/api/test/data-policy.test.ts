@@ -23,7 +23,52 @@ describeIfDb('custom data policy (phase 23.6)', () => {
       url: '/api/v1/system/data-policy',
       payload: { reset: true },
     });
+    await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/data-processing',
+      payload: { chunking: 'structure-700', pdfExtraction: 'text-layer', imageExtraction: 'skip' },
+    });
     await app.close();
+  });
+
+  it('saves data-processing strategies and rejects unknown ones', async () => {
+    const defaults = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/data-processing',
+    });
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json()).toMatchObject({
+      chunking: 'structure-700',
+      pdfExtraction: 'text-layer',
+      imageExtraction: 'skip',
+    });
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/data-processing',
+      payload: {
+        chunking: 'sentence-500',
+        pdfExtraction: 'text-layer-strict',
+        imageExtraction: 'metadata',
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    const reread = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/data-processing',
+    });
+    expect(reread.json()).toMatchObject({
+      chunking: 'sentence-500',
+      pdfExtraction: 'text-layer-strict',
+      imageExtraction: 'metadata',
+    });
+
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/data-processing',
+      payload: { chunking: 'semantic' },
+    });
+    expect(refused.statusCode).toBe(400);
   });
 
   it('saves an in-bounds override and refuses out-of-bounds values', async () => {
