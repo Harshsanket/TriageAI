@@ -688,7 +688,7 @@ export const dataExtractModule: TriageModule = {
         const dataset = await loadDataset(request.params.id);
         if (!dataset) throw new AppError('NOT_FOUND', 'dataset not found');
         const body = z
-          .object({ mapping: z.record(z.string()).optional() })
+          .object({ mapping: z.record(z.string(), z.string()).optional() })
           .strict()
           .parse(request.body ?? {});
         // Reconciliation is re-checked by the caller via a fresh import; here a

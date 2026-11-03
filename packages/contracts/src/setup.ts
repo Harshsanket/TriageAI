@@ -51,7 +51,7 @@ export const SetupAnswersSchema = z.object({
       autoApprove: z.boolean().default(true),
       documents: z.array(SetupDocumentSchema).max(50).default([]),
     })
-    .default({}),
+    .prefault({}),
   llm: z
     .object({
       runtime: LlmRuntimeSchema,
@@ -63,7 +63,7 @@ export const SetupAnswersSchema = z.object({
         ctx.addIssue({ code: 'custom', path: ['model'], message: 'pick a model for this runtime' });
       }
     }),
-  ticketSolver: z.object({ autoReply: z.boolean().default(true) }).default({}),
+  ticketSolver: z.object({ autoReply: z.boolean().default(true) }).prefault({}),
   integrations: z
     .object({
       githubRepo: z
@@ -74,7 +74,7 @@ export const SetupAnswersSchema = z.object({
       githubToken: z.string().min(1).max(500).optional(),
       slackWebhookUrl: z.string().url().optional(),
     })
-    .default({}),
+    .prefault({}),
   access: z
     .object({
       authMode: z.enum(['disabled', 'required']).default('disabled'),
@@ -86,13 +86,13 @@ export const SetupAnswersSchema = z.object({
         })
         .optional(),
     })
-    .default({}),
+    .prefault({}),
 });
 export type SetupAnswers = z.input<typeof SetupAnswersSchema>;
 export type ParsedSetupAnswers = z.infer<typeof SetupAnswersSchema>;
 
 export const SetupPlanSchema = z.object({
-  overlay: z.record(z.unknown()),
+  overlay: z.record(z.string(), z.unknown()),
   enabledModules: z.array(z.string()),
   agents: z.array(AgentPreferenceSchema).default([]),
   /** Blocking: the config would not boot. */

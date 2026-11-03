@@ -14,6 +14,17 @@ import { getControls, resolveLlmSwitch, setControls } from '../services/controls
 import { redactValue } from '../platform/redact.js';
 import type { SetupRuntime } from '../setup/boot.js';
 
+const ControlsPatchSchema = z
+  .object({
+    agentsPaused: z.boolean().optional(),
+    hostedModelsDisabled: z.boolean().optional(),
+    readOnly: z.boolean().optional(),
+    pluginInstallsBlocked: z.boolean().optional(),
+    llmDisabled: z.boolean().optional(),
+    disabledRuntimes: z.array(z.string().min(1).max(200)).max(50).optional(),
+  })
+  .strict();
+
 const DATA_POLICY_KEY = 'dataPolicy';
 const DATA_PROCESSING_KEY = 'dataProcessing';
 const MODEL_USE_RANK: Record<ModelUse, number> = {
@@ -263,25 +274,14 @@ export function registerSystemRoutes(
     };
   });
   app.put('/api/v1/system/controls', async (request) => {
-    const body = request.body as Partial<{
-      agentsPaused: boolean;
-      hostedModelsDisabled: boolean;
-      readOnly: boolean;
-      pluginInstallsBlocked: boolean;
-      llmDisabled: boolean;
-      disabledRuntimes: string[];
-    }>;
-    if (
-      body.disabledRuntimes !== undefined &&
-      (!Array.isArray(body.disabledRuntimes) ||
-        body.disabledRuntimes.length > 50 ||
-        body.disabledRuntimes.some((id) => typeof id !== 'string' || id.length > 200))
-    ) {
-      throw invalid('disabledRuntimes must be a list of runtime ids');
+    const parsed = ControlsPatchSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw invalid('invalid controls patch', parsed.error.issues);
     }
+    const body = parsed.data;
     const runtimes = body.disabledRuntimes !== undefined ? await readModelRuntimes(kernel) : [];
     const patch = resolveLlmSwitch(
-      body ?? {},
+      body,
       runtimes.map((runtime) => runtime.id),
     );
     const next = await setControls(kernel.database, patch, request.principal?.email ?? null);

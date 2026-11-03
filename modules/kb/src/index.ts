@@ -78,6 +78,8 @@ export const kbModule: TriageModule = {
       { method: 'POST', path: '/api/v1/kb/search' },
       { method: 'POST', path: '/api/v1/kb/sources' },
       { method: 'POST', path: '/api/v1/kb/sources/batch' },
+      { method: 'POST', path: '/api/v1/kb/sources/:id/purge' },
+      { method: 'POST', path: '/api/v1/kb/sources/:id/reingest' },
     ],
     events: { publish: ['kb.source.ingested'], subscribe: [] },
     capabilities: {
@@ -553,19 +555,91 @@ export const kbModule: TriageModule = {
             `SELECT id FROM kb_documents WHERE source_id = $1`,
             [source.id],
           );
-          await ctx.database.query(
-            `UPDATE kb_sources SET enabled = $2, updated_at = now() WHERE id = $1`,
-            [source.id, patch.enabled],
-          );
+          // Mark the chunks before the source row. If a metadata write fails,
+          // the source stays enabled (safe) instead of disabled with chunks
+          // that are still eligible for retrieval.
           for (const doc of docs) {
             await ctx.capabilities.vectorStore?.updateMetadata?.(collection, doc.id, {
               sourceEnabled: patch.enabled,
             });
           }
+          await ctx.database.query(
+            `UPDATE kb_sources SET enabled = $2, updated_at = now() WHERE id = $1`,
+            [source.id, patch.enabled],
+          );
           ctx.capabilities.retriever?.invalidate?.();
         }
         const updated = (await loadSource(ctx, source.id)) as SourceRow;
+        // A purged source is pending; switching it back On restores search by
+        // rebuilding chunks from the stored document/blob (F12).
+        if (patch.enabled === true && updated.status === 'pending') {
+          await runIngest(ctx, [updated.id], {
+            collection,
+            title: `Re-ingesting ${updated.title}`,
+            ownerId: updated.owner_id,
+          });
+        }
         return { source: toSourceDto(updated) };
+      },
+    });
+
+    ctx.registerRoute({
+      method: 'POST',
+      url: '/api/v1/kb/sources/:id/reingest',
+      handler: async (request) => {
+        const source = await loadSource(ctx, request.params.id);
+        if (!source) throw new AppError('NOT_FOUND', 'source not found');
+        if (request.ownerScope && source.owner_id !== request.ownerScope) {
+          throw new AppError('NOT_FOUND', 'source not found');
+        }
+        const ingest = await runIngest(ctx, [source.id], {
+          collection,
+          title: `Re-ingesting ${source.title}`,
+          ownerId: source.owner_id,
+        });
+        const updated = (await loadSource(ctx, source.id)) as SourceRow;
+        return { source: toSourceDto(updated), ingest };
+      },
+    });
+
+    ctx.registerRoute({
+      method: 'POST',
+      url: '/api/v1/kb/sources/:id/purge',
+      handler: async (request) => {
+        const source = await loadSource(ctx, request.params.id);
+        if (!source) throw new AppError('NOT_FOUND', 'source not found');
+        if (request.ownerScope && source.owner_id !== request.ownerScope) {
+          throw new AppError('NOT_FOUND', 'source not found');
+        }
+        const vectorStore = ctx.capabilities.vectorStore;
+        if (!vectorStore) throw internal('kb requires a vectorStore capability');
+        const docs = await ctx.database.query<{ id: string }>(
+          `SELECT id FROM kb_documents WHERE source_id = $1`,
+          [source.id],
+        );
+        for (const doc of docs) {
+          await vectorStore.deleteByDocument(collection, doc.id);
+        }
+        // The stored document/blob stays so On or Re-ingest can rebuild chunks;
+        // Off remains a separate, instant metadata switch.
+        await ctx.database.query(
+          `UPDATE kb_sources SET status = 'pending', updated_at = now() WHERE id = $1`,
+          [source.id],
+        );
+        ctx.capabilities.retriever?.invalidate?.();
+        await ctx.audit.append({
+          action: 'kb.source.purged',
+          subject: source.id,
+          actor: String(request.actor ?? ''),
+          payload: { title: source.title, documents: docs.length },
+        });
+        const updated = (await loadSource(ctx, source.id)) as SourceRow;
+        return {
+          purged: true,
+          sourceId: source.id,
+          documents: docs.length,
+          source: toSourceDto(updated),
+        };
       },
     });
 

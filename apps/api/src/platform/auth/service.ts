@@ -228,6 +228,34 @@ export class AuthService {
     });
   }
 
+  /**
+   * Access tokens are self-contained, so verify them against the session row on
+   * every use: logout revokes the family and a role change must not keep admin
+   * rights until the JWT expires (F9). Returns false for deleted users too.
+   */
+  async isAccessCurrent(claims: AccessClaims): Promise<boolean> {
+    const rows = (await this.database.query<{
+      [key: string]: unknown;
+      revoked_at: Date | string | null;
+      expires_at: Date | string;
+      role: Role;
+    }>(
+      `SELECT s.revoked_at, s.expires_at, u.role
+         FROM auth_sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.id = $1 AND s.user_id = $2`,
+      [claims.sid, claims.sub],
+    )) as unknown as Array<{
+      [key: string]: unknown;
+      revoked_at: Date | string | null;
+      expires_at: Date | string;
+      role: Role;
+    }>;
+    const row = rows[0];
+    if (!row || row.revoked_at) return false;
+    if (new Date(row.expires_at).getTime() <= Date.now()) return false;
+    return row.role === claims.role;
+  }
+
   async getById(id: string): Promise<AuthUser | null> {
     const rows = (await this.database.query<UserRow>(
       `SELECT id, email, password_hash, name, role, created_at FROM users WHERE id = $1`,

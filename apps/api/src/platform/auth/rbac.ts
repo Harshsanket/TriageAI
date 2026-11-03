@@ -170,6 +170,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', pattern: '/api/v1/kb/sources/batch', roles: ADMIN },
   { method: 'PATCH', pattern: '/api/v1/kb/sources/:id', roles: ADMIN },
   { method: 'POST', pattern: '/api/v1/kb/sources/:id/approve', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/kb/sources/:id/purge', roles: ADMIN },
+  { method: 'POST', pattern: '/api/v1/kb/sources/:id/reingest', roles: ADMIN },
   { method: 'DELETE', pattern: '/api/v1/kb/sources/:id', roles: ADMIN },
 
   { method: 'GET', pattern: '/api/v1/data-extract/datasets', roles: AGENT },

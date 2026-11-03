@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -142,6 +142,100 @@ describeIfDb('hot plugins (phase 12)', () => {
         (module) => module.id === 'demo-plugin',
       ),
     ).toBe(false);
+  });
+
+  it('refuses encoded path traversal in the public bundle route', async () => {
+    app = await buildApp({
+      quiet: true,
+      configPath: path.resolve(process.cwd(), '../../triage.config.json'),
+      pluginsRoot: path.join(root, 'installed'),
+    });
+
+    const attempts = [
+      '/plugins/demo-plugin/1.0.0%2F..%2F..%2F..%2F..%2Fetc/passwd',
+      '/plugins/demo-plugin/1.0.0/../../../../etc/passwd',
+      '/plugins/demo-plugin/1.0.0/..%2F..%2F..%2Fetc%2Fpasswd',
+      '/plugins/..%2F..%2Fetc/1.0.0/passwd',
+      '/plugins/demo-plugin/not-a-version/web/index.js',
+    ];
+    for (const url of attempts) {
+      const res = await app.inject({ method: 'GET', url });
+      expect([400, 404]).toContain(res.statusCode);
+      expect(res.body).not.toContain('root:');
+    }
+  });
+
+  it('does not import a disabled plugin at boot and imports it on enable (F7)', async () => {
+    const sentinel = path.join(root, 'sentinel-imported.txt');
+    const server = `
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(sentinel)}, 'imported');
+export const module = {
+  id: 'sentinel-plugin',
+  version: '1.0.0',
+  capabilities: [],
+  permissions: {
+    routes: [], events: { publish: [], subscribe: [] },
+    capabilities: { consume: [], provide: [] }, stages: [], workflows: [],
+    evals: [], tools: [], knowledge: { read: [], write: [] }
+  },
+  dependsOn: { capabilities: [] },
+  manifest: { routes: [], nav: [], background: [] },
+  lifecycle: { health: async () => ({ status: 'healthy' }) },
+  register() {}
+};
+`;
+    const manifest = { ...MANIFEST, id: 'sentinel-plugin' };
+    const keys = generatePluginKeyPair();
+    const archive = packPlugin({ manifest, server });
+    const archivePath = path.join(root, 'sentinel-plugin-1.0.0.tgz');
+    await writeFile(archivePath, archive);
+    const indexPath = path.join(root, 'sentinel-index.json');
+    await writeFile(
+      indexPath,
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          {
+            id: 'sentinel-plugin',
+            version: '1.0.0',
+            kernelApi: '^1.0.0',
+            sha256: sha256(archive),
+            signature: signPluginPackage(archive, keys.privateKey),
+            url: pathToFileURL(archivePath).href,
+          },
+        ],
+      }),
+    );
+    const boot = () =>
+      buildApp({
+        quiet: true,
+        configPath: path.resolve(process.cwd(), '../../triage.config.json'),
+        pluginsRoot: path.join(root, 'installed'),
+        pluginKeys: [{ id: 'test', publicKey: keys.publicKey }],
+        pluginRegistryUrl: pathToFileURL(indexPath).href,
+      }) as Promise<FastifyInstance>;
+
+    app = await boot();
+    const installed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/plugins/install',
+      payload: { id: 'sentinel-plugin', version: '1.0.0' },
+    });
+    expect(installed.statusCode).toBe(200);
+    await access(sentinel);
+    await rm(sentinel, { force: true });
+    await app.close();
+
+    app = await boot();
+    await expect(access(sentinel)).rejects.toThrow();
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/v1/plugins/sentinel-plugin/enable',
+    });
+    expect(enabled.statusCode).toBe(200);
+    await access(sentinel);
   });
 
   it('refuses a tampered archive and an unknown signing key', async () => {

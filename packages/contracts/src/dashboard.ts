@@ -101,7 +101,7 @@ export const DashboardUsagePointSchema = z.object({
   cost: z.number().nonnegative(),
   chatMessages: z.number().int().nonnegative(),
   tickets: z.number().int().nonnegative(),
-  byModule: z.record(z.number().int().nonnegative()).default({}),
+  byModule: z.record(z.string(), z.number().int().nonnegative()).prefault({}),
 });
 export type DashboardUsagePoint = z.infer<typeof DashboardUsagePointSchema>;
 
@@ -178,13 +178,14 @@ export const DashboardModelUsageSchema = z.object({
     z.object({
       bucket: z.string(),
       byModel: z.record(
+        z.string(),
         z.object({
           tokensIn: z.number().int().nonnegative(),
           tokensOut: z.number().int().nonnegative(),
         }),
       ),
-      byAgent: z.record(z.number().int().nonnegative()).default({}),
-      byModule: z.record(z.number().int().nonnegative()).default({}),
+      byAgent: z.record(z.string(), z.number().int().nonnegative()).prefault({}),
+      byModule: z.record(z.string(), z.number().int().nonnegative()).prefault({}),
     }),
   ),
   byModel: z.array(

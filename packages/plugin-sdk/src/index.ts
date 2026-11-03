@@ -63,7 +63,7 @@ export const PackManifestSchema = z
     license: z.string().min(1),
     modules: z.array(PackModuleSchema).min(1),
     /** Config wiring applied on approval (capabilities.<id>.provider, modules.*.enabled). */
-    wiring: z.record(z.string(), z.unknown()).default({}),
+    wiring: z.record(z.string(), z.unknown()).prefault({}),
     description: z.string().max(400).optional(),
   })
   .strict();

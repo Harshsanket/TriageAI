@@ -154,7 +154,7 @@ export const KbSourceCreateRequestSchema = z
     token: z.string().max(500).optional(),
     // plugin source
     type: z.string().min(1).max(60).optional(),
-    config: z.record(z.unknown()).optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
@@ -198,7 +198,7 @@ export const KbSearchChunkSchema = z.object({
   documentId: z.string(),
   text: z.string(),
   score: z.number(),
-  metadata: z.record(z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
 });
 
 export const RetrievalGateDtoSchema = z.object({

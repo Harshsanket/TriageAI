@@ -1,6 +1,6 @@
 # TriageAI — Features
 
-What TriageAI does today (v1.2.0), grouped by layer, plus what is planned.
+What TriageAI does today (v1.3.0), grouped by layer, plus what is planned.
 Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 [DEVELOPMENT_PLAN.md](./docs/DEVELOPMENT_PLAN.md)). Setup: [SETUP.md](./SETUP.md).
 
@@ -90,6 +90,7 @@ Status key: ✅ shipped · 🟡 partial / known gap · 🗺️ planned (see
 | Content-hash dedupe: the same file/note is ingested once                                                    |   ✅   |
 | File upload (PDF/DOCX/XLSX/CSV/MD/TXT/HTML), URL, GitHub repo, notes                                        |   ✅   |
 | Per-source On/Off (pre-filter) + labels + source list/search                                                |   ✅   |
+| Purge vectors (admin, confirmed, audited) keeps the source; On/Re-ingest rebuilds chunks                    |   ✅   |
 | Ingestion workflow with per-item progress and jobs tray                                                     |   ✅   |
 | Source plugins (`KnowledgeSource`) with contract suite                                                      |   ✅   |
 | OCR for scanned PDFs / folder import / plugin marketplace sources                                           |   🗺️   |
@@ -138,10 +139,10 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 
 ### Planned interface plugins
 
-| Plugin       | What it does                                                                                               | Status |
-| ------------ | ---------------------------------------------------------------------------------------------------------- | :----: |
-| `public-api` | Hashed scoped keys + OpenAI-compatible `/v1/chat/completions` + `/v1/embeddings` + KB search (MCP pending) |   ✅   |
-| `emailer`    | Signed inbound webhook → tickets, threaded replies, approval-gated SMTP outbox (IMAP polling pending)      |   ✅   |
+| Plugin       | What it does                                                                                                                                      | Status |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | :----: |
+| `public-api` | Hashed keys with enforced `chat`/`embeddings`/`kb` scopes + OpenAI-compatible `/v1/chat/completions` + `/v1/embeddings` + KB search (MCP pending) |   ✅   |
+| `emailer`    | Signed inbound webhook → tickets, threaded replies, approval-gated SMTP outbox (IMAP polling pending)                                             |   ✅   |
 
 ## 4. Agents, tools and skills (partial, Phases 15–17)
 
@@ -228,7 +229,7 @@ Reference module for authors: a minimal workflow, route, migration and UI. ✅
 | Runs page daily summary: runs, workflows, success/failure, sensitive-data and data-touched counts by date                                             |              ✅              |
 | Model runtimes: switches (not checkboxes), global off switch engaged when the last runtime is turned off                                              |              ✅              |
 | Committed `WORKFLOW.md` project map + `pnpm docs:workflow` with a CI drift/line-budget check                                                          |              ✅              |
-| Appearance: Light/Dark/Auto theme, four font sizes, animations On/Off/Auto, per-user agent names/colours, admin defaults                              |              ✅              |
+| Appearance: Light/Dark/Auto theme, four font sizes, animations On/Off/Auto, admin-controlled agent names/colours and defaults                         |              ✅              |
 | Notification tray for long jobs (progress, ETA, cancel; survives reload)                                                                              |              ✅              |
 | Dashboard graphs: model token usage (Day/Month/Year/custom; model/agent/module), agents, knowledge growth, pinned datasets                            |              ✅              |
 | Setup lifecycle: exact scoping, add/remove interfaces, Reset vs Reset and erase                                                                       |              ✅              |

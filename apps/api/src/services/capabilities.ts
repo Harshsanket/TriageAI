@@ -424,6 +424,10 @@ export class PgRetriever implements Retriever {
 
   invalidate(): void {
     this.generation += 1;
+    // Retrieval and generation share the host cache. Dropping it here means a
+    // disabled/deleted source cannot be served from a cached answer or chunk
+    // list after the switch flips.
+    void Promise.resolve(this.cache?.clear?.()).catch(() => undefined);
   }
 }
 

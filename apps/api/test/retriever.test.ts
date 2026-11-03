@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { VectorMatch, VectorStore } from '@triageai/kernel';
+import { MemoryCache, type VectorMatch, type VectorStore } from '@triageai/kernel';
 
 import { PgRetriever } from '../src/services/capabilities.js';
 
@@ -47,5 +47,14 @@ describe('retriever per-collection gates', () => {
       threshold: 0.35,
       marginThreshold: 0.05,
     });
+  });
+
+  it('drops cached results when sources change', async () => {
+    const cache = new MemoryCache(10);
+    const retriever = new PgRetriever(embedder, storeWith([0.9, 0.1]), 0.35, 0.05, {}, cache);
+    await retriever.search('kb_docs', 'refund policy');
+    expect(cache.stats().size).toBe(1);
+    retriever.invalidate();
+    expect(cache.stats().size).toBe(0);
   });
 });

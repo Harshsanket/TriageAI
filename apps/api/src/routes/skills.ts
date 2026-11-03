@@ -11,7 +11,7 @@ import {
   SkillUpdateRequestSchema,
 } from '@triageai/contracts';
 import type { Kernel } from '@triageai/kernel';
-import { invalid, notFound } from '@triageai/kernel';
+import { AppError, invalid, notFound } from '@triageai/kernel';
 
 import { config } from '../platform/config.js';
 import {
@@ -80,8 +80,17 @@ export function registerSkillRoutes(app: FastifyInstance, kernel: Kernel): void 
   app.post('/api/v1/skills', async (request) => {
     const body = SkillCreateRequestSchema.parse(request.body ?? {});
     try {
-      return { skill: await createSkill(kernel, actorId(request), body, actor(request)) };
+      return {
+        skill: await createSkill(
+          kernel,
+          actorId(request),
+          request.principal?.role,
+          body,
+          actor(request),
+        ),
+      };
     } catch (err) {
+      if (err instanceof AppError) throw err;
       throw invalid((err as Error).message);
     }
   });

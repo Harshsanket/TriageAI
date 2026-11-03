@@ -596,6 +596,16 @@ export function registerIngestWorkflow(ctx: KernelContext, collection: string): 
               })),
             );
           }
+          // A toggle may have landed while this item was embedding. Re-read the
+          // source after the upsert and let the newer state win; otherwise new
+          // chunks would carry the stale `sourceEnabled` value and a source the
+          // operator just turned off would stay searchable.
+          const current = await loadSource(ctx, item.source_id);
+          if (current && current.enabled !== source.enabled) {
+            await vectorStore.updateMetadata?.(collection, document.id, {
+              sourceEnabled: current.enabled,
+            });
+          }
           await ctx.database.query(
             `UPDATE kb_ingest_items SET status = 'embedded', chunk_count = $2, updated_at = now()
              WHERE id = $1`,
@@ -691,6 +701,9 @@ export function registerIngestWorkflow(ctx: KernelContext, collection: string): 
         documents.push({ documentId: document.id, version, chunks: item.chunk_count });
         maxVersion = Math.max(maxVersion, version);
       }
+      // New or superseded chunks must be visible to the next retrieval; cached
+      // chunk lists and generated answers from before this ingest are stale.
+      if (documents.length > 0) ctx.capabilities.retriever?.invalidate?.();
       const chunks = documents.reduce((sum, document) => sum + document.chunks, 0);
       const summary = {
         imported: documents.length,

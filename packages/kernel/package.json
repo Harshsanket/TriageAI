@@ -16,14 +16,14 @@
   },
   "dependencies": {
     "@triageai/contracts": "workspace:*",
+    "@triageai/plugin-sdk": "workspace:*",
     "postgres": "^3.4.9",
     "ulid": "^3.0.1",
-    "zod": "^3.25.76",
-    "@triageai/plugin-sdk": "workspace:*"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^5.1.0"
   }
 }

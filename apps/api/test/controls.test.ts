@@ -75,6 +75,37 @@ describeIfDb('kill switches and egress (phase 18)', () => {
     expect(blocked).toMatchObject({ ok: false, error: { code: 'tool.READ_ONLY' } });
   });
 
+  it('rejects wrong types and unknown control keys (F11)', async () => {
+    const wrongType = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/controls',
+      payload: { readOnly: 'false' },
+    });
+    expect(wrongType.statusCode).toBe(400);
+
+    const unknown = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/controls',
+      payload: { readonly: true },
+    });
+    expect(unknown.statusCode).toBe(400);
+
+    const badRuntimes = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/controls',
+      payload: { disabledRuntimes: [42] },
+    });
+    expect(badRuntimes.statusCode).toBe(400);
+
+    const valid = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/system/controls',
+      payload: { agentsPaused: true },
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json()).toMatchObject({ agentsPaused: true });
+  });
+
   it('blocks an egress host outside the allowlist and audits the denial', async () => {
     const client = new EgressClient(app.kernel!.database, [
       { host: 'huggingface.co', dataClass: 'public' },

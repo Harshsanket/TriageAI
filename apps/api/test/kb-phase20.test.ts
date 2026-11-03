@@ -186,4 +186,58 @@ describeIfDb('knowledge sources (phase 20)', () => {
     };
     expect([...jobsBody.active, ...jobsBody.recent].map((job) => job.title)).toContain(TITLE);
   }, 60_000);
+
+  it('purges vectors, clears the retrieval cache and re-ingests on demand (F12)', async () => {
+    const before = await app.inject({
+      method: 'POST',
+      url: '/api/v1/kb/search',
+      payload: { query: 'how long do refunds take' },
+    });
+    expect((before.json() as { chunks: unknown[] }).chunks.length).toBeGreaterThan(0);
+
+    const purged = await app.inject({
+      method: 'POST',
+      url: `/api/v1/kb/sources/${sourceId}/purge`,
+    });
+    expect(purged.statusCode).toBe(200);
+    expect(purged.json()).toMatchObject({ purged: true, sourceId });
+
+    const remaining = await database.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM vector_chunks WHERE collection = $1 AND document_id = $2`,
+      [COLLECTION, documentId],
+    );
+    expect(remaining[0]?.count).toBe(0);
+
+    // The previous search was cached; without invalidation it would still answer.
+    const hidden = await app.inject({
+      method: 'POST',
+      url: '/api/v1/kb/search',
+      payload: { query: 'how long do refunds take' },
+    });
+    expect((hidden.json() as { chunks: unknown[] }).chunks).toHaveLength(0);
+
+    const sources = await app.inject({ method: 'GET', url: '/api/v1/kb/sources' });
+    const listed = KbSourceListResponseSchema.parse(sources.json()).sources.find(
+      (entry) => entry.id === sourceId,
+    );
+    expect(listed?.status).toBe('pending');
+
+    const audit = await database.query<{ action: string }>(
+      `SELECT action FROM audit_events WHERE subject = $1 ORDER BY created_at DESC LIMIT 1`,
+      [sourceId],
+    );
+    expect(audit[0]?.action).toBe('kb.source.purged');
+
+    const reingested = await app.inject({
+      method: 'POST',
+      url: `/api/v1/kb/sources/${sourceId}/reingest`,
+    });
+    expect(reingested.statusCode).toBe(200);
+    const restored = await app.inject({
+      method: 'POST',
+      url: '/api/v1/kb/search',
+      payload: { query: 'how long do refunds take' },
+    });
+    expect((restored.json() as { chunks: unknown[] }).chunks.length).toBeGreaterThan(0);
+  }, 60_000);
 });

@@ -11,18 +11,21 @@ import type { HardwareProfile } from '@triageai/contracts';
 const PROBE_TIMEOUT_MS = 1500;
 const GIB = 1024 ** 3;
 
-async function reachable(url: string): Promise<boolean> {
+async function reachable(url: string, fetchImpl: typeof fetch): Promise<boolean> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
     return res.ok;
   } catch {
     return false;
   }
 }
 
-async function gpuFromAiService(aiServiceUrl: string): Promise<HardwareProfile['gpu']> {
+async function gpuFromAiService(
+  aiServiceUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<HardwareProfile['gpu']> {
   try {
-    const res = await fetch(`${aiServiceUrl}/ai/v1/hardware`, {
+    const res = await fetchImpl(`${aiServiceUrl}/ai/v1/hardware`, {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     if (!res.ok) return null;
@@ -59,14 +62,17 @@ export async function probeHardware(options: {
   aiServiceUrl: string;
   ollamaUrl: string;
   dataDir?: string;
+  /** Every probe goes through the egress client (F6); defaults to raw fetch. */
+  fetchImpl?: typeof fetch;
 }): Promise<HardwareProfile> {
   const cpus = os.cpus();
   const cpuModel = cpus[0]?.model ?? 'unknown';
   const appleSilicon = os.platform() === 'darwin' && os.arch() === 'arm64';
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const [gpu, aiService, ollama, disk] = await Promise.all([
-    gpuFromAiService(options.aiServiceUrl),
-    reachable(`${options.aiServiceUrl}/healthz`),
-    reachable(`${options.ollamaUrl.replace(/\/$/, '')}/api/version`),
+    gpuFromAiService(options.aiServiceUrl, fetchImpl),
+    reachable(`${options.aiServiceUrl}/healthz`, fetchImpl),
+    reachable(`${options.ollamaUrl.replace(/\/$/, '')}/api/version`, fetchImpl),
     statfs(options.dataDir ?? process.cwd()).catch(() => null),
   ]);
   const budget = modelBudget(os.totalmem(), gpu, appleSilicon);

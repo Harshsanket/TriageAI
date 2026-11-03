@@ -136,6 +136,38 @@ describe('knowledge processing metrics (phase 30.1)', () => {
     await waitFor(() => expect(calls.some((call) => call.body === 'DELETE')).toBe(true));
   });
 
+  it('confirms before purging vectors and re-ingesting a source (F12)', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).startsWith('/api/v1/kb/sources/') && init?.method === 'POST') {
+          calls.push(String(url));
+          return Response.json({ source: { ...source, status: 'pending' } });
+        }
+        if (String(url).startsWith('/api/v1/kb/sources')) {
+          return Response.json({ sources: [source] });
+        }
+        return Response.json(storage);
+      }),
+    );
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    render(<KbApp />);
+    expect(await screen.findByText('Handbook')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Purge vectors for Handbook' }));
+    expect(confirm).toHaveBeenCalled();
+    expect(calls.some((url) => url.endsWith('/purge'))).toBe(false);
+
+    confirm.mockReturnValue(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Purge vectors for Handbook' }));
+    await waitFor(() => expect(calls.some((url) => url.endsWith('/purge'))).toBe(true));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Re-ingest Handbook' }));
+    await waitFor(() => expect(calls.some((url) => url.endsWith('/reingest'))).toBe(true));
+  });
+
   it('labels host-maintained sources clearly', async () => {
     vi.stubGlobal(
       'fetch',

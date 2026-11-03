@@ -23,6 +23,17 @@ describe('Cache contract (phase 18)', () => {
     expect(cache.stats().size).toBe(2);
     expect(cache.stats().hitRate).toBeGreaterThan(0);
   });
+
+  it('clears every entry so disabled sources cannot be served from cache', async () => {
+    const cache = new MemoryCache(10);
+    await cache.set('retrieval:g0:kb_docs:1:abc', { chunks: ['disabled source text'] }, 60_000);
+    await cache.set('generation:kb_docs:1:def', { text: 'cached answer' }, 60_000);
+    expect(cache.stats().size).toBe(2);
+    await cache.clear();
+    expect(cache.stats().size).toBe(0);
+    expect(await cache.get('retrieval:g0:kb_docs:1:abc')).toBeUndefined();
+    expect(await cache.get('generation:kb_docs:1:def')).toBeUndefined();
+  });
 });
 
 describe('BlobStore contract (phase 18)', () => {

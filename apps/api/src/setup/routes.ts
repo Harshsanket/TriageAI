@@ -22,6 +22,7 @@ import { config } from '../platform/config.js';
 import { redactValue } from '../platform/redact.js';
 import type { AuthService } from '../platform/auth/service.js';
 import { OllamaGenerator, OpenAICompatibleGenerator } from '../services/capabilities.js';
+import { EgressClient } from '../services/egress.js';
 import {
   JWT_SECRET_NAME,
   processPendingImports,
@@ -94,8 +95,32 @@ export function registerSetupRoutes(
   const actorOf = (request: { principal?: { email: string } }) =>
     request.principal?.email ?? 'setup';
 
+  // Local runtimes (Ollama/LM Studio/ai-service) live on loopback or the
+  // Docker host. Only these known aliases and explicitly allowlisted hosts may
+  // resolve private on the first hop; metadata/link-local always fail (F6).
+  const LOCAL_RUNTIME_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal'];
+  const setupEgress = (): EgressClient => {
+    const allow = [...(kernel.config.egress?.allowlist ?? [])];
+    return new EgressClient(
+      kernel.database,
+      [...allow, ...LOCAL_RUNTIME_HOSTS.map((host) => ({ host, dataClass: 'internal' as const }))],
+      {
+        timeoutMs: 60_000,
+        maxBytes: 20_000_000,
+        allowPrivateHosts: [...LOCAL_RUNTIME_HOSTS, ...allow.map((entry) => entry.host)],
+      },
+    );
+  };
+  const egressFetch = (client: EgressClient, actor: string, purpose: string): typeof fetch => {
+    return (async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      return client.fetch(url, init ?? {}, { actor, purpose });
+    }) as typeof fetch;
+  };
+
   let hardwareCache: { at: number; key: string; value: HardwareProfile } | null = null;
-  const hardware = async (ollamaUrl?: string): Promise<HardwareProfile> => {
+  const hardware = async (ollamaUrl?: string, actor = 'setup'): Promise<HardwareProfile> => {
     const url = ollamaUrl ?? deps.env.TRIAGEAI_GENERATOR_BASE_URL ?? 'http://localhost:11434';
     if (
       hardwareCache &&
@@ -104,7 +129,11 @@ export function registerSetupRoutes(
     ) {
       return hardwareCache.value;
     }
-    const value = await probeHardware({ aiServiceUrl: config.aiServiceUrl, ollamaUrl: url });
+    const value = await probeHardware({
+      aiServiceUrl: config.aiServiceUrl,
+      ollamaUrl: url,
+      fetchImpl: egressFetch(setupEgress(), actor, 'setup-hardware'),
+    });
     hardwareCache = { at: Date.now(), key: url, value };
     return value;
   };
@@ -147,7 +176,7 @@ export function registerSetupRoutes(
     const { ollamaUrl } = z
       .object({ ollamaUrl: z.string().url().optional() })
       .parse(request.query ?? {});
-    return hardware(ollamaUrl);
+    return hardware(ollamaUrl, actorOf(request));
   });
 
   app.get('/api/v1/setup/models', async (request) => {
@@ -157,7 +186,7 @@ export function registerSetupRoutes(
         q: z.string().max(100).optional(),
       })
       .parse(request.query ?? {});
-    const profile = await hardware();
+    const profile = await hardware(undefined, actorOf(request));
     if (!query.q) return { models: await presetModels(profile, query.kind), hardware: profile };
     try {
       return { models: await searchHuggingFace(query.q, query.kind, profile), hardware: profile };
@@ -172,18 +201,26 @@ export function registerSetupRoutes(
       .object({ baseUrl: z.string().url().optional(), model: z.string().regex(MODEL_NAME) })
       .parse(request.body);
     const base = (body.baseUrl ?? 'http://localhost:11434').replace(/\/$/, '');
-    const upstream = await fetch(`${base}/api/pull`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: body.model, stream: true }),
-    }).catch((err: Error) => {
-      throw new AppError(
-        'setup.RUNTIME_UNREACHABLE',
-        `Ollama at ${base}: ${err.message}`,
-        undefined,
-        502,
-      );
-    });
+    const actor = actorOf(request);
+    const upstream = await setupEgress()
+      .fetch(
+        `${base}/api/pull`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: body.model, stream: true }),
+        },
+        { actor, purpose: 'setup-model-pull', stream: true },
+      )
+      .catch((err: Error) => {
+        if (err instanceof AppError) throw err;
+        throw new AppError(
+          'setup.RUNTIME_UNREACHABLE',
+          `Ollama at ${base}: ${err.message}`,
+          undefined,
+          502,
+        );
+      });
     if (!upstream.ok || !upstream.body) {
       throw new AppError(
         'setup.PULL_FAILED',
@@ -204,13 +241,16 @@ export function registerSetupRoutes(
         model: z.string().regex(MODEL_NAME),
       })
       .parse(request.body);
+    const actor = actorOf(request);
+    const fetchImpl = egressFetch(setupEgress(), actor, 'setup-llm-test');
     const generator =
       body.runtime === 'ollama'
-        ? new OllamaGenerator(body.baseUrl ?? 'http://localhost:11434', body.model)
+        ? new OllamaGenerator(body.baseUrl ?? 'http://localhost:11434', body.model, fetchImpl)
         : new OpenAICompatibleGenerator(
             body.baseUrl ?? 'http://localhost:1234/v1',
             body.model,
             'local',
+            fetchImpl,
           );
     const started = Date.now();
     try {
@@ -498,7 +538,7 @@ export function registerSetupRoutes(
 
   app.put('/api/v1/setup/draft', async (request) => {
     // Drafts are partial by nature; only bound the size. Never store secrets.
-    const draft = z.record(z.unknown()).parse(request.body ?? {});
+    const draft = z.record(z.string(), z.unknown()).parse(request.body ?? {});
     if (JSON.stringify(draft).length > 2_000_000) {
       throw new AppError('setup.DRAFT_TOO_LARGE', 'draft is larger than 2 MB', undefined, 413);
     }

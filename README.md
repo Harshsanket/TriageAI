@@ -1,6 +1,6 @@
 # TriageAI
 
-> **v1.2.0** — knowledge-base data-processing controls with per-source extraction, chunking and storage provenance; a skills drawer and refreshed chat home; model-runtime switches; and redesigned feedback and run summaries.
+> **v1.3.0** — security-hardening release: closes the plugin-bundle file read, enforces public-API key scopes and A2A/skill ownership, routes setup probes through egress, revokes access tokens on logout/role change, adds an audited KB vector purge, and upgrades zod/vitest.
 
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
@@ -148,7 +148,7 @@ Auto-reply is per-category and versioned (`GET/PUT /api/v1/support/auto-reply-po
 
 ## Knowledge, memory, and data
 
-- **Knowledge base** (`kb`) ingests PDF, DOCX, XLSX, CSV, Markdown, text, HTML, URLs, GitHub repositories and notes. Every source has an On/Off switch (On means used), labels, search and storage totals; identical content is deduplicated, and deleting a source removes its chunks, vectors and stored original.
+- **Knowledge base** (`kb`) ingests PDF, DOCX, XLSX, CSV, Markdown, text, HTML, URLs, GitHub repositories and notes. Every source has an On/Off switch (On means used), labels, search and storage totals; identical content is deduplicated, and deleting a source removes its chunks, vectors and stored original. Admins can also **Purge vectors** to physically evict a source's embeddings while keeping the source; On or Re-ingest rebuilds them.
 - **Data processing** is configurable per new source: chunking presets (structure-aware 700/1,200, sentence 500, fixed 1,000), PDF extraction (text layer or strict text layer; OCR when the optional AI-service adapter is installed) and image extraction. The KB source list shows the chunking, extraction and storage backends each source actually used, and `/config` explains which strategy fits which corpus.
 - **Base memory** is generated from setup as managed `base-memory.public` / `base-memory.operator` KB sources. Customer surfaces (chat, support, public API) retrieve public entries only; operator surfaces see both. An operational `system-status` snapshot backs read-only `system.get_status/get_uptime/get_storage` tools.
 - **Data extraction** (`data-extract`) turns CSV/XLSX/PDF files into typed `transactions` or `generic-table` datasets with deterministic mapping, saved confirmations and user rules. A balance reconciliation gate keeps `needs_review` rows out of charts; dataset views (totals, categories, months, merchants, rows) can be pinned, and a fixed-schema `data_extract.query_dataset` tool is restricted by default.
@@ -171,7 +171,7 @@ Runtime plugins are signed `.tgz` packages verified with ed25519 + sha256; insta
 
 ## Public API and email
 
-- **`public-api`** issues hashed, scoped API keys and exposes OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings`, plus KB search, so other apps and agents can use TriageAI as a backend.
+- **`public-api`** issues hashed API keys with enforced `chat`, `embeddings` and `kb` scopes, and exposes OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings`, plus KB search, so other apps and agents can use TriageAI as a backend. External-agent keys are a separate credential class.
 - **`emailer`** accepts a signed inbound webhook, threads replies into tickets and sends approval-gated outbound mail through an SMTP outbox. IMAP polling is still planned.
 
 ## Feedback, datasets, and the model registry
@@ -235,7 +235,7 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 
 **TriageAI** is an open-source project focused on building modular, self-hosted AI automation systems. It prioritizes extensibility, local inference, and transparent decision-making.
 
-Current release: **v1.2.0**.
+Current release: **v1.3.0**.
 
 Developed and maintained by **Harsh Sanket**.  
 **DeepSeek 4.1** was used during development.

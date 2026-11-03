@@ -69,7 +69,7 @@ const hostedSchema = z.object({
         dailyCurrency: z.number().positive().optional(),
       }),
     )
-    .default({}),
+    .prefault({}),
   currency: z.string().default('USD'),
 });
 
@@ -87,12 +87,12 @@ const egressSchema = z.object({
 const getSchema = z.object({
   profile: profileNameSchema.default('core'),
   queue: queueAdapterSchema.default({ adapter: 'pg-queue', pollIntervalMs: 250 }),
-  modules: z.record(z.string(), moduleConfigSchema).default({}),
+  modules: z.record(z.string(), moduleConfigSchema).prefault({}),
   capabilities: z.record(z.string(), capabilitySchema).default({ queue: { adapter: 'pg-queue' } }),
   interfaces: z.array(z.string().min(1).max(60)).optional(),
-  retention: retentionSchema.default({}),
-  hosted: hostedSchema.default({}),
-  egress: egressSchema.default({}),
+  retention: retentionSchema.prefault({}),
+  hosted: hostedSchema.prefault({}),
+  egress: egressSchema.prefault({}),
   agents: z
     .record(
       z.string(),

@@ -33,6 +33,8 @@ export interface AuthGuardOptions {
   metricsToken?: string;
   /** First-run setup: while pending, setup routes take the one-time token instead. */
   setup?: { isPending(): boolean; verify(header: string | undefined): boolean };
+  /** Re-check the session/role so a logged-out or demoted token stops working. */
+  isAccessCurrent?: (claims: Awaited<ReturnType<typeof verifyAccessToken>>) => Promise<boolean>;
 }
 
 const SETUP_OPERATOR: Principal = {
@@ -136,6 +138,14 @@ export function createAuthGuard(options: AuthGuardOptions) {
     }
 
     const claims = await verifyAccessToken(token, { secret: options.jwtSecret });
+    if (options.isAccessCurrent && !(await options.isAccessCurrent(claims))) {
+      throw new AppError(
+        'auth.UNAUTHENTICATED',
+        'the session was revoked or the account role changed; sign in again',
+        undefined,
+        401,
+      );
+    }
     request.principal = {
       userId: claims.sub,
       email: claims.email,

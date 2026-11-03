@@ -169,6 +169,32 @@ describeIfDb('egress client hardening (phase 21)', () => {
     ).rejects.toMatchObject({ code: 'egress.TOO_LARGE' });
   });
 
+  it('allows an explicitly allowlisted local runtime but never metadata or redirects to private (F6)', async () => {
+    const client = new EgressClient(
+      database,
+      [
+        { host: 'localhost', dataClass: 'internal' },
+        { host: '127.0.0.1', dataClass: 'internal' },
+        { host: 'metadata.test', dataClass: 'internal' },
+      ],
+      {
+        pinAddress: false,
+        allowPrivateHosts: ['localhost', '127.0.0.1', 'metadata.test'],
+        lookup: async (host) => (host === 'metadata.test' ? ['169.254.169.254'] : ['127.0.0.1']),
+      },
+    );
+    const ok = await client.fetch(`${base}/echo`, {}, { purpose: 'local-runtime.fixture' });
+    expect(ok.status).toBe(200);
+
+    await expect(
+      client.fetch('http://metadata.test/latest/meta-data', {}, { purpose: 'metadata.fixture' }),
+    ).rejects.toMatchObject({ code: 'POLICY_BLOCKED' });
+
+    await expect(
+      client.fetch(`${base}/cross-redirect`, {}, { purpose: 'local-redirect.fixture' }),
+    ).rejects.toMatchObject({ code: 'POLICY_BLOCKED' });
+  });
+
   it('refuses a host that is not allowlisted and audits it', async () => {
     const client = new EgressClient(database, [], { lookup: async () => ['93.184.216.34'] });
     await expect(

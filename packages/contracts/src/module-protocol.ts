@@ -127,9 +127,9 @@ export const Mp1StageInvokePayloadSchema = z
     workflowId: z.string().min(1).max(200),
     stageId: z.string().min(1).max(200),
     kind: z.string().min(1).max(200),
-    config: z.record(z.string(), z.unknown()).default({}),
-    input: z.record(z.string(), z.unknown()).default({}),
-    data: z.record(z.string(), z.unknown()).default({}),
+    config: z.record(z.string(), z.unknown()).prefault({}),
+    input: z.record(z.string(), z.unknown()).prefault({}),
+    data: z.record(z.string(), z.unknown()).prefault({}),
   })
   .strict();
 export type Mp1StageInvokePayload = z.infer<typeof Mp1StageInvokePayloadSchema>;
@@ -148,8 +148,8 @@ export const Mp1RouteHandlePayloadSchema = z
   .object({
     method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']),
     url: z.string().startsWith('/').max(2048),
-    params: z.record(z.string(), z.string()).default({}),
-    query: z.record(z.string(), z.string()).default({}),
+    params: z.record(z.string(), z.string()).prefault({}),
+    query: z.record(z.string(), z.string()).prefault({}),
     body: z.unknown(),
     actor: z.string().max(200).optional(),
     actorId: z.string().max(200).optional(),

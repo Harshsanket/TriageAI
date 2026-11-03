@@ -219,6 +219,49 @@ describeIfDb('auth, sessions and RBAC (phase 9)', () => {
       payload: { refreshToken: session.refreshToken },
     });
     expect(refresh.statusCode).toBe(401);
+
+    // F9: the outstanding access token belongs to the revoked family.
+    const afterLogout = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { authorization: `Bearer ${session.accessToken}` },
+    });
+    expect(afterLogout.statusCode).toBe(401);
+  });
+
+  it('invalidates an access token when the role changes (F9)', async () => {
+    const adminSession = await login(admin.email, admin.password);
+    const customerSession = await login(customer.email, customer.password);
+
+    const before = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { authorization: `Bearer ${customerSession.accessToken}` },
+    });
+    expect(before.statusCode).toBe(200);
+
+    const changed = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/auth/users/${customerSession.user.id}/role`,
+      headers: { authorization: `Bearer ${adminSession.accessToken}` },
+      payload: { role: 'agent' },
+    });
+    expect(changed.statusCode).toBe(200);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { authorization: `Bearer ${customerSession.accessToken}` },
+    });
+    expect(after.statusCode).toBe(401);
+
+    // Restore the shared fixture role for later tests.
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/auth/users/${customerSession.user.id}/role`,
+      headers: { authorization: `Bearer ${adminSession.accessToken}` },
+      payload: { role: 'customer' },
+    });
   });
 });
 

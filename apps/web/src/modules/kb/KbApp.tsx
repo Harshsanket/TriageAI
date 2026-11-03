@@ -270,6 +270,33 @@ export default function KbApp() {
     await load();
   };
 
+  const purgeSource = async (source: KbSourceDto) => {
+    if (
+      !globalThis.confirm?.(
+        `Purge every vector for “${source.title}”? The stored source stays and can be re-ingested.`,
+      )
+    ) {
+      return;
+    }
+    const res = await apiFetch(`/api/v1/kb/sources/${source.id}/purge`, { method: 'POST' });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setNotice(`${source.title} vectors purged. Re-ingest to make it searchable again.`);
+    await load();
+  };
+
+  const reingestSource = async (source: KbSourceDto) => {
+    const res = await apiFetch(`/api/v1/kb/sources/${source.id}/reingest`, { method: 'POST' });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setNotice(`${source.title} queued for re-ingestion.`);
+    await load();
+  };
+
   const search = async () => {
     if (!query.trim()) return;
     const res = await apiFetch<unknown>('/api/v1/kb/search', {
@@ -628,6 +655,23 @@ export default function KbApp() {
                       >
                         <span />
                       </button>
+                      <div className="kb-source-actions">
+                        <Button
+                          variant="ghost"
+                          aria-label={`Purge vectors for ${source.title}`}
+                          title="Delete this source's vectors but keep the source"
+                          onClick={() => void purgeSource(source)}
+                        >
+                          Purge
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          aria-label={`Re-ingest ${source.title}`}
+                          onClick={() => void reingestSource(source)}
+                        >
+                          Re-ingest
+                        </Button>
+                      </div>
                     </td>
                     {deleteMode ? (
                       <td className="kb-delete-cell">

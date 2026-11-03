@@ -76,6 +76,21 @@ const MIGRATIONS = [
 
 const hashKey = (key: string): string => createHash('sha256').update(key).digest('hex');
 
+/** Scopes a public API key may hold. External-agent keys are a separate class. */
+const KEY_SCOPES = ['chat', 'embeddings', 'kb'] as const;
+type KeyScope = (typeof KEY_SCOPES)[number];
+
+function requireScope(key: ApiKey, scope: KeyScope): void {
+  if (key.scopes.includes(scope)) return;
+  throw new AppError(
+    'public_api.SCOPE_FORBIDDEN',
+    `the API key is missing the "${scope}" scope`,
+    { requiredScope: scope, scopes: key.scopes },
+    403,
+    { category: 'forbidden', retryable: false },
+  );
+}
+
 interface KeyRow {
   [key: string]: unknown;
   id: string;
@@ -272,7 +287,10 @@ export const publicApiModule: TriageModule = {
         const body = z
           .object({
             name: z.string().min(1).max(80),
-            scopes: z.array(z.string()).default(['chat', 'embeddings', 'kb']),
+            scopes: z
+              .array(z.enum(KEY_SCOPES))
+              .min(1)
+              .default([...KEY_SCOPES]),
             rateLimitPerMinute: z.number().int().positive().optional(),
           })
           .strict()
@@ -377,7 +395,7 @@ export const publicApiModule: TriageModule = {
           .object({
             fromAgentId: z.string().min(1),
             goal: z.string().min(1).max(500),
-            handoff: z.record(z.string(), z.unknown()).default({}),
+            handoff: z.record(z.string(), z.unknown()).prefault({}),
           })
           .strict()
           .parse(request.body ?? {});
@@ -426,7 +444,7 @@ export const publicApiModule: TriageModule = {
           .object({
             runId: z.string().optional(),
             step: z.string().min(1).max(200),
-            payload: z.record(z.string(), z.unknown()).default({}),
+            payload: z.record(z.string(), z.unknown()).prefault({}),
           })
           .strict()
           .parse(request.body ?? {});
@@ -444,7 +462,8 @@ export const publicApiModule: TriageModule = {
       method: 'POST',
       url: '/v1/chat/completions',
       handler: async (request) => {
-        await authenticate(request);
+        const key = await authenticate(request);
+        requireScope(key, 'chat');
         const body = CompletionBody.parse(request.body ?? {});
         const question = [...body.messages]
           .reverse()
@@ -500,7 +519,8 @@ export const publicApiModule: TriageModule = {
       method: 'POST',
       url: '/v1/embeddings',
       handler: async (request) => {
-        await authenticate(request);
+        const key = await authenticate(request);
+        requireScope(key, 'embeddings');
         const body = EmbeddingBody.parse(request.body ?? {});
         const embedder = ctx.capabilities.embedder;
         if (!embedder) {
@@ -531,7 +551,8 @@ export const publicApiModule: TriageModule = {
       method: 'POST',
       url: '/api/v1/public-api/kb/search',
       handler: async (request) => {
-        await authenticate(request);
+        const key = await authenticate(request);
+        requireScope(key, 'kb');
         const body = z
           .object({
             query: z.string().min(1),
@@ -566,6 +587,9 @@ export const publicApiModule: TriageModule = {
       },
     });
 
+    /** Every external agent owns exactly one A2A workspace namespace. */
+    const a2aWorkspace = (agentId: string): string => `a2a:${agentId}`;
+
     ctx.registerRoute({
       method: 'POST',
       url: '/v1/a2a/tasks',
@@ -573,16 +597,29 @@ export const publicApiModule: TriageModule = {
         const agent = await authenticateExternal(request);
         const body = z
           .object({
-            workspaceId: z.string().min(1).max(64),
+            workspaceId: z.string().min(1).max(64).optional(),
             title: z.string().min(1).max(200),
             doneWhen: z.string().min(1).max(500),
             inputRefs: z.array(z.string().max(200)).max(50).default([]),
           })
           .strict()
           .parse(request.body ?? {});
+        // F4: a task is always bound to the calling agent; a supplied foreign
+        // workspace id is refused rather than letting a key inject work into
+        // another team's board.
+        const ownWorkspace = a2aWorkspace(agent.id);
+        if (body.workspaceId !== undefined && body.workspaceId !== ownWorkspace) {
+          throw new AppError(
+            'public_api.WORKSPACE_FORBIDDEN',
+            'the workspace does not belong to this external agent',
+            { workspaceId: ownWorkspace },
+            403,
+            { category: 'forbidden', retryable: false },
+          );
+        }
         return ctx.tasks.create({
-          workspaceId: body.workspaceId,
-          rootRunId: `a2a:${agent.id}`,
+          workspaceId: ownWorkspace,
+          rootRunId: ownWorkspace,
           title: body.title,
           doneWhen: body.doneWhen,
           inputRefs: body.inputRefs,
@@ -594,9 +631,12 @@ export const publicApiModule: TriageModule = {
       method: 'GET',
       url: '/v1/a2a/tasks/:id',
       handler: async (request) => {
-        await authenticateExternal(request);
-        const task = await ctx.tasks.get(request.params.id ?? '');
-        if (!task) throw notFound('task not found');
+        const agent = await authenticateExternal(request);
+        const task = (await ctx.tasks.get(request.params.id ?? '')) as {
+          rootRunId?: string;
+        } | null;
+        // Cross-agent and internal tasks are indistinguishable from missing.
+        if (!task || task.rootRunId !== a2aWorkspace(agent.id)) throw notFound('task not found');
         return task;
       },
     });

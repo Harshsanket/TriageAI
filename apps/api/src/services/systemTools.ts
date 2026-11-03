@@ -12,7 +12,7 @@ import { readSystemStatus, type ConnectedApiFact } from './dashboardReads.js';
 import { writeAudit } from './audit.js';
 
 const InputSchema = z.object({}).strict();
-const OutputSchema = z.record(z.unknown());
+const OutputSchema = z.record(z.string(), z.unknown());
 
 const TOOL_BASE = {
   version: '1.0.0',

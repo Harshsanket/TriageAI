@@ -22,7 +22,7 @@ export const CandidateDtoSchema = z.object({
   sourceRunId: z.string().nullable(),
   input: z.unknown(),
   gold: z.unknown(),
-  provenance: z.record(z.unknown()),
+  provenance: z.record(z.string(), z.unknown()),
   status: CandidateStatusSchema,
   actor: z.string().nullable(),
   reviewedAt: z.string().nullable(),
@@ -49,7 +49,7 @@ export const CandidateExportExampleSchema = z.object({
   expected: z.string(),
   input: z.unknown(),
   gold: z.unknown(),
-  provenance: z.record(z.unknown()),
+  provenance: z.record(z.string(), z.unknown()),
 });
 export type CandidateExportExample = z.infer<typeof CandidateExportExampleSchema>;
 
@@ -102,7 +102,7 @@ export const DatasetDtoSchema = z.object({
     test: z.array(z.string()),
   }),
   counts: DatasetSplitCountsSchema,
-  classBalance: z.record(DatasetSplitCountsSchema).default({}),
+  classBalance: z.record(z.string(), DatasetSplitCountsSchema).prefault({}),
   strategy: z.string(),
   createdAt: z.string(),
   createdBy: z.string().nullable(),
@@ -122,7 +122,7 @@ export const DatasetExampleExportSchema = z.object({
   split: DatasetSplitNameSchema,
   input: z.unknown(),
   gold: z.unknown(),
-  provenance: z.record(z.unknown()),
+  provenance: z.record(z.string(), z.unknown()),
 });
 export type DatasetExampleExport = z.infer<typeof DatasetExampleExportSchema>;
 
@@ -152,7 +152,7 @@ export const ModelAssetDtoSchema = z.object({
   component: ModelComponentSchema,
   name: z.string(),
   artifactRef: z.string().nullable(),
-  config: z.record(z.unknown()),
+  config: z.record(z.string(), z.unknown()),
   evalReportId: z.string().nullable(),
   status: ModelStatusSchema,
   promotedAt: z.string().nullable(),
@@ -166,7 +166,7 @@ export const RegisterModelRequestSchema = z
     component: ModelComponentSchema,
     name: z.string().min(1).max(200),
     artifactRef: z.string().max(500).nullable().optional(),
-    config: z.record(z.unknown()).default({}),
+    config: z.record(z.string(), z.unknown()).prefault({}),
     evalReportId: z.string().nullable().optional(),
     actor: z.string().min(1).max(200).default('admin'),
   })
@@ -189,9 +189,9 @@ export const RollbackModelRequestSchema = z
 export const EvalSuiteResultSchema = z.object({
   suite: z.string().min(1),
   status: z.enum(['passed', 'failed']),
-  metrics: z.record(z.number()).default({}),
-  gates: z.record(z.number()).default({}),
-  details: z.record(z.unknown()).optional(),
+  metrics: z.record(z.string(), z.number()).prefault({}),
+  gates: z.record(z.string(), z.number()).prefault({}),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 export type EvalSuiteResult = z.infer<typeof EvalSuiteResultSchema>;
 
@@ -274,7 +274,7 @@ export const FeedbackInsightsSchema = z.object({
     volume: z.array(
       z.object({
         bucket: z.string(),
-        bySource: z.record(z.number().int().nonnegative()),
+        bySource: z.record(z.string(), z.number().int().nonnegative()),
       }),
     ),
     sentiment: z.array(

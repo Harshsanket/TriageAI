@@ -36,7 +36,7 @@ export const triageConfigSchema = z
       })
       .default({ P0: 1, P1: 4, P2: 24, P3: 72 }),
   })
-  .default({});
+  .prefault({});
 
 export const configSchema = z
   .object({

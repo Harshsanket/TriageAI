@@ -23,10 +23,11 @@ describeIfDb('appearance preferences (phase 20.7)', () => {
     app = Fastify({ logger: false });
     app.addHook('preHandler', async (request) => {
       const userId = String(request.headers['x-test-user'] ?? USERS[0]);
+      const role = request.headers['x-test-role'] === 'admin' ? 'admin' : 'customer';
       request.principal = {
         userId,
         email: `${userId}@test`,
-        role: 'customer',
+        role,
         sessionId: null,
         authenticated: true,
       };
@@ -106,7 +107,7 @@ describeIfDb('appearance preferences (phase 20.7)', () => {
     const res = await app.inject({
       method: 'PUT',
       url: '/api/v1/me/preferences',
-      headers: { 'x-test-user': USERS[0] },
+      headers: { 'x-test-user': USERS[0], 'x-test-role': 'admin' },
       payload: {
         agents: [
           { id: 'a', displayName: 'Voyager', color: '#3b6fd4' },
@@ -115,5 +116,52 @@ describeIfDb('appearance preferences (phase 20.7)', () => {
       },
     });
     expect(res.statusCode).toBe(409);
+  });
+
+  it('keeps agent renames admin-only while per-user appearance still works (F5)', async () => {
+    const agentId = `prefs-agent-${Date.now()}`;
+    await database.query(
+      `INSERT INTO agent_definitions (id, display_name, definition)
+       VALUES ($1, 'Voyager', '{"color":"#3b6fd4"}'::jsonb)`,
+      [agentId],
+    );
+    try {
+      const refused = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/me/preferences',
+        headers: { 'x-test-user': USERS[0] },
+        payload: { agents: [{ id: agentId, displayName: 'Hacked', color: '#000000' }] },
+      });
+      expect(refused.statusCode).toBe(403);
+      expect(refused.json()).toMatchObject({ code: 'preferences.AGENTS_ADMIN_ONLY' });
+      const unchanged = await database.query<{ display_name: string }>(
+        `SELECT display_name FROM agent_definitions WHERE id = $1`,
+        [agentId],
+      );
+      expect(unchanged[0]?.display_name).toBe('Voyager');
+
+      const appearance = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/me/preferences',
+        headers: { 'x-test-user': USERS[0] },
+        payload: { theme: 'dark', fontSize: 'large', motion: 'off' },
+      });
+      expect(appearance.statusCode).toBe(200);
+
+      const admin = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/me/preferences',
+        headers: { 'x-test-user': USERS[0], 'x-test-role': 'admin' },
+        payload: { agents: [{ id: agentId, displayName: 'Cassini', color: '#d9730d' }] },
+      });
+      expect(admin.statusCode).toBe(200);
+      const updated = await database.query<{ display_name: string }>(
+        `SELECT display_name FROM agent_definitions WHERE id = $1`,
+        [agentId],
+      );
+      expect(updated[0]?.display_name).toBe('Cassini');
+    } finally {
+      await database.query(`DELETE FROM agent_definitions WHERE id = $1`, [agentId]);
+    }
   });
 });

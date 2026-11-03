@@ -3,6 +3,11 @@ export interface Cache {
   get<T>(key: string): Promise<T | undefined>;
   set<T>(key: string, value: T, ttlMs: number): Promise<void>;
   delete(key: string): Promise<void>;
+  /**
+   * Drop every entry. KB source changes call this so cached retrieval results
+   * (and answers generated from them) cannot outlive an Off switch.
+   */
+  clear?(): Promise<void> | void;
 }
 
 interface Entry {
@@ -46,6 +51,10 @@ export class MemoryCache implements Cache {
 
   async delete(key: string): Promise<void> {
     this.entries.delete(key);
+  }
+
+  clear(): void {
+    this.entries.clear();
   }
 
   stats(): { hits: number; misses: number; size: number; hitRate: number } {

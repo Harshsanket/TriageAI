@@ -24,6 +24,12 @@ interface EgressOptions {
   lookup?: (host: string) => Promise<string[]>;
   /** Test seam: exercise redirects against a local fixture server. */
   pinAddress?: boolean;
+  /**
+   * Hostnames allowed to resolve to a private address on the first hop only
+   * (local model runtimes). Link-local, metadata and unspecified addresses are
+   * always refused, and redirects are re-checked without this exemption (F6).
+   */
+  allowPrivateHosts?: string[];
 }
 
 export interface EgressContext {
@@ -31,6 +37,8 @@ export interface EgressContext {
   purpose: string;
   /** Per-call cap; defaults to the client cap (plugin downloads opt in higher). */
   maxBytes?: number;
+  /** Stream the body through instead of buffering it (setup model pulls). */
+  stream?: boolean;
 }
 
 const BLOCKED_V4 = [
@@ -67,6 +75,19 @@ export function isPrivateAddress(address: string): boolean {
   return BLOCKED_V4.some((pattern) => pattern.test(v4));
 }
 
+/** Link-local/metadata/unspecified addresses are never allowed, even locally. */
+export function isAlwaysBlockedAddress(address: string): boolean {
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === '::' || normalized === '0.0.0.0') return true;
+  if (/^169\.254\./.test(normalized)) return true;
+  if (/^fe[89ab][0-9a-f]:/.test(normalized)) return true;
+  if (/^ff[0-9a-f]{2}:/.test(normalized)) return true;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized);
+  if (mapped?.[1]) return isAlwaysBlockedAddress(mapped[1]);
+  if (/^(22[4-9]|23\d|24\d|25[0-5])\./.test(normalized)) return true;
+  return false;
+}
+
 export class EgressClient {
   private readonly rules = new Map<string, EgressRule>();
   private readonly timeoutMs: number;
@@ -74,6 +95,7 @@ export class EgressClient {
   private readonly maxRedirects: number;
   private readonly lookup: (host: string) => Promise<string[]>;
   private readonly pinAddress: boolean;
+  private readonly allowPrivateHosts: Set<string>;
 
   constructor(
     private readonly database: Database,
@@ -88,6 +110,9 @@ export class EgressClient {
     this.lookup =
       options.lookup ??
       (async (host) => (await dnsLookup(host, { all: true })).map((entry) => entry.address));
+    this.allowPrivateHosts = new Set(
+      (options.allowPrivateHosts ?? []).map((host) => host.toLowerCase()),
+    );
   }
 
   allows(url: string): boolean {
@@ -121,7 +146,18 @@ export class EgressClient {
           retryable: true,
         });
       }
-      if (addresses.length === 0 || addresses.some(isPrivateAddress)) {
+      // Local runtimes may resolve to loopback/RFC1918 on the first hop only.
+      // Link-local/metadata and unspecified addresses remain blocked, and any
+      // redirect target is re-checked without the local-runtime exemption.
+      const localFirstHop =
+        hop === 0 && this.allowPrivateHosts.has(host.toLowerCase()) && this.allows(current);
+      const blocked =
+        addresses.length === 0 ||
+        addresses.some(
+          (address) =>
+            isAlwaysBlockedAddress(address) || (isPrivateAddress(address) && !localFirstHop),
+        );
+      if (blocked) {
         await this.deny(context, current, 'egress.private_blocked', 'private address');
         throw policyBlocked(`egress to ${host} resolves to a private or reserved address`);
       }
@@ -178,11 +214,40 @@ export class EgressClient {
         current = next.toString();
         continue;
       }
-      try {
-        return await this.cap(response, context.maxBytes);
-      } finally {
-        await agent?.close().catch(() => undefined);
+      if (!context.stream) {
+        try {
+          return await this.cap(response, context.maxBytes);
+        } finally {
+          await agent?.close().catch(() => undefined);
+        }
       }
+      // Stream mode: keep the pinned dispatcher alive until the caller drains
+      // the body, then close it.
+      if (!response.body) {
+        await agent?.close().catch(() => undefined);
+        return response;
+      }
+      const reader = response.body.getReader();
+      const stream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const { done, value } = await reader.read();
+          if (done) {
+            await agent?.close().catch(() => undefined);
+            controller.close();
+            return;
+          }
+          if (value) controller.enqueue(value);
+        },
+        async cancel() {
+          await reader.cancel().catch(() => undefined);
+          await agent?.close().catch(() => undefined);
+        },
+      });
+      return new Response(stream, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     }
     throw new AppError('egress.TOO_MANY_REDIRECTS', 'too many redirects', undefined, 502, {
       category: 'dependency_unavailable',

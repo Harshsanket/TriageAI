@@ -85,6 +85,8 @@ export interface BuildAppOptions {
   databaseUrl?: string;
   /** Test seam: force the first-run setup gate on/off (default: TRIAGEAI_SETUP). */
   setup?: boolean;
+  /** Test seam: ignore config_overlays so tests are hermetic on a dev database. */
+  useOverlay?: boolean;
   /** Exit after a wizard apply so a supervisor restarts with the new config. */
   restartOnApply?: boolean;
   /** Test seam: replace the process exit used by `/setup/restart`. */
@@ -322,6 +324,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           isPending: () => runtime.enabled && runtime.state === 'pending',
           verify: (header) => runtime.token.verify(header),
         },
+        isAccessCurrent: (claims) => authService.isAccessCurrent(claims),
       }),
     );
     const modelRegistry = new DbModelRegistry(database);
@@ -343,15 +346,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       overlay: { modules: Record<string, { enabled: boolean }> };
       versions: Record<string, string>;
     }> {
-      const installed = await loadInstalledPlugins(pluginsRoot, KERNEL_API_VERSION);
+      // Read the enabled map first: a disabled plugin's server bundle must not
+      // be imported at boot at all (F7). Enabling through the soft reload makes
+      // the next generation import it.
       const enabled = await pluginStore.enabledMap();
+      const installed = await loadInstalledPlugins(pluginsRoot, KERNEL_API_VERSION, {
+        shouldLoad: (manifest) => enabled.get(manifest.id) === true,
+      });
       const modules: Record<string, TriageModule> = { ...MODULES };
       const overlay: Record<string, { enabled: boolean }> = {};
       const versions: Record<string, string> = {};
       for (const plugin of installed) {
         if (modules[plugin.manifest.id]) continue; // first-party id wins
         modules[plugin.manifest.id] = plugin.module;
-        overlay[plugin.manifest.id] = { enabled: enabled.get(plugin.manifest.id) ?? false };
+        overlay[plugin.manifest.id] = { enabled: true };
         versions[plugin.manifest.id] = plugin.manifest.version;
       }
       return { modules, overlay: { modules: overlay }, versions };
@@ -367,8 +375,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     async function bootGeneration(): Promise<Generation> {
       const pluginSet = await loadPluginSet();
       // Re-read the overlay on every generation so setup "Add" / "Remove" /
-      // "Reset and erase" take effect on soft-reload without a restart.
-      const latestOverlay = runtime.store ? await runtime.store.latestOverlay() : null;
+      // "Reset and erase" take effect on soft-reload without a restart. Tests
+      // pass `useOverlay: false` so a developer's local overlay cannot change a
+      // suite's effective config (F10).
+      const latestOverlay =
+        options.useOverlay === false || !runtime.store ? null : await runtime.store.latestOverlay();
       const fileWithOverlay = latestOverlay
         ? applyConfigOverlay(fileConfig, latestOverlay.overlay)
         : fileConfig;

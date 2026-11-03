@@ -4,7 +4,7 @@
  * explicitly disabled plugin. Every mutation reloads the kernel generation.
  */
 import { readFile } from 'node:fs/promises';
-import { join, normalize, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -32,6 +32,9 @@ import { writeAudit } from '../services/audit.js';
 import { getControls } from '../services/controls.js';
 
 export const KERNEL_API_VERSION = '1.0.0';
+
+const PLUGIN_ID = /^[a-z0-9][a-z0-9-]*$/;
+const PLUGIN_VERSION = /^\d+\.\d+\.\d+$/;
 
 export function parsePluginKeys(raw: string | undefined): TrustedPluginKey[] {
   if (!raw) return [];
@@ -200,17 +203,21 @@ export function registerPluginRoutes(
     return { id, uninstalled: true };
   });
 
-  // Dynamic web bundles (ADR-0027). Immutable per (id, version); resolved under
-  // the plugin volume with a path-traversal guard.
+  // Dynamic web bundles (ADR-0027). Immutable per (id, version); both path
+  // segments are strict and the resolved file must stay under the version
+  // directory (F1: an encoded `%2F` must never escape the plugin volume).
   app.get('/plugins/:id/:version/*', async (request, reply) => {
     const { id, version } = request.params as { id: string; version: string };
     const wildcard = (request.params as Record<string, string>)['*'] ?? '';
-    if (!/^[a-z0-9-]+$/.test(id) || !/^\d+\.\d+\.\d+/.test(version)) {
+    if (!PLUGIN_ID.test(id) || !PLUGIN_VERSION.test(version)) {
       throw invalid('invalid plugin bundle path');
     }
     const root = resolve(deps.pluginsRoot, id, version);
-    const target = normalize(join(root, wildcard));
-    if (!target.startsWith(`${root}/`)) throw invalid('invalid plugin bundle path');
+    const target = resolve(root, wildcard);
+    const within = relative(root, target);
+    if (!within || within.startsWith('..') || isAbsolute(within)) {
+      throw invalid('invalid plugin bundle path');
+    }
     try {
       const content = await readFile(target);
       const extension = target.slice(target.lastIndexOf('.'));

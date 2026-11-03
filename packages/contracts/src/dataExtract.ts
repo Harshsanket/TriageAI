@@ -39,7 +39,7 @@ export type ExtractedDatasetDto = z.infer<typeof ExtractedDatasetDtoSchema>;
 export const ExtractedRowDtoSchema = z.object({
   id: z.string(),
   datasetId: z.string(),
-  fields: z.record(z.unknown()),
+  fields: z.record(z.string(), z.unknown()),
   category: z.string().nullable(),
   categorySource: z.enum(['rule', 'suggested', 'user']).nullable(),
   createdAt: z.string(),

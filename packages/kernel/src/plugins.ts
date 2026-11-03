@@ -193,10 +193,17 @@ export interface LoadedPlugin {
   module: TriageModule;
 }
 
-/** Load every unpacked plugin version under the volume (latest version wins). */
+/**
+ * Load unpacked plugin versions under the volume (latest version wins).
+ *
+ * `shouldLoad` lets the host skip disabled plugins *before* importing their
+ * server bundle: disabling a plugin must stop its top-level code from running
+ * on the next boot (F7). The manifest is still read so the caller can show it.
+ */
 export async function loadInstalledPlugins(
   pluginsRoot: string,
   kernelApiVersion: string,
+  options: { shouldLoad?: (manifest: PluginManifest) => boolean } = {},
 ): Promise<LoadedPlugin[]> {
   let ids: string[];
   try {
@@ -224,6 +231,7 @@ export async function loadInstalledPlugins(
         JSON.parse(await readFile(join(directory, 'plugin.json'), 'utf8')),
       );
       if (!satisfiesRange(kernelApiVersion, manifest.kernelApi)) continue;
+      if (options.shouldLoad && !options.shouldLoad(manifest)) continue;
       const module = await loadPluginModule(directory, manifest);
       plugins.push({ manifest, directory, module });
     } catch {

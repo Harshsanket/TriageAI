@@ -113,6 +113,8 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | DELETE | `/api/v1/kb/sources/:id` | admin |
 | PATCH | `/api/v1/kb/sources/:id` | admin |
 | POST | `/api/v1/kb/sources/:id/approve` | admin |
+| POST | `/api/v1/kb/sources/:id/purge` | admin |
+| POST | `/api/v1/kb/sources/:id/reingest` | admin |
 | POST | `/api/v1/kb/sources/batch` | admin |
 | GET | `/api/v1/kb/storage` | agent, admin |
 | POST | `/api/v1/mcp` | admin |

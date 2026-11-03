@@ -86,6 +86,16 @@ export function registerPreferenceRoutes(app: FastifyInstance, kernel: Kernel): 
     const agents = body.agents;
 
     if (agents && agents.length > 0) {
+      // Agent names/colours are instance-wide, so they are not a per-user
+      // preference. The ANY route only accepts them from an admin (F5).
+      if (request.principal?.role !== 'admin') {
+        throw new AppError(
+          'preferences.AGENTS_ADMIN_ONLY',
+          'only admins may rename or recolour agents',
+          undefined,
+          403,
+        );
+      }
       const names = new Map<string, string>();
       for (const agent of agents) {
         const key = agent.displayName.trim().toLowerCase();

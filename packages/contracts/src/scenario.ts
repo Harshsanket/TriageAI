@@ -30,7 +30,7 @@ export const ScenarioCaseSchema = z
         clarifyingQuestion: z.boolean().optional(),
         stateChanges: z.record(z.string(), z.unknown()).optional(),
       })
-      .default({}),
+      .prefault({}),
     grading: z.array(z.enum(['deterministic', 'judge'])).default(['deterministic']),
     source: z.enum(['authored', 'incident', 'user_flag', 'step_eval']).default('authored'),
   })

@@ -6,6 +6,7 @@
 import { ulid } from 'ulid';
 
 import {
+  AppError,
   capturePreference,
   loadSkillPack,
   parseSkillMarkdown,
@@ -128,12 +129,25 @@ async function visibleSkill(
   actorId: string | null,
   role: string | undefined,
 ): Promise<SkillRow | null> {
+  // Admins may edit any row, including instance-wide skills. Everyone else may
+  // only touch rows they own; `owner_id IS NULL` is never implicitly visible
+  // (F2: a customer must not edit or delete an instance skill).
+  if (role === 'admin') {
+    const rows = await database.query<SkillRow>(`SELECT * FROM user_skills WHERE id = $1`, [id]);
+    return rows[0] ?? null;
+  }
+  if (!actorId) return null;
   const rows = await database.query<SkillRow>(
-    `SELECT * FROM user_skills
-      WHERE id = $1 AND ($2::text IS NULL OR owner_id = $2 OR owner_id IS NULL)`,
-    [id, role === 'admin' ? null : (actorId ?? null)],
+    `SELECT * FROM user_skills WHERE id = $1 AND owner_id = $2`,
+    [id, actorId],
   );
   return rows[0] ?? null;
+}
+
+function requireAdminForInstance(role: string | undefined, action: string): void {
+  if (role !== 'admin') {
+    throw new AppError('FORBIDDEN', `only admins may ${action} an instance skill`, undefined, 403);
+  }
 }
 
 export async function listSkillIndex(
@@ -278,9 +292,11 @@ async function upsertSkill(
 export async function createSkill(
   kernel: Kernel,
   actorId: string | null,
+  role: string | undefined,
   input: SkillCreateRequest,
   actor: string,
 ): Promise<UserSkill> {
+  if (input.scope === 'instance') requireAdminForInstance(role, 'create');
   const name =
     input.name ?? slugifySkillName(input.description, `skill-${Date.now().toString(36)}`);
   if (!NAME.test(name)) throw new Error('invalid skill name');
@@ -315,6 +331,7 @@ export async function updateSkill(
 ): Promise<UserSkill | null> {
   const row = await visibleSkill(kernel.database, id, actorId, role);
   if (!row) return null;
+  if (patch.scope === 'instance') requireAdminForInstance(role, 'promote');
   const next = {
     name: patch.name ?? row.name,
     description: patch.description ?? row.description,
