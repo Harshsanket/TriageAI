@@ -8,6 +8,8 @@
  *   apps/ai-service/eval/run_eval.py        → apps/ai-service/eval/reports/latest.json
  *   apps/api/evals/retrieval.eval.ts        → apps/api/evals/reports/retrieval-latest.json
  *   apps/api/evals/generation.eval.ts       → apps/api/evals/reports/generation-latest.json
+ *   apps/api/evals/scenarios.eval.ts        → apps/api/evals/reports/scenarios-latest.json
+ *   apps/api/evals/redteam.eval.ts          → apps/api/evals/reports/redteam-latest.json
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -37,17 +39,40 @@ async function main(): Promise<number> {
     recallAt3: number;
     mrr: number;
     gates: { recallAt3: number };
+    hybrid?: { recallAt3: number; mrr: number };
+    vectorOnly?: { recallAt3: number; mrr: number };
+    delta?: { recallAt3: number; mrr: number };
   }>(path.join(HERE, 'reports/retrieval-latest.json'));
   const generation = await readJson<{
     status: 'passed' | 'failed';
     metrics: Record<string, number>;
     gates: Record<string, number>;
   }>(path.join(HERE, 'reports/generation-latest.json'));
+  const scenarios = await readJson<{
+    generatedAt: string;
+    status: 'passed' | 'failed';
+    metrics: Record<string, number>;
+    gates: Record<string, number>;
+  }>(path.join(HERE, 'reports/scenarios-latest.json'));
+  const redteam = await readJson<{
+    generatedAt: string;
+    status: 'passed' | 'failed';
+    metrics: Record<string, number>;
+    gates: Record<string, number>;
+  }>(path.join(HERE, 'reports/redteam-latest.json'));
 
   const classificationPassed =
     classification.macroF1 >= classification.gates.macro_f1 &&
     classification.p95LatencyMs <= classification.gates.p95_ms &&
     classification.falseAutoRoutingCount <= classification.gates.false_auto_routing;
+  // 18.T9: older reports have no A/B fields; fall back to the single mode so a
+  // merged report still renders (and keeps the new metric names).
+  const retrievalHybrid = retrieval.hybrid?.recallAt3 ?? retrieval.recallAt3;
+  const retrievalVectorOnly = retrieval.vectorOnly?.recallAt3 ?? retrieval.recallAt3;
+  const retrievalDelta =
+    retrieval.delta?.recallAt3 ?? Number((retrievalHybrid - retrievalVectorOnly).toFixed(4));
+  const retrievalPassed =
+    retrieval.recallAt3 >= retrieval.gates.recallAt3 && retrievalHybrid >= retrievalVectorOnly;
   const suites: SuiteInput[] = [
     {
       suite: 'classification',
@@ -65,9 +90,15 @@ async function main(): Promise<number> {
     },
     {
       suite: 'retrieval',
-      status: retrieval.recallAt3 >= retrieval.gates.recallAt3 ? 'passed' : 'failed',
-      metrics: { recallAt3: retrieval.recallAt3, mrr: retrieval.mrr },
-      gates: { recallAt3: retrieval.gates.recallAt3 },
+      status: retrievalPassed ? 'passed' : 'failed',
+      metrics: {
+        recallAt3: retrieval.recallAt3,
+        mrr: retrieval.mrr,
+        hybridRecallAt3: retrievalHybrid,
+        vectorOnlyRecallAt3: retrievalVectorOnly,
+        recallDelta: retrievalDelta,
+      },
+      gates: { recallAt3: retrieval.gates.recallAt3, recallDeltaMin: 0 },
     },
     {
       suite: 'generation',
@@ -75,12 +106,24 @@ async function main(): Promise<number> {
       metrics: generation.metrics,
       gates: generation.gates,
     },
+    {
+      suite: 'scenarios',
+      status: scenarios.status,
+      metrics: scenarios.metrics,
+      gates: scenarios.gates,
+    },
+    {
+      suite: 'redteam',
+      status: redteam.status,
+      metrics: redteam.metrics,
+      gates: redteam.gates,
+    },
   ];
 
   const merged = mergeEvalSuites(suites, {
     generatedAt: new Date().toISOString(),
     artifact: 'apps/api/evals/reports/merged-latest.json',
-    notes: `Sources: classification ${classification.generatedAt}, retrieval ${retrieval.generatedAt}`,
+    notes: `Sources: classification ${classification.generatedAt}, retrieval ${retrieval.generatedAt}, scenarios ${scenarios.generatedAt}, redteam ${redteam.generatedAt}`,
   });
   const reportsDir = path.join(HERE, 'reports');
   await mkdir(reportsDir, { recursive: true });

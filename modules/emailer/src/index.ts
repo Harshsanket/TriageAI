@@ -8,9 +8,10 @@ import { ulid } from 'ulid';
 import { z } from 'zod';
 
 import { AppError, invalid } from '@triageai/kernel';
-import type { TriageModule } from '@triageai/kernel';
+import type { KernelContext, TriageModule } from '@triageai/kernel';
 
 import { sendMail, type SmtpConfig } from './smtp.js';
+import { createImapPoller, pullImapUnseen } from './imap.js';
 
 const configSchema = z
   .object({
@@ -18,6 +19,14 @@ const configSchema = z
     requireApproval: z.boolean().default(true),
     smtpPort: z.number().int().positive().default(587),
     smtpSecure: z.boolean().default(false),
+    imapHost: z.string().min(1).max(300).optional(),
+    imapPort: z.number().int().positive().default(993),
+    imapSecure: z.boolean().default(true),
+    imapUserEnv: z.string().min(1).max(100).default('EMAIL_IMAP_USER'),
+    imapPassEnv: z.string().min(1).max(100).default('EMAIL_IMAP_PASS'),
+    imapMailbox: z.string().min(1).max(100).default('INBOX'),
+    imapPollSeconds: z.number().int().min(30).max(3600).default(60),
+    imapSelfAddresses: z.string().max(1000).default(''),
   })
   .strict();
 
@@ -58,6 +67,15 @@ const MIGRATIONS = [
     `,
     dropSql: 'DROP TABLE IF EXISTS email_inbound_seen;',
   },
+  {
+    id: '0003-email-reply-dedupe',
+    sql: `
+      ALTER TABLE email_outbox ADD COLUMN IF NOT EXISTS in_reply_to TEXT;
+      CREATE INDEX IF NOT EXISTS email_outbox_reply
+        ON email_outbox (ticket_id, in_reply_to) WHERE in_reply_to IS NOT NULL;
+    `,
+    dropSql: 'DROP INDEX IF EXISTS email_outbox_reply;',
+  },
 ];
 
 const InboundSchema = z
@@ -70,6 +88,38 @@ const InboundSchema = z
     inReplyTo: z.string().max(500).optional(),
   })
   .strict();
+
+type Inbound = z.infer<typeof InboundSchema>;
+
+/** Shared by the signed webhook and the IMAP poller. */
+async function processInbound(
+  ctx: KernelContext,
+  body: Inbound,
+): Promise<{ accepted: true; deduped?: boolean; threaded?: boolean; ticketId?: string }> {
+  const seen = await ctx.database.query<{ message_id: string }>(
+    `INSERT INTO email_inbound_seen (message_id) VALUES ($1)
+     ON CONFLICT (message_id) DO NOTHING RETURNING message_id`,
+    [body.messageId],
+  );
+  if (seen.length === 0) return { accepted: true, deduped: true };
+  const threaded = body.inReplyTo
+    ? await ctx.database.query<{ ticket_id: string }>(
+        `SELECT ticket_id FROM email_threads WHERE message_id = $1`,
+        [body.inReplyTo],
+      )
+    : [];
+  if (threaded[0]) {
+    await ctx.events.publish('email.reply_received', {
+      ticketId: threaded[0].ticket_id,
+      messageId: body.messageId,
+      from: body.from,
+      text: body.text,
+    });
+    return { accepted: true, threaded: true, ticketId: threaded[0].ticket_id };
+  }
+  await ctx.events.publish('email.received', body);
+  return { accepted: true, threaded: false };
+}
 
 const OutboundSchema = z
   .object({
@@ -190,29 +240,7 @@ export const emailerModule: TriageModule = {
           inboundSecret,
         );
         const body = InboundSchema.parse(request.body ?? {});
-        const seen = await ctx.database.query<{ message_id: string }>(
-          `INSERT INTO email_inbound_seen (message_id) VALUES ($1)
-           ON CONFLICT (message_id) DO NOTHING RETURNING message_id`,
-          [body.messageId],
-        );
-        if (seen.length === 0) return { accepted: true, deduped: true };
-        const threaded = body.inReplyTo
-          ? await ctx.database.query<{ ticket_id: string }>(
-              `SELECT ticket_id FROM email_threads WHERE message_id = $1`,
-              [body.inReplyTo],
-            )
-          : [];
-        if (threaded[0]) {
-          await ctx.events.publish('email.reply_received', {
-            ticketId: threaded[0].ticket_id,
-            messageId: body.messageId,
-            from: body.from,
-            text: body.text,
-          });
-          return { accepted: true, threaded: true, ticketId: threaded[0].ticket_id };
-        }
-        await ctx.events.publish('email.received', body);
-        return { accepted: true, threaded: false };
+        return processInbound(ctx, body);
       },
     });
 
@@ -238,28 +266,27 @@ export const emailerModule: TriageModule = {
       url: '/api/v1/emailer/send',
       handler: async (request) => {
         const body = OutboundSchema.parse(request.body ?? {});
-        if (body.ticketId) {
-          const rows = await ctx.database.query<{ id: string }>(
-            `SELECT id FROM email_outbox WHERE ticket_id = $1 AND status = 'sent' LIMIT 1`,
-            [body.ticketId],
+        if (body.ticketId && body.inReplyTo) {
+          // Loop/repeat guard: one outbound reply per inbound customer message.
+          // Pending and approved rows count too, so a double-click or a retry
+          // after a failed SMTP attempt cannot send the same reply twice.
+          const seen = await ctx.database.query<{ id: string }>(
+            `SELECT id FROM email_outbox
+              WHERE ticket_id = $1 AND in_reply_to = $2
+                AND status IN ('pending_approval','approved','sent')
+              LIMIT 1`,
+            [body.ticketId, body.inReplyTo],
           );
-          if (rows[0] && body.inReplyTo) {
-            // repeat detection: one sent reply per customer message
-            const seen = await ctx.database.query<{ id: string }>(
-              `SELECT id FROM email_outbox WHERE ticket_id = $1 AND status = 'sent' LIMIT 1`,
-              [body.ticketId],
-            );
-            if (seen[0]) {
-              return { queued: false, reason: 'already_replied', outboxId: seen[0].id };
-            }
+          if (seen[0]) {
+            return { queued: false, reason: 'already_replied', outboxId: seen[0].id };
           }
         }
         const id = ulid();
         const status = options.requireApproval ? 'pending_approval' : 'approved';
         await ctx.database.query(
           `INSERT INTO email_outbox
-             (id, ticket_id, to_address, subject, body, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+             (id, ticket_id, to_address, subject, body, status, created_by, in_reply_to)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             id,
             body.ticketId ?? null,
@@ -268,6 +295,7 @@ export const emailerModule: TriageModule = {
             body.body,
             status,
             request.actor ?? null,
+            body.inReplyTo ?? null,
           ],
         );
         if (!options.requireApproval) await deliver(id);
@@ -370,5 +398,36 @@ export const emailerModule: TriageModule = {
         [event.emailMessageId, event.ticketId],
       );
     });
+
+    // 13.T2 IMAP polling: config-gated; the webhook remains the primary path.
+    const imapHost = options.imapHost ?? ctx.env.EMAIL_IMAP_HOST;
+    const imapUser = ctx.env[options.imapUserEnv];
+    const imapPass = ctx.env[options.imapPassEnv];
+    if (imapHost && imapUser && imapPass) {
+      const poller = createImapPoller({
+        pull: () =>
+          pullImapUnseen({
+            host: imapHost,
+            port: Number(ctx.env.EMAIL_IMAP_PORT ?? options.imapPort),
+            secure: options.imapSecure,
+            user: imapUser,
+            pass: imapPass,
+            mailbox: options.imapMailbox,
+            selfAddresses: options.imapSelfAddresses
+              .split(',')
+              .map((entry) => entry.trim().toLowerCase())
+              .filter(Boolean),
+            logger: ctx.logger,
+          }),
+        onMessage: async (message) => {
+          const parsed = InboundSchema.safeParse(message);
+          if (!parsed.success) return;
+          await processInbound(ctx, parsed.data);
+        },
+        intervalMs: options.imapPollSeconds * 1000,
+        logger: ctx.logger,
+      });
+      poller.start();
+    }
   },
 };

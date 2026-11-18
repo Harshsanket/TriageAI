@@ -1,5 +1,5 @@
 /** Local workspace mirror (Phase 16.T6): a human-readable copy of run state. */
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 export interface WorkspaceMirrorInput {
@@ -54,9 +54,12 @@ export async function mirrorWorkspace(input: WorkspaceMirrorInput): Promise<Work
     join(directory, 'handoff.md'),
     input.handoff ?? `# Handoff\n\nGoal: ${input.goal}\nStatus: ${input.status}\n`,
   );
-  for (const step of input.steps) {
-    await appendFile(join(directory, 'log', 'progress.md'), `- ${step.at} — ${step.summary}\n`);
-  }
+  // Rewrite the whole progress log on every call: the DB checkpoint is the
+  // source of truth and re-mirroring a step must not duplicate its line.
+  await writeFile(
+    join(directory, 'log', 'progress.md'),
+    input.steps.map((step) => `- ${step.at} — ${step.summary}\n`).join(''),
+  );
   for (let index = 0; index < input.decisions.length; index += 1) {
     const decision = input.decisions[index]!;
     await writeFile(

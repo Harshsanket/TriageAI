@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./queue-tests": "./src/queue/contract.ts",
-    "./output-channel-tests": "./src/outputChannel/contract.ts"
+    "./output-channel-tests": "./src/outputChannel/contract.ts",
+    "./storage-tests": "./src/storage/contract.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -17,6 +18,9 @@
   "dependencies": {
     "@triageai/contracts": "workspace:*",
     "@triageai/plugin-sdk": "workspace:*",
+    "@triageai/rag": "workspace:*",
+    "ioredis": "^5.11.1",
+    "minio": "^8.0.7",
     "postgres": "^3.4.9",
     "ulid": "^3.0.1",
     "zod": "^4.6.7"

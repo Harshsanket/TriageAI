@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { importPluginPack } from '../src/importer.js';
+import { importPackContents, importPluginPack } from '../src/importer.js';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -36,5 +36,27 @@ describe('plugin-pack importer (phase 15)', () => {
     expect(result.skills[0]).toMatchObject({ name: 'handoff', body: 'Body.' });
     expect(result.agents[0]).toMatchObject({ name: 'reviewer' });
     expect(result.notImported.join(' ')).toContain('.cursor-plugin');
+  });
+
+  it('imports an in-memory signed pack and rejects unsafe names', () => {
+    const files = new Map<string, Uint8Array>([
+      [
+        'skills/handoff/SKILL.md',
+        Buffer.from('---\nname: handoff\ndescription: Write a concise handoff.\n---\n\nBody.'),
+      ],
+      [
+        'skills/bad/SKILL.md',
+        Buffer.from('---\nname: ../escape\ndescription: Should never import.\n---\n\nBody.'),
+      ],
+      ['agents/reviewer.md', Buffer.from('---\nname: reviewer\n---\n\nReview carefully.')],
+      ['agents/evil.md', Buffer.from('---\nname: ../../evil\n---\n\nNo.')],
+      ['commands/run.md', Buffer.from('harness command')],
+    ]);
+    const result = importPackContents(files, 'signed-pack');
+    expect(result.pluginId).toBe('signed-pack');
+    expect(result.skills.map((skill) => skill.name)).toEqual(['handoff']);
+    expect(result.agents.map((agent) => agent.name)).toEqual(['reviewer']);
+    expect(result.notImported.join(' ')).toContain('commands (harness-specific)');
+    expect(result.notImported.join(' ')).toContain('unsafe name');
   });
 });

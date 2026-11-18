@@ -7,6 +7,7 @@ import { ModuleInfoSchema, SystemManifestSchema } from '@triageai/contracts';
 import type { ModuleInfo, SystemManifest } from '@triageai/contracts';
 
 import { appendAudit, createCoreContextApis, createKnowledgeReadApi } from './coreApis.js';
+import { DEFAULT_DATA_CLASSES } from './data/classes.js';
 import { AppError, bootValidationError, configInvalid } from './errors.js';
 import {
   diffPermissions,
@@ -24,7 +25,18 @@ import { createOutputChannelRegistry } from './outputChannel.js';
 import { CapabilityRouter } from './capabilityRouter.js';
 import { EventSchemaRegistry } from './typedEvents.js';
 import { mp1RoundTrip, serializedTransportEnabled } from './mp1/serialized.js';
+import {
+  CORE_RETENTION_TARGETS,
+  deleteExpiredRows,
+  planClassRetention,
+} from './retention/classes.js';
+import {
+  dropExpiredPartitions,
+  ensureMonthPartitions,
+  type DroppedPartition,
+} from './retention/partitions.js';
 import { createKnowledgeSourceRegistry } from './sources/registry.js';
+import { Scheduler } from './scheduler/index.js';
 import { InlineQueue } from './queue/inline.js';
 import { PgQueue } from './queue/pg.js';
 import type { Queue } from './queue/types.js';
@@ -32,6 +44,7 @@ import { MIGRATIONS_TABLE_SQL, MigrationRunner, lintModuleMigration } from './st
 import { dropModuleStorage, provisionModuleStorage, type ModuleStorage } from './storageScope.js';
 import type {
   Capabilities,
+  ChatModel,
   DashboardProvider,
   Database,
   KernelConfig,
@@ -85,6 +98,8 @@ export interface Kernel {
   shutdown(): Promise<void>;
   /** Test/ops access (Phase 1; the inspector operates in Phase 2 via API). */
   readonly workflowEngine: WorkflowEngine;
+  /** Kernel scheduler for `trigger.type === 'schedule'` workflows (18.T4). */
+  readonly scheduler: Scheduler;
   readonly queue: Queue;
   readonly events: EventBus;
   readonly database: Database;
@@ -137,7 +152,11 @@ function createKernelContext(
           await queue.enqueue(
             'workflow.run',
             { runId: candidate.runId },
-            { idempotencyKey: `run:${candidate.runId}` },
+            {
+              idempotencyKey: `run:${candidate.runId}`,
+              priority: opts?.trigger === 'schedule' ? 0 : 1,
+              ...(opts?.delayMs ? { delayMs: opts.delayMs } : {}),
+            },
           );
         } catch (err) {
           logger.error(
@@ -472,8 +491,18 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
 
   const eventSchemas = new EventSchemaRegistry();
 
-  const enqueueRun = async (runId: string): Promise<void> => {
-    await queue.enqueue('workflow.run', { runId }, { idempotencyKey: `run:${runId}` });
+  const enqueueRun = async (runId: string, trigger?: string): Promise<void> => {
+    // 18.3 lanes: schedules and other background starts queue at lane 0,
+    // interactive work (chat, API, manual) at lane 1. The pg-queue poller
+    // serves lane 1 first and defers lane 0 above its backlog threshold.
+    await queue.enqueue(
+      'workflow.run',
+      { runId },
+      {
+        idempotencyKey: `run:${runId}`,
+        priority: trigger === 'schedule' ? 0 : 1,
+      },
+    );
   };
   const engineRef: { current?: WorkflowEngine } = {};
   const stageQueue: QueueCapability = {
@@ -484,7 +513,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       const current = engineRef.current;
       if (!current) throw new Error('workflow engine is not initialized yet');
       const candidate = await current.start(workflowId, input, opts);
-      if (!candidate.deduped) await enqueueRun(candidate.runId);
+      if (!candidate.deduped) await enqueueRun(candidate.runId, opts?.trigger);
       if (opts?.waitMs) await waitForRun(database, candidate.runId, Math.max(0, opts.waitMs));
       return candidate;
     },
@@ -493,12 +522,36 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
     },
     drain: () => queue.drain(),
   };
-  const engine = new WorkflowEngine(database, logger, events, stageQueue);
-  engineRef.current = engine;
   const routes: KernelRouteDef[] = [];
   const retentionTasks: RetentionTask[] = [];
   const tools = new ToolRegistry();
   const knowledgeSources = createKnowledgeSourceRegistry();
+  const engine = new WorkflowEngine(
+    database,
+    logger,
+    events,
+    stageQueue,
+    {},
+    {
+      // Graph-node deps resolved lazily so boot order and module-provided
+      // capability providers stay decoupled (ADR-0054 §4).
+      chatModel: () =>
+        capabilityRouter.has('chatModel')
+          ? (capabilityRouter.resolve('chatModel') as ChatModel)
+          : (capabilities.chatModel ?? undefined),
+      toolRegistry: () => tools,
+    },
+  );
+  engineRef.current = engine;
+  // The scheduler starts after modules have registered their workflows (below);
+  // constructing it here keeps the starter closure on the same queue path as
+  // every other workflow start.
+  const scheduler = new Scheduler({
+    database,
+    engine,
+    startWorkflow: stageQueue.startWorkflow,
+    logger,
+  });
   const dashboardProviders: DashboardProvider[] = [];
   const metricsProviders: MetricsProvider[] = [];
 
@@ -626,6 +679,12 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
     { backoffMs: [500, 2000, 10000] },
   );
 
+  try {
+    await scheduler.start();
+  } catch (err) {
+    throw bootValidationError('Scheduler boot failed', [(err as Error).message]);
+  }
+
   const startedIds = ordered.map((m) => m.module.id);
 
   logger.info(
@@ -709,7 +768,9 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       return { dropped: [...schemaDrops, ...dropped] };
     },
     shutdown: async () => {
-      // Stop the queue first: no new work may start while modules tear down.
+      // Stop claiming scheduled occurrences first, then the queue: no new work
+      // may start while modules tear down. In-flight runs are not cancelled.
+      await scheduler.stop();
       await queue.close();
       for (const item of [...ordered].reverse()) {
         try {
@@ -723,6 +784,7 @@ export async function bootKernel(options: KernelOptions): Promise<Kernel> {
       }
     },
     workflowEngine: engine,
+    scheduler,
     queue,
     events,
     database,
@@ -865,45 +927,71 @@ async function runRetentionPass(
     messages: cutoffFor(now, config.messageDays),
     deadletters: cutoffFor(now, config.deadletterDays),
   };
-  const results: Array<{ id: string; deleted: number }> = [];
+  const results: RetentionReport['results'] = [];
+  const droppedPartitions: DroppedPartition[] = [];
 
-  const coreDeletes: Array<{ id: string; cutoff: Date | null; sql: string }> = [
-    {
-      id: 'kernel.workflow_runs',
-      cutoff: cutoffs.runs,
-      sql: `DELETE FROM workflow_runs
-            WHERE finished_at IS NOT NULL AND finished_at < $1
-              AND status IN ('SUCCEEDED','FAILED','CANCELLED','AWAITING')
-            RETURNING id`,
-    },
-    {
-      id: 'kernel.decision_records',
-      cutoff: cutoffs.decisions,
-      sql: `DELETE FROM decision_records WHERE created_at < $1 RETURNING id`,
-    },
-    {
-      id: 'kernel.audit_events',
-      cutoff: cutoffs.audit,
-      sql: `DELETE FROM audit_events WHERE created_at < $1 RETURNING id`,
-    },
-    {
-      id: 'kernel.candidate_examples',
-      cutoff: cutoffs.candidates,
-      sql: `DELETE FROM candidate_examples
-            WHERE created_at < $1 AND status IN ('proposed','rejected') RETURNING id`,
-    },
-    {
-      id: 'kernel.queue_deadletters',
-      cutoff: cutoffs.deadletters,
-      sql: `DELETE FROM queue_deadletters WHERE created_at < $1 RETURNING id`,
-    },
-  ];
+  // Legal holds are class-wide and admin-only; an expired hold stops blocking.
+  const holds = await database
+    .query<{ class_id: string }>(
+      `SELECT class_id FROM legal_holds WHERE expires_at IS NULL OR expires_at > $1`,
+      [now],
+    )
+    .catch(() => []);
+  const heldClasses = new Set(holds.map((row) => row.class_id));
 
-  for (const item of coreDeletes) {
-    if (!item.cutoff) continue;
-    const rows = await database.query(item.sql, [item.cutoff]);
-    results.push({ id: item.id, deleted: rows.length });
+  const configuredCutoff: Record<string, Date | null> = {
+    runs: cutoffs.runs,
+    decisions: cutoffs.decisions,
+    audit: cutoffs.audit,
+    candidates: cutoffs.candidates,
+    deadletters: cutoffs.deadletters,
+  };
+
+  const plan = planClassRetention(Object.values(DEFAULT_DATA_CLASSES), {
+    now,
+    legalHolds: [...heldClasses],
+  });
+
+  for (const action of plan) {
+    if (action.action === 'legal_hold') {
+      results.push({ id: `kernel.legal_hold.${action.classId}`, deleted: 0 });
+      continue;
+    }
+    const target = CORE_RETENTION_TARGETS[action.classId];
+    if (!target) continue; // module-owned or not a kernel delete target
+    if (action.action !== 'delete') continue;
+    const configured = target.configKey ? configuredCutoff[target.configKey] : null;
+    const cutoff = configured ?? (action.days === undefined ? null : cutoffFor(now, action.days));
+    if (!cutoff) continue;
+    try {
+      if (target.partitioned) {
+        const dropped = await dropExpiredPartitions(database, target.table, cutoff);
+        droppedPartitions.push(...dropped);
+        results.push({
+          id: `kernel.${action.classId}`,
+          deleted: dropped.reduce((sum, partition) => sum + partition.rows, 0),
+        });
+        // Keep a short late-arrival window so a backdated write still lands in
+        // a month partition instead of the default partition. The next pass
+        // drops these again (and the rows they collected).
+        try {
+          await ensureMonthPartitions(database, target.table, now, 2, 3, target.timeColumn);
+        } catch {
+          // Partition DDL can still fail under concurrent maintenance; the
+          // next retention pass retries idempotently.
+        }
+      } else {
+        results.push({
+          id: `kernel.${action.classId}`,
+          deleted: await deleteExpiredRows(database, action.classId, cutoff),
+        });
+      }
+    } catch {
+      // One class's failure must not block the rest of the pass.
+      results.push({ id: `kernel.${action.classId}`, deleted: 0 });
+    }
   }
+
   for (const task of tasks) {
     try {
       const deleted = await task.apply({ database, cutoffs });
@@ -915,7 +1003,10 @@ async function runRetentionPass(
     }
   }
 
-  return {
+  const report: RetentionReport & {
+    heldClasses: string[];
+    droppedPartitions: DroppedPartition[];
+  } = {
     ranAt: now.toISOString(),
     enabled: config.enabled,
     cutoffs: {
@@ -927,5 +1018,8 @@ async function runRetentionPass(
       deadletters: cutoffs.deadletters?.toISOString() ?? null,
     },
     results,
+    heldClasses: [...heldClasses],
+    droppedPartitions,
   };
+  return report;
 }

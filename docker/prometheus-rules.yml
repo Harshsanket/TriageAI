@@ -1,0 +1,89 @@
+# Alert rules for the `observ` profile (Phase 18.4). Thresholds mirror
+# packages/kernel/src/operations/alerts.ts so `/api/v1/system/alerts` and
+# Alertmanager agree on what "too much" means.
+#
+# /metrics currently exports triageai_runs_total and triageai_queue_jobs, so
+# the error-rate and queue-depth rules are live. Because the run metric is a
+# gauge of counts by status, the error-rate rule uses the platform-wide failed
+# share; `/api/v1/system/alerts` computes the same threshold over a 5-minute
+# window from the same table. The remaining series are the names the API should
+# export when the corresponding gauges land; until then Prometheus has no data
+# for them and those rules stay inactive.
+groups:
+  - name: triageai
+    interval: 30s
+    rules:
+      - alert: TriageAIErrorRateHigh
+        expr: |
+          sum(triageai_runs_total{status="FAILED"})
+            /
+          clamp_min(sum(triageai_runs_total), 1)
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'TriageAI run failure share is above 5%'
+          description: >-
+            The share of failed workflow runs is {{ $value | humanizePercentage }}
+            (kernel threshold: > 5%).
+
+      - alert: TriageAIQueueDepthHigh
+        expr: sum(triageai_queue_jobs{status="pending"}) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'TriageAI queue depth is above 100 pending jobs'
+          description: >-
+            {{ $value | humanize }} jobs are pending (kernel threshold: > 100).
+
+      - alert: TriageAIEgressDenied
+        expr: sum(triageai_egress_denials) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: 'TriageAI blocked an outbound request'
+          description: >-
+            {{ $value | humanize }} hosted-egress denial(s) were recorded
+            (kernel threshold: > 0).
+
+      - alert: TriageAIStuckApprovals
+        expr: sum(triageai_stuck_approvals) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'TriageAI has approvals waiting for more than an hour'
+          description: >-
+            {{ $value | humanize }} approval(s) are still pending after one hour
+            (kernel threshold: > 0).
+
+      - alert: TriageAIWatchdogIntervention
+        expr: sum(triageai_watchdog_interventions) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The TriageAI watchdog paused or escalated an agent'
+          description: >-
+            {{ $value | humanize }} watchdog intervention(s) were recorded
+            (kernel threshold: > 0).
+
+      - alert: TriageAIBudgetBurnHigh
+        expr: max(triageai_budget_burn_ratio) >= 0.9
+        labels:
+          severity: critical
+        annotations:
+          summary: 'TriageAI daily model budget is at or above 90%'
+          description: >-
+            The highest provider budget burn is
+            {{ $value | humanizePercentage }} (kernel threshold: >= 90%).
+
+      - alert: TriageAIQualityDrift
+        expr: max(triageai_eval_drift) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'TriageAI eval quality drift was detected'
+          description: >-
+            At least one eval metric moved outside its rolling baseline
+            (kernel threshold: drift flag set).

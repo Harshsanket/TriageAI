@@ -10,15 +10,18 @@ import {
   applyConfigOverlay,
   bootKernel,
   buildKernelConfig,
+  createOutputChannelRegistry,
+  ensureVectorIndexes,
   invalid,
   loadConfigFile,
   loadInstalledPlugins,
+  policyBlocked,
   ApprovalStore,
-  FilesystemBlobStore,
-  MemoryCache,
   PostgresDatabase,
+  setOutputChannelGuard,
 } from '@triageai/kernel';
 import type {
+  Cache,
   Capabilities,
   Kernel,
   KernelLogger,
@@ -37,13 +40,22 @@ import {
   recoverFailedApply,
   type SetupRuntime,
 } from './setup/boot.js';
-import { createCapabilities } from './services/capabilities.js';
+import {
+  createBlobStoreAdapter,
+  createCacheAdapter,
+  createCapabilities,
+} from './services/capabilities.js';
 import { BaseMemoryService } from './services/baseMemory.js';
-import { syncSkillMirror } from './services/skills.js';
+import { syncDefaultSkillSources, syncSkillMirror } from './services/skills.js';
+import { registerAgentRuntime, watchdogScanAndPause } from './services/agents.js';
 import { readSystemStatus, type ConnectedApiFact } from './services/dashboardReads.js';
 import { registerSystemTools } from './services/systemTools.js';
 import { readConnections } from './routes/connections.js';
 import { EgressClient } from './services/egress.js';
+import { writeAudit } from './services/audit.js';
+import { restoreConnectorTools } from './services/connectors.js';
+import { registerConnectorSync } from './services/connectorSync.js';
+import { restoreMcpTools } from './services/mcp.js';
 import { checkForUpdate } from './services/update.js';
 import {
   recordBoot,
@@ -52,6 +64,7 @@ import {
   uptimeTargets,
 } from './services/uptime.js';
 import { DbModelRegistry } from './services/modelRegistry.js';
+import { runNightlyEvals } from './services/evals.js';
 import { getControls } from './services/controls.js';
 import { PluginStore } from './services/plugins.js';
 import { KERNEL_API_VERSION, parsePluginKeys } from './routes/plugins.js';
@@ -67,6 +80,11 @@ export { MODULES } from './modules.js';
 /** Keep in sync with docker/nginx.conf and the pre-paint hash in index.html. */
 export const SECURITY_CSP =
   "default-src 'self'; script-src 'self' 'sha256-EJFONL2tszoS4TNTHWzjuczFEhpYeFEvFheWsSyeqqA='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'";
+
+/** Human-readable agent workspace mirror root (16.T6); DB stays the truth. */
+const AGENTS_ROOT =
+  process.env.TRIAGEAI_AGENTS_ROOT ??
+  resolve(process.env.TRIAGEAI_DATA_DIR ?? process.cwd(), 'data/agents');
 
 export interface BuildAppOptions {
   /** Disable pretty logging in tests. */
@@ -340,6 +358,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // across app instances, and a leaked registry would point at a closed DB.
     let capabilities: Capabilities | undefined =
       options.capabilities === undefined ? undefined : { ...options.capabilities };
+    // Only a cache we built is closed on app shutdown; an injected one may be
+    // shared with other app instances in tests.
+    let ownedCache: Cache | undefined;
 
     async function loadPluginSet(): Promise<{
       modules: Record<string, TriageModule>;
@@ -348,10 +369,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }> {
       // Read the enabled map first: a disabled plugin's server bundle must not
       // be imported at boot at all (F7). Enabling through the soft reload makes
-      // the next generation import it.
-      const enabled = await pluginStore.enabledMap();
+      // the next generation import it. The install row also pins the version:
+      // a leftover newer directory from a failed upgrade must not shadow it.
+      const rows = await pluginStore.list();
+      const enabled = new Map(rows.map((row) => [row.id, row.enabled]));
+      const selectedVersions = new Map(rows.map((row) => [row.id, row.version]));
       const installed = await loadInstalledPlugins(pluginsRoot, KERNEL_API_VERSION, {
         shouldLoad: (manifest) => enabled.get(manifest.id) === true,
+        versionFor: (id) => selectedVersions.get(id),
       });
       const modules: Record<string, TriageModule> = { ...MODULES };
       const overlay: Record<string, { enabled: boolean }> = {};
@@ -387,15 +412,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const nextConfig = buildKernelConfig(effectiveFile, setup.env as NodeJS.ProcessEnv);
       const caps = (capabilities ??= {
         ...(options.capabilities ??
-          createCapabilities(nextConfig, config.aiServiceUrl, database, modelRegistry)),
+          (() => {
+            const built = createCapabilities(
+              nextConfig,
+              config.aiServiceUrl,
+              database,
+              modelRegistry,
+            );
+            ownedCache = built.cache;
+            return built;
+          })()),
       });
       caps.modelRegistry ??= modelRegistry;
-      caps.cache ??= new MemoryCache();
+      if (!caps.cache) {
+        caps.cache = createCacheAdapter(nextConfig);
+        ownedCache = caps.cache;
+      }
       caps.egress ??= new EgressClient(database, [...(nextConfig.egress?.allowlist ?? [])]);
-      caps.blobStore ??= new FilesystemBlobStore(
-        process.env.TRIAGEAI_BLOB_ROOT ??
-          resolve(process.env.TRIAGEAI_DATA_DIR ?? process.cwd(), 'data/blobs'),
-      );
+      caps.blobStore ??= createBlobStoreAdapter(nextConfig);
       caps.systemStatus ??= {
         status: async () =>
           systemReads.status(await connectedFacts()) as Promise<Record<string, unknown>>,
@@ -414,6 +448,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           return { asOf: snapshot.asOf, ...(snapshot.storage ?? {}) };
         },
       };
+      caps.outputChannel ??= createOutputChannelRegistry();
+      // Read-only mode is an outward-integration kill switch, not just a tool
+      // flag: every delivery through the host registry is checked against the
+      // current controls (the registry outlives soft reloads).
+      setOutputChannelGuard(caps.outputChannel, async ({ channel }) => {
+        const controls = await getControls(database);
+        if (!controls.readOnly) return;
+        await writeAudit(database, {
+          actor: null,
+          action: 'output.denied',
+          subject: channel,
+          payload: { reason: 'read_only' },
+        });
+        throw policyBlocked('read-only mode blocks outbound deliveries');
+      });
       const nextKernel = await bootKernel({
         config: nextConfig,
         database,
@@ -423,7 +472,30 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         env: setup.env,
       });
       liveKernel = nextKernel;
+      // Completed MCP connections are host registrations; replay them for the
+      // new generation so a soft reload does not silently drop imported tools.
+      const restoredMcp = await restoreMcpTools(nextKernel);
+      if (restoredMcp.failed.length > 0) {
+        kernelLogger.warn(
+          { failed: restoredMcp.failed },
+          'some completed MCP tools could not be re-registered',
+        );
+      }
+      // 15.T7: completed connector tools are host registrations too.
+      registerConnectorSync(nextKernel);
+      const restoredConnectors = await restoreConnectorTools(nextKernel, runtime.secrets);
+      if (restoredConnectors.failed.length > 0) {
+        kernelLogger.warn(
+          { failed: restoredConnectors.failed },
+          'some completed connector tools could not be re-registered',
+        );
+      }
       registerSystemTools(nextKernel, systemReads);
+      registerAgentRuntime(nextKernel, {
+        chatModel: () => caps.chatModel,
+        logger: kernelLogger,
+        workspaceRoot: AGENTS_ROOT,
+      });
       nextKernel.events.subscribe('chat.skill.changed', async () => {
         await syncSkillMirror(nextKernel).catch((err: unknown) =>
           kernelLogger.warn(
@@ -456,8 +528,36 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     generation.kernel.tools.setReadOnly((await getControls(database)).readOnly);
     app.decorate('kernel', generation.kernel);
 
+    // 18.T9: per-(collection, model, dims) HNSW indexes depend on row values, so
+    // boot provisions them after migrations instead of in static SQL. Fire and
+    // forget: a slow or failing build must never block or fail boot.
+    if (config.nodeEnv !== 'test' && generation.config.capabilities.vectorStore) {
+      void ensureVectorIndexes(database)
+        .then((report) => {
+          if (report.created.length > 0) {
+            kernelLogger.info(
+              { created: report.created.length, existing: report.existing.length },
+              'vector indexes provisioned',
+            );
+          }
+          if (report.skipped.length > 0) {
+            kernelLogger.warn(
+              { skipped: report.skipped },
+              'some vector index pairs were skipped (exact scan stays)',
+            );
+          }
+        })
+        .catch((err: unknown) =>
+          kernelLogger.warn(
+            { err: (err as Error).message },
+            'vector index provisioning failed; searches keep working without ANN',
+          ),
+        );
+    }
+
     let retentionTimer: NodeJS.Timeout | undefined;
     let uptimeMaintenanceTimer: NodeJS.Timeout | undefined;
+    let nightlyEvalTimer: NodeJS.Timeout | undefined;
     if (generation.kernel.config.retention?.enabled) {
       retentionTimer = setInterval(
         () => {
@@ -470,6 +570,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         generation.kernel.config.retention.intervalHours * 60 * 60 * 1000,
       );
       retentionTimer.unref();
+    }
+
+    // Nightly regression/drift (18.T2): a host-owned once-per-day pass. No
+    // scheduler yet; tests never start timers. Auto-rollback stays opt-in via
+    // the `evals.autoRollback` setting and reuses the registry rollback.
+    if (config.nodeEnv !== 'test') {
+      nightlyEvalTimer = setInterval(
+        () => {
+          void runNightlyEvals({ database, registry: activeRegistry }).catch((err: unknown) =>
+            kernelLogger.error({ err: (err as Error).message }, 'nightly eval pass failed'),
+          );
+        },
+        24 * 60 * 60 * 1000,
+      );
+      nightlyEvalTimer.unref();
     }
 
     if (config.nodeEnv !== 'test') {
@@ -506,11 +621,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Approval expiry (Phase 18.3): a host-owned sweep, no module timer.
     const approvalTimer = setInterval(
       () => {
-        void new ApprovalStore(database)
+        const store = new ApprovalStore(database);
+        void store
           .expireDue()
-          .then((expired) => {
-            if (expired.length > 0) {
-              kernelLogger.warn({ count: expired.length }, 'approvals expired');
+          .then(async (expired) => {
+            if (expired.length === 0) return;
+            kernelLogger.warn({ count: expired.length }, 'approvals expired');
+            // Apply the declared outcome (escalate/cancel/park_as_draft) and
+            // resume a graph approval node along its `expired` edge.
+            const current = app.kernel ?? generation.kernel;
+            for (const approval of expired) {
+              await store.applyExpiryTo(approval.id).catch(() => undefined);
+              await current.workflowEngine
+                .resolveApproval(approval.runId, approval.id, 'expired', {
+                  reason: `expired (${approval.onExpiry})`,
+                })
+                .catch(() => undefined);
             }
           })
           .catch((err: unknown) =>
@@ -520,6 +646,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       60 * 60 * 1000,
     );
     approvalTimer.unref();
+
+    // Agent watchdog (17.T2): loop/ping-pong detection pauses the agent and
+    // writes an audit row. Host-owned timer; tests call the service directly.
+    let agentWatchdogTimer: NodeJS.Timeout | undefined;
+    if (config.nodeEnv !== 'test') {
+      agentWatchdogTimer = setInterval(() => {
+        void watchdogScanAndPause(app.kernel ?? generation.kernel).catch((err: unknown) =>
+          kernelLogger.error({ err: (err as Error).message }, 'agent watchdog scan failed'),
+        );
+      }, 60 * 1000);
+      agentWatchdogTimer.unref();
+    }
 
     await finishSetupBoot(runtime, setup.fresh, kernelLogger, (line) =>
       // The token must reach the operator even when logs are JSON or quiet.
@@ -542,6 +680,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // production boots and successful config writes debounce one sync.
     if (config.nodeEnv !== 'test' && runtime.state === 'complete') {
       baseMemory.schedule(generation.kernel, 'boot');
+      // 27.T8: default skill sources sync after boot; failures warn and never
+      // block boot. Set TRIAGEAI_SKILL_BOOT_SYNC=off to disable network fetches.
+      if (process.env.TRIAGEAI_SKILL_BOOT_SYNC !== 'off') {
+        void syncDefaultSkillSources(app.kernel ?? generation.kernel, {
+          logger: kernelLogger,
+        }).catch((err: unknown) =>
+          kernelLogger.warn({ err: (err as Error).message }, 'default skill boot sync failed'),
+        );
+      }
       app.addHook('onResponse', async (request, reply) => {
         if (request.method === 'GET' || reply.statusCode >= 400) return;
         if (runtime.state !== 'complete') return;
@@ -638,10 +785,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.addHook('onClose', async () => {
       if (retentionTimer) clearInterval(retentionTimer);
       if (uptimeMaintenanceTimer) clearInterval(uptimeMaintenanceTimer);
+      if (nightlyEvalTimer) clearInterval(nightlyEvalTimer);
       baseMemory.stopPeriodic();
       stopUptimeProbes();
       clearInterval(approvalTimer);
+      if (agentWatchdogTimer) clearInterval(agentWatchdogTimer);
       await generation.kernel.shutdown();
+      await ownedCache?.close?.();
       await database.close();
     });
   }

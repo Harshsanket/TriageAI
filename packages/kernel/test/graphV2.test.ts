@@ -66,4 +66,19 @@ describe('workflow graph v2 validation (phase 18)', () => {
       'two->end',
     ]);
   });
+
+  it('carries the def trigger onto the compiled v1 graph', () => {
+    expect(compileV1({ id: 'w', version: '1', module: 'm', stages: [] }).trigger).toEqual({
+      type: 'endpoint',
+    });
+    expect(
+      compileV1({
+        id: 'w',
+        version: '1',
+        module: 'm',
+        trigger: { type: 'schedule', config: { intervalMinutes: 60 } },
+        stages: [{ id: 'one', kind: 'a' }],
+      }).trigger,
+    ).toEqual({ type: 'schedule', config: { intervalMinutes: 60 } });
+  });
 });

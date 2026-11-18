@@ -108,6 +108,32 @@ export function createEchoModule(): TriageModule {
         module: 'echo',
         version: '0.1.0',
         trigger: { type: 'endpoint' },
+        // v2 graph (18.3): the same two stages as declared nodes/edges. The v1
+        // list stays for reference; the engine prefers the graph.
+        graph: {
+          id: 'echo.run',
+          version: '0.1.0',
+          module: 'echo',
+          trigger: { type: 'endpoint' },
+          start: 'upper',
+          nodes: [
+            { id: 'upper', type: 'stage', kind: 'echo.upper', input: { text: '$.text' } },
+            {
+              id: 'wrap',
+              type: 'stage',
+              kind: 'echo.wrap',
+              input: { upper: '$.stages.upper.output.upper' },
+            },
+            { id: 'end', type: 'end', end: 'succeeded' },
+            { id: 'failed', type: 'end', end: 'failed' },
+          ],
+          edges: [
+            { from: 'upper', to: 'wrap', label: 'next' },
+            { from: 'wrap', to: 'end', label: 'next' },
+          ],
+          defaultErrorEdge: { to: 'failed' },
+          budget: { maxSteps: 10, maxDurationMs: 300_000 },
+        },
         stages: [
           { id: 'upper', kind: 'echo.upper', input: { text: '$.text' } },
           { id: 'wrap', kind: 'echo.wrap', input: { upper: '$.stages.upper.output.upper' } },

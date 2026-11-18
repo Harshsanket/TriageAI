@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SystemDashboard } from '@triageai/contracts';
 
-import { AgentShareBar } from './DashboardPage';
+import { AgentShareBar, TrajectoryQualityTile } from './DashboardPage';
 
 const agents: SystemDashboard['agents'] = [
   {
@@ -47,5 +47,43 @@ describe('AgentShareBar (phase 20.8)', () => {
   it('renders nothing when no agent has runs', () => {
     const { container } = render(<AgentShareBar agents={[]} />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe('TrajectoryQualityTile (phase 18.T24)', () => {
+  it('shows average path efficiency, wasted steps and the common failing step', () => {
+    render(
+      <TrajectoryQualityTile
+        trajectory={{
+          runs: 4,
+          averagePathEfficiency: 0.875,
+          stepPassRate: 0.75,
+          wastedSteps: 3,
+          redundantSteps: 2,
+          mostCommonFailingStep: 'answer',
+        }}
+      />,
+    );
+    expect(screen.getByText('88% path efficiency')).toBeInTheDocument();
+    expect(screen.getByText('Wasted steps')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('answer')).toBeInTheDocument();
+    expect(screen.getByText('75%')).toBeInTheDocument();
+  });
+
+  it('renders an honest empty state without a golden path', () => {
+    render(
+      <TrajectoryQualityTile
+        trajectory={{
+          runs: 0,
+          averagePathEfficiency: null,
+          stepPassRate: null,
+          wastedSteps: 0,
+          redundantSteps: 0,
+          mostCommonFailingStep: null,
+        }}
+      />,
+    );
+    expect(screen.getByText('No trajectories yet')).toBeInTheDocument();
   });
 });

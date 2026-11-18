@@ -12,6 +12,10 @@ export function compileAgentLoop(definition: AgentDefinition): WorkflowGraph {
   const stepNode: GraphNode = {
     id: 'step',
     type: 'agent_step',
+    // The engine dispatches an agent_step node through the stage-handler kind
+    // `node.kind ?? node.id`; name it explicitly so it never collides with a
+    // generic `step` handler.
+    kind: 'agent_step',
     labels: ['continue', 'call_tool', 'ask_human', 'handoff', 'done', 'fail'],
   };
   return {
@@ -25,27 +29,34 @@ export function compileAgentLoop(definition: AgentDefinition): WorkflowGraph {
       loopNode,
       { id: 'done', type: 'end', end: 'succeeded' },
       { id: 'failed', type: 'end', end: 'failed' },
+      { id: 'awaiting', type: 'end', end: 'escalated' },
     ],
     edges: [
       { from: 'step', to: 'loop', label: 'continue' },
+      { from: 'step', to: 'loop', label: 'call_tool' },
+      { from: 'step', to: 'awaiting', label: 'ask_human' },
+      { from: 'step', to: 'done', label: 'handoff' },
       { from: 'step', to: 'done', label: 'done' },
       { from: 'step', to: 'failed', label: 'fail' },
       { from: 'loop', to: 'step', label: 'again' },
     ],
     defaultErrorEdge: { to: 'failed' },
-    budget: { maxSteps: definition.maxSteps, maxDurationMs: 900_000 },
+    // Each iteration crosses step → loop → step, so the graph budget covers
+    // the bounded loop plus the terminal edges (maxIterations still caps it).
+    budget: { maxSteps: definition.maxSteps * 3 + 4, maxDurationMs: 900_000 },
     executionStyleReason: 'bounded agent loop for multi-step work with tools',
   };
 }
 
 export function compileTeamTopology(
   topology: TeamTopology,
-  agents: Array<{ id: string; workflowId: string }>,
+  agents: Array<{ id: string; workflowId: string; input?: Record<string, unknown> }>,
 ): WorkflowGraph {
   const nodes: GraphNode[] = agents.map((agent) => ({
     id: agent.id,
     type: 'subworkflow',
     workflow: { id: agent.workflowId, versionRange: '^1.0.0', wait: true },
+    ...(agent.input ? { input: agent.input } : {}),
   }));
   const edges: GraphEdge[] = [];
   if (topology === 'fanout') {

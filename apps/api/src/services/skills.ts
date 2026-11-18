@@ -225,7 +225,12 @@ async function upsertSkill(
   );
   if (existing[0]) {
     const row = existing[0];
-    if (row.content === args.content && row.description === args.description) {
+    if (
+      row.content === args.content &&
+      row.description === args.description &&
+      row.source_url === (args.sourceUrl ?? null) &&
+      row.source_ref === (args.sourceRef ?? null)
+    ) {
       return { skill: dto(row), created: false };
     }
     const updated = await kernel.database.query<SkillRow>(
@@ -427,32 +432,189 @@ export async function resolveSuggestion(
   return updated[0] ? dto(updated[0]) : null;
 }
 
-function rawUrls(url: string): Array<{ url: string; ref: string }> {
+const COMMIT_SHA = /^[a-f0-9]{40}$/i;
+const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+/** The subset of the egress client pinning needs; tests inject a fake. */
+export type SkillSourceFetcher = Pick<EgressClient, 'fetch'>;
+
+export interface ParsedSkillSource {
+  owner: string;
+  repo: string;
+  path: string;
+  /** Branch/tag/commit from the URL; null means "try the default branches". */
+  ref: string | null;
+  /** The URL already names a full 40-character commit. */
+  pinned: boolean;
+}
+
+function safeSegment(value: string, label: string): string {
+  if (!SAFE_SEGMENT.test(value) || value === '.' || value === '..') {
+    throw new AppError('skills.INVALID', `unsafe ${label} in skill source URL`, undefined, 400);
+  }
+  return value;
+}
+
+function safeSkillPath(raw: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new AppError(
+      'skills.INVALID',
+      'skill source path is not valid URL encoding',
+      undefined,
+      400,
+    );
+  }
+  if (decoded.startsWith('/') || decoded.includes('\\') || decoded.includes('\0')) {
+    throw new AppError('skills.INVALID', 'unsafe skill source path', undefined, 400);
+  }
+  const segments = decoded.split('/');
+  if (segments.length === 0 || segments.some((segment) => !SAFE_SEGMENT.test(segment))) {
+    throw new AppError('skills.INVALID', 'unsafe skill source path', undefined, 400);
+  }
+  if (segments.some((segment) => segment === '.' || segment === '..')) {
+    throw new AppError(
+      'skills.INVALID',
+      'path traversal is not allowed in skill sources',
+      undefined,
+      400,
+    );
+  }
+  if (!/\.md$/i.test(decoded)) {
+    throw new AppError(
+      'skills.INVALID',
+      'skill source must point to a Markdown file',
+      undefined,
+      400,
+    );
+  }
+  return segments.join('/');
+}
+
+/** Parse a GitHub repository, `blob/<ref>/<path>` or raw SKILL.md URL. */
+export function parseSkillSourceUrl(url: string): ParsedSkillSource {
   const parsed = new URL(url);
+  const parts = parsed.pathname.split('/').filter(Boolean);
   if (parsed.hostname === 'raw.githubusercontent.com') {
-    const parts = parsed.pathname.split('/').filter(Boolean);
-    const ref = parts[2] ?? 'pinned';
-    return [{ url, ref }];
+    const [owner, repo, ref, ...pathParts] = parts;
+    if (!owner || !repo || !ref || pathParts.length === 0) {
+      throw new AppError('skills.INVALID', 'URL must point to a SKILL.md file', undefined, 400);
+    }
+    return {
+      owner: safeSegment(owner, 'owner'),
+      repo: safeSegment(repo, 'repository'),
+      path: safeSkillPath(pathParts.join('/')),
+      ref: safeSegment(ref, 'ref'),
+      pinned: COMMIT_SHA.test(ref),
+    };
   }
   if (parsed.hostname !== 'github.com') {
-    throw new Error('only github.com or raw.githubusercontent.com URLs are supported');
+    throw new AppError(
+      'skills.INVALID',
+      'only github.com or raw.githubusercontent.com URLs are supported',
+      undefined,
+      400,
+    );
   }
-  const parts = parsed.pathname.split('/').filter(Boolean);
   const [owner, repo, kind, ref, ...rest] = parts;
-  if (!owner || !repo) throw new Error('URL must point to a repository or SKILL.md');
-  if (kind === 'blob') {
-    const path = rest.join('/');
-    return [
-      {
-        url: `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path}`,
-        ref: ref ?? 'pinned',
-      },
-    ];
+  if (!owner || !repo) {
+    throw new AppError(
+      'skills.INVALID',
+      'URL must point to a repository or SKILL.md',
+      undefined,
+      400,
+    );
   }
-  return ['main', 'master'].map((branch) => ({
-    url: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/SKILL.md`,
-    ref: branch,
-  }));
+  if (kind === undefined) {
+    return {
+      owner: safeSegment(owner, 'owner'),
+      repo: safeSegment(repo, 'repository'),
+      path: 'SKILL.md',
+      ref: null,
+      pinned: false,
+    };
+  }
+  if (kind !== 'blob' || !ref || rest.length === 0) {
+    throw new AppError(
+      'skills.INVALID',
+      'URL must point to a repository or a blob/<ref>/SKILL.md path',
+      undefined,
+      400,
+    );
+  }
+  return {
+    owner: safeSegment(owner, 'owner'),
+    repo: safeSegment(repo, 'repository'),
+    path: safeSkillPath(rest.join('/')),
+    ref: safeSegment(ref, 'ref'),
+    pinned: COMMIT_SHA.test(ref),
+  };
+}
+
+export interface SkillSourceCandidate {
+  rawUrl: string;
+  /** Full commit SHA the content is read at; stored as `source_ref`. */
+  sha: string;
+  ref: string | null;
+}
+
+async function resolveSkillCommit(
+  client: SkillSourceFetcher,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<string> {
+  const response = await client.fetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+    { method: 'GET', headers: { accept: 'application/vnd.github+json' } },
+    { purpose: 'skill-pin', maxBytes: 200_000 },
+  );
+  if (!response.ok) throw new Error(`GitHub could not resolve ${ref} (${response.status})`);
+  const body = (await response.json().catch(() => null)) as { sha?: unknown } | null;
+  if (typeof body?.sha !== 'string' || !COMMIT_SHA.test(body.sha)) {
+    throw new Error(`GitHub returned no commit SHA for ${ref}`);
+  }
+  return body.sha.toLowerCase();
+}
+
+/**
+ * Resolve a skill URL to immutable commit candidates (15.T5). A `blob/<sha>/`
+ * URL is already pinned; a branch/tag is resolved through the GitHub API so a
+ * re-import can prove the source has not moved.
+ */
+export async function skillSourceCandidates(
+  url: string,
+  client: SkillSourceFetcher,
+): Promise<SkillSourceCandidate[]> {
+  const source = parseSkillSourceUrl(url);
+  const refs = source.ref ? [source.ref] : ['main', 'master'];
+  const candidates: SkillSourceCandidate[] = [];
+  let lastError: unknown;
+  for (const ref of refs) {
+    try {
+      const sha = source.pinned
+        ? (source.ref as string).toLowerCase()
+        : await resolveSkillCommit(client, source.owner, source.repo, ref);
+      candidates.push({
+        rawUrl: `https://raw.githubusercontent.com/${source.owner}/${source.repo}/${sha}/${source.path}`,
+        sha,
+        ref: source.ref,
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (candidates.length === 0) {
+    throw new AppError(
+      'skills.INVALID',
+      `could not resolve ${url}: ${(lastError as Error)?.message ?? 'not found'}`,
+      undefined,
+      400,
+    );
+  }
+  return candidates;
 }
 
 export async function importSkillFromGithub(
@@ -460,29 +622,54 @@ export async function importSkillFromGithub(
   actorId: string | null,
   input: z.infer<typeof SkillImportRequestSchema>,
   actor: string,
+  fetcher?: SkillSourceFetcher,
 ): Promise<UserSkill> {
   const allow = [...(kernel.config.egress?.allowlist ?? [])];
-  const client = new EgressClient(kernel.database, [
-    ...allow,
-    { host: 'raw.githubusercontent.com', dataClass: 'public' },
-    { host: 'github.com', dataClass: 'public' },
-  ]);
+  const client =
+    fetcher ??
+    new EgressClient(kernel.database, [
+      ...allow,
+      { host: 'raw.githubusercontent.com', dataClass: 'public' },
+      { host: 'github.com', dataClass: 'public' },
+      { host: 'api.github.com', dataClass: 'public' },
+    ]);
+  const candidates = await skillSourceCandidates(input.url, client);
+  const update = input.update ?? false;
   let lastError: unknown;
-  for (const candidate of rawUrls(input.url)) {
+  for (const candidate of candidates) {
     try {
       const response = await client.fetch(
-        candidate.url,
+        candidate.rawUrl,
         { method: 'GET', headers: { accept: 'text/plain' } },
         { purpose: 'skill-import', maxBytes: 100_000 },
       );
       if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
       const text = await response.text();
       if (text.length > 100_000) throw new Error('SKILL.md exceeds the 100 KB limit');
-      const parsed = parseSkillMarkdown(text, candidate.url);
-      const etag = response.headers.get('etag');
+      const parsed = parseSkillMarkdown(text, candidate.rawUrl);
       const content = skillMarkdown(parsed.name, parsed.description, parsed.body);
       if (SECRET_LIKE.test(content)) {
         throw new Error('imported skill looks like it contains a secret');
+      }
+      const existing = await kernel.database.query<SkillRow>(
+        `SELECT * FROM user_skills
+          WHERE COALESCE(owner_id, '') = $1 AND name = $2 AND provenance = 'github'
+          LIMIT 1`,
+        [actorId ?? '', parsed.name],
+      );
+      const previous = existing[0];
+      if (previous?.source_url === input.url && COMMIT_SHA.test(previous.source_ref ?? '')) {
+        if (previous.source_ref !== candidate.sha && !update) {
+          throw new AppError(
+            'skills.SOURCE_MOVED',
+            `skill ${parsed.name} is pinned at ${previous.source_ref}, but ${input.url} now resolves to ${candidate.sha}; re-import with update=true to move the pin`,
+            { from: previous.source_ref, to: candidate.sha },
+            409,
+          );
+        }
+        if (previous.source_ref === candidate.sha && previous.content === content) {
+          return dto(previous);
+        }
       }
       const result = await upsertSkill(kernel, {
         ownerId: actorId,
@@ -493,7 +680,7 @@ export async function importSkillFromGithub(
         enabled: false,
         provenance: 'github',
         sourceUrl: input.url,
-        sourceRef: etag ?? candidate.ref,
+        sourceRef: candidate.sha,
         license: null,
         actor,
       });
@@ -501,16 +688,85 @@ export async function importSkillFromGithub(
         actor,
         action: 'skill.import',
         subject: result.skill.id,
-        payload: { url: input.url, ref: result.skill.sourceRef },
+        payload: {
+          url: input.url,
+          ref: result.skill.sourceRef,
+          pinned: true,
+          updated: update,
+        },
       });
       return result.skill;
     } catch (err) {
+      if (err instanceof AppError && err.code === 'skills.SOURCE_MOVED') throw err;
       lastError = err;
     }
   }
-  throw new Error(
+  throw new AppError(
+    'skills.IMPORT_FAILED',
     `could not import a SKILL.md from ${input.url}: ${(lastError as Error)?.message ?? 'not found'}`,
+    undefined,
+    400,
   );
+}
+
+/** Import one content-only skill from a signed pack (22.T12). */
+export async function importSkillFromPack(
+  kernel: Kernel,
+  args: {
+    ownerId: string | null;
+    name: string;
+    description: string;
+    body: string;
+    sourceUrl: string;
+    sourceRef: string;
+    license: string | null;
+    actor: string;
+  },
+): Promise<UserSkill> {
+  if (!NAME.test(args.name)) {
+    throw new AppError('skills.INVALID', `invalid skill name "${args.name}"`, undefined, 400);
+  }
+  let description = scrub(args.description);
+  if (description.length < 10) {
+    const firstLine = scrub(args.body)
+      .split('\n')
+      .map((line) => line.replace(/^#+\s*/, '').trim())
+      .find((line) => line.length >= 10);
+    description = (firstLine ?? `${args.name} imported from a signed pack`).slice(0, 300);
+  }
+  description = description.slice(0, 400);
+  const content = skillMarkdown(args.name, description, args.body);
+  if (SECRET_LIKE.test(content)) {
+    throw new AppError(
+      'skills.INVALID',
+      'imported skill looks like it contains a secret',
+      undefined,
+      400,
+    );
+  }
+  const result = await upsertSkill(kernel, {
+    ownerId: args.ownerId,
+    name: args.name,
+    description,
+    content,
+    scope: 'user',
+    enabled: false,
+    // The immutable `user_skills` check constraint predates packs, so imported
+    // pack content reuses the external-source provenance. `sourceUrl` records
+    // `pack:<id>@<version>` and `sourceRef` the archive sha256.
+    provenance: 'github',
+    sourceUrl: args.sourceUrl,
+    sourceRef: args.sourceRef,
+    license: args.license,
+    actor: args.actor,
+  });
+  await writeAudit(kernel.database, {
+    actor: args.actor,
+    action: 'skill.import',
+    subject: result.skill.id,
+    payload: { source: 'pack', ref: args.sourceRef },
+  });
+  return result.skill;
 }
 
 export const captureSkillPreference = capturePreference;
@@ -642,4 +898,88 @@ export async function syncSkillMirror(kernel: Kernel): Promise<void> {
   } catch {
     // A mirror failure never fails the skill write; the next sync retries.
   }
+}
+
+/**
+ * 27.T8: discover SKILL.md files in a default source repository and import
+ * each one pinned to its resolved commit. Unavailable sources warn; boot never
+ * blocks. The fetcher is injectable for tests.
+ */
+export async function discoverSkillPaths(
+  repo: string,
+  fetcher: SkillSourceFetcher,
+  ref = 'main',
+): Promise<string[]> {
+  const response = await fetcher.fetch(
+    `https://api.github.com/repos/${repo}/git/trees/${ref}?recursive=1`,
+    { method: 'GET', headers: { accept: 'application/vnd.github+json' } },
+    { purpose: 'skill-discovery', maxBytes: 1_000_000 },
+  );
+  if (!response.ok) throw new Error(`GitHub tree answered ${response.status}`);
+  const body = (await response.json()) as {
+    tree?: Array<{ path?: string; type?: string }>;
+  };
+  return (body.tree ?? [])
+    .filter((entry) => entry.type === 'blob' && entry.path?.endsWith('SKILL.md'))
+    .map((entry) => entry.path as string)
+    .slice(0, 200);
+}
+
+export async function syncDefaultSkillSources(
+  kernel: Kernel,
+  options: {
+    fetcher?: SkillSourceFetcher;
+    logger?: { warn(fields: Record<string, unknown>, message?: string): void };
+  } = {},
+): Promise<{ imported: number; failed: number }> {
+  const allow = [...(kernel.config.egress?.allowlist ?? [])];
+  const fetcher =
+    options.fetcher ??
+    new EgressClient(kernel.database, [
+      ...allow,
+      { host: 'raw.githubusercontent.com', dataClass: 'public' },
+      { host: 'github.com', dataClass: 'public' },
+      { host: 'api.github.com', dataClass: 'public' },
+    ]);
+  const logger = options.logger ?? {
+    warn: (fields: Record<string, unknown>, message?: string) =>
+      console.warn(message ?? 'skill boot sync', fields),
+  };
+  let imported = 0;
+  let failed = 0;
+  for (const source of DEFAULT_SKILL_SOURCES) {
+    let paths: string[] = [];
+    let ref = '';
+    for (const candidate of ['main', 'master']) {
+      try {
+        paths = await discoverSkillPaths(source.repo, fetcher, candidate);
+        ref = candidate;
+        break;
+      } catch (err) {
+        logger.warn(
+          { source: source.name, ref: candidate, err: (err as Error).message },
+          'default skill source unavailable',
+        );
+      }
+    }
+    for (const path of paths) {
+      try {
+        await importSkillFromGithub(
+          kernel,
+          null,
+          { url: `https://github.com/${source.repo}/blob/${ref}/${path}`, update: false },
+          'system:boot',
+          fetcher,
+        );
+        imported += 1;
+      } catch (err) {
+        failed += 1;
+        logger.warn(
+          { source: source.name, path, err: (err as Error).message },
+          'default skill import failed',
+        );
+      }
+    }
+  }
+  return { imported, failed };
 }

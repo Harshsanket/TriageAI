@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { activityRange, answerFromDigest, digestEvents } from '../src/activity/index.js';
 import { CONTROL_CATALOG, KERNEL_CONFIG_FIELDS, missingControlMeta } from '../src/configCatalog.js';
+import { configFileSchema } from '../src/config.js';
 import { projectFields, stripSensitiveFields } from '../src/data/requiredFields.js';
 import { DEFAULT_DATA_CLASSES } from '../src/data/classes.js';
 import { planClassRetention } from '../src/retention/classes.js';
@@ -64,6 +65,13 @@ describe('/config control catalog (phase 18.T8)', () => {
       expect(CONTROL_CATALOG[field].help.length).toBeGreaterThan(5);
       expect(CONTROL_CATALOG[field].section).toBeTruthy();
     }
+  });
+
+  it('diffs the catalog against the real parsed kernel config schema', () => {
+    const schemaFields = Object.keys(configFileSchema.shape).sort();
+    expect([...KERNEL_CONFIG_FIELDS].sort()).toEqual(schemaFields);
+    expect(Object.keys(CONTROL_CATALOG).sort()).toEqual(schemaFields);
+    expect(missingControlMeta(schemaFields)).toEqual([]);
   });
 });
 

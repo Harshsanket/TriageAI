@@ -77,3 +77,27 @@ export function chooseModel(args: {
     alternatives: available.slice(1).map((option) => `${option.provider}:${option.model}`),
   };
 }
+
+/**
+ * Price-table cost estimate (19.3 v1): `input × inputPer1k + output ×
+ * outputPer1k`, per 1K tokens; cached input tokens are free. Unknown models
+ * estimate to 0 until they get a price row — never an invented price.
+ */
+export function estimateCostFromPrices(
+  prices: Record<string, { inputPer1k?: number; outputPer1k?: number }> | undefined,
+  args: {
+    provider: string;
+    model: string;
+    tokensIn: number;
+    tokensOut: number;
+    tokensCached: number;
+  },
+): number {
+  const price = prices?.[`${args.provider}:${args.model}`];
+  if (!price) return 0;
+  const billableIn = Math.max(0, args.tokensIn - args.tokensCached);
+  return (
+    (billableIn / 1_000) * (price.inputPer1k ?? 0) +
+    (args.tokensOut / 1_000) * (price.outputPer1k ?? 0)
+  );
+}

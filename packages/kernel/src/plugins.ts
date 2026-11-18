@@ -203,7 +203,11 @@ export interface LoadedPlugin {
 export async function loadInstalledPlugins(
   pluginsRoot: string,
   kernelApiVersion: string,
-  options: { shouldLoad?: (manifest: PluginManifest) => boolean } = {},
+  options: {
+    shouldLoad?: (manifest: PluginManifest) => boolean;
+    /** Version selected by the install row; the loader must not boot a newer stray directory. */
+    versionFor?: (id: string) => string | undefined;
+  } = {},
 ): Promise<LoadedPlugin[]> {
   let ids: string[];
   try {
@@ -223,7 +227,14 @@ export async function loadInstalledPlugins(
       continue;
     }
     versions.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    const version = versions.at(-1);
+    const preferred = options.versionFor?.(id);
+    // The install row is the source of truth (12.T2): if it names a version
+    // that is no longer on disk, do not silently boot a different directory.
+    const version = preferred
+      ? versions.includes(preferred)
+        ? preferred
+        : undefined
+      : versions.at(-1);
     if (!version) continue;
     const directory = join(pluginsRoot, id, version);
     try {

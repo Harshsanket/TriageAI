@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { detect, maskPii, scrubSecrets } from '../src/detect.js';
+import { detect, maskPii, scrubSecretValues, scrubSecrets } from '../src/detect.js';
 
 describe('PII/secret detectors (phase 18)', () => {
   it('detects email, phone, card (Luhn) and secrets', () => {
@@ -23,5 +23,11 @@ describe('PII/secret detectors (phase 18)', () => {
     expect(log.text).toContain('j***@example.com');
     expect(log.text).toContain('1111');
     expect(scrubSecrets('postgres://u:p@db/x')).not.toContain('postgres://');
+  });
+  it('scrubs secret values without destroying ordinary PII', () => {
+    const scrubbed = scrubSecretValues('key sk-abcdefghijklmnop1234, mail alice@example.com');
+    expect(scrubbed).not.toContain('sk-abcdefghijklmnop1234');
+    expect(scrubbed).toContain('[REDACTED:api_key]');
+    expect(scrubbed).toContain('alice@example.com');
   });
 });

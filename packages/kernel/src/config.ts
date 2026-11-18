@@ -84,6 +84,133 @@ const egressSchema = z.object({
     .default([{ host: 'api.github.com', dataClass: 'public' }]),
 });
 
+const sensitivitySchema = z.enum(['public', 'internal', 'restricted', 'secret']);
+
+/** Per-task route (19.2); `primary`/`fallback` are `provider:model` runtime ids. */
+const taskRouteSchema = z
+  .object({
+    primary: z.string().min(1),
+    fallback: z.string().min(1).optional(),
+    qualityFloor: z.number().min(0).max(1).optional(),
+    maxCostPerCall: z.number().positive().optional(),
+    sensitivity: sensitivitySchema.optional(),
+  })
+  .strict();
+
+/** USD per 1K tokens (19.3 price table v1: input + output; cached input is free). */
+const priceEntrySchema = z
+  .object({
+    inputPer1k: z.number().nonnegative().optional(),
+    outputPer1k: z.number().nonnegative().optional(),
+  })
+  .strict();
+
+const routingSchema = z
+  .object({
+    tasks: z.record(z.string(), taskRouteSchema).default({}),
+    prices: z.record(z.string(), priceEntrySchema).optional(),
+  })
+  .strict();
+
+export type RoutingTaskRoute = z.infer<typeof taskRouteSchema>;
+export type RoutingPriceEntry = z.infer<typeof priceEntrySchema>;
+export type RoutingConfig = z.infer<typeof routingSchema>;
+
+const envNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+
+/** `capabilities.cache` (18.T11): memory is the default, Redis is opt-in. */
+export const cacheAdapterConfigSchema = z
+  .object({
+    adapter: z.enum(['memory', 'redis']).default('memory'),
+    maxEntries: z.number().int().positive().max(1_000_000).optional(),
+    urlEnv: envNameSchema.optional(),
+    namespace: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z0-9._:-]+$/)
+      .optional(),
+  })
+  .strict();
+
+export type CacheAdapterConfig =
+  | { adapter: 'memory'; maxEntries: number; urlEnv?: string; namespace?: string }
+  | { adapter: 'redis'; maxEntries?: number; urlEnv: string; namespace: string };
+
+/** `capabilities.blobStore` (18.T12): local filesystem by default, S3 opt-in. */
+export const blobStoreAdapterConfigSchema = z
+  .object({
+    adapter: z.enum(['filesystem', 's3']).default('filesystem'),
+    root: z.string().min(1).max(4096).optional(),
+    bucket: z
+      .string()
+      .min(3)
+      .max(63)
+      .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/)
+      .optional(),
+    endpointEnv: envNameSchema.optional(),
+    accessKeyEnv: envNameSchema.optional(),
+    secretKeyEnv: envNameSchema.optional(),
+    region: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+
+export type BlobStoreAdapterConfig =
+  | { adapter: 'filesystem'; root: string; bucket?: string; region?: string }
+  | {
+      adapter: 's3';
+      root?: string;
+      bucket: string;
+      endpointEnv: string;
+      accessKeyEnv: string;
+      secretKeyEnv: string;
+      region: string;
+    };
+
+function invalidAdapterConfig(section: string, error: z.ZodError): never {
+  const issues = error.issues
+    .map((issue) => {
+      const path =
+        issue.code === 'unrecognized_keys' ? `${issue.keys.join('.')}` : issue.path.join('.');
+      return `  capabilities.${section}${path ? `.${path}` : ''}: ${issue.message}`;
+    })
+    .join('\n');
+  throw configInvalid(`Invalid triage.config.json:\n${issues}`, error.issues);
+}
+
+export function parseCacheAdapterConfig(raw: unknown): CacheAdapterConfig {
+  const result = cacheAdapterConfigSchema.safeParse(raw ?? {});
+  if (!result.success) invalidAdapterConfig('cache', result.error);
+  const value = result.data;
+  if (value.adapter === 'redis') {
+    return {
+      ...value,
+      adapter: 'redis',
+      urlEnv: value.urlEnv ?? 'REDIS_URL',
+      namespace: value.namespace ?? 'triageai:cache',
+    };
+  }
+  return { ...value, adapter: 'memory', maxEntries: value.maxEntries ?? 1_000 };
+}
+
+export function parseBlobStoreAdapterConfig(raw: unknown): BlobStoreAdapterConfig {
+  const result = blobStoreAdapterConfigSchema.safeParse(raw ?? {});
+  if (!result.success) invalidAdapterConfig('blobStore', result.error);
+  const value = result.data;
+  if (value.adapter === 's3') {
+    return {
+      ...value,
+      adapter: 's3',
+      bucket: value.bucket ?? 'triageai-blobs',
+      endpointEnv: value.endpointEnv ?? 'TRIAGEAI_S3_ENDPOINT',
+      accessKeyEnv: value.accessKeyEnv ?? 'TRIAGEAI_S3_ACCESS_KEY',
+      secretKeyEnv: value.secretKeyEnv ?? 'TRIAGEAI_S3_SECRET_KEY',
+      region: value.region ?? 'us-east-1',
+    };
+  }
+  return { ...value, adapter: 'filesystem', root: value.root ?? 'data/blobs' };
+}
+
 const getSchema = z.object({
   profile: profileNameSchema.default('core'),
   queue: queueAdapterSchema.default({ adapter: 'pg-queue', pollIntervalMs: 250 }),
@@ -93,6 +220,7 @@ const getSchema = z.object({
   retention: retentionSchema.prefault({}),
   hosted: hostedSchema.prefault({}),
   egress: egressSchema.prefault({}),
+  routing: routingSchema.prefault({}),
   agents: z
     .record(
       z.string(),
@@ -120,6 +248,8 @@ const getSchema = z.object({
 export type RawConfigFile = z.input<typeof getSchema>;
 /** A config file after validation and defaults. */
 export type ConfigFile = z.infer<typeof getSchema>;
+/** The parsed config schema; `/config` coverage tests diff its keys. */
+export const configFileSchema = getSchema;
 
 const defaults = getSchema.parse({});
 
@@ -180,6 +310,7 @@ const overlaySchema = z
     retention: retentionSchema.partial().optional(),
     hosted: hostedSchema.partial().optional(),
     egress: egressSchema.partial().optional(),
+    routing: routingSchema.partial().optional(),
     agents: z
       .record(
         z.string(),
@@ -243,6 +374,12 @@ export function applyConfigOverlay(
     capabilities[id] = { ...file.capabilities[id], ...patch };
   }
   const agents = { ...file.agents, ...overlay.agents };
+  const routing: RoutingConfig = {
+    tasks: { ...file.routing.tasks, ...overlay.routing?.tasks },
+    ...(Object.keys({ ...file.routing.prices, ...overlay.routing?.prices }).length > 0
+      ? { prices: { ...file.routing.prices, ...overlay.routing?.prices } }
+      : {}),
+  };
   return parseConfigFile({
     profile: overlay.profile ?? file.profile,
     queue: { ...file.queue, ...overlay.queue },
@@ -254,6 +391,7 @@ export function applyConfigOverlay(
     retention: { ...file.retention, ...overlay.retention },
     hosted: { ...file.hosted, ...overlay.hosted },
     egress: { ...file.egress, ...overlay.egress },
+    routing,
     ...(Object.keys(agents).length > 0 ? { agents } : {}),
     ...((overlay.appearance ?? file.appearance)
       ? { appearance: overlay.appearance ?? file.appearance }
@@ -265,7 +403,7 @@ export function applyConfigOverlay(
 export function buildKernelConfig(
   file: z.infer<typeof getSchema>,
   env: NodeJS.ProcessEnv = process.env,
-): KernelConfig {
+): KernelConfig & { routing: RoutingConfig } {
   const preset = PROFILE_PRESETS[file.profile] ?? {};
   const modules: Record<string, { enabled: boolean; options?: unknown }> = {};
 
@@ -301,14 +439,22 @@ export function buildKernelConfig(
       ? envAdapter
       : file.queue.adapter;
   const queue: KernelConfig['queue'] = { adapter, pollIntervalMs: file.queue.pollIntervalMs };
+  // Storage adapters have defaults even when the file is silent, and an
+  // invalid `capabilities.cache`/`blobStore` block fails boot here.
+  const capabilities: KernelConfig['capabilities'] = {
+    ...file.capabilities,
+    cache: parseCacheAdapterConfig(file.capabilities.cache),
+    blobStore: parseBlobStoreAdapterConfig(file.capabilities.blobStore),
+  };
 
   return {
     profile: file.profile,
     queue,
     modules,
-    capabilities: file.capabilities,
+    capabilities,
     retention: file.retention,
     hosted: file.hosted,
     egress: file.egress,
+    routing: file.routing,
   };
 }

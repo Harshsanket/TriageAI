@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
-import type { DecisionRecordDto, RunDto, StageRunDto } from '@triageai/contracts';
+import type {
+  DecisionRecordDto,
+  RunDto,
+  StageRunDto,
+  TrajectoryMetricsDto,
+} from '@triageai/contracts';
 
 import { navigate } from '../host/router';
 import { apiFetch, type ApiFailure } from '../host/api';
@@ -8,6 +13,7 @@ interface RunDetail {
   run: RunDto;
   stages: StageRunDto[];
   decisions: Array<DecisionRecordDto & { fallback?: unknown; outcome?: unknown }>;
+  trajectory?: TrajectoryMetricsDto | null;
 }
 
 interface RunGraph {
@@ -49,6 +55,7 @@ export default function RunDetailPage({ runId }: { runId: string }) {
   const [gold, setGold] = useState('');
   const [reason, setReason] = useState('');
   const [saved, setSaved] = useState<string | null>(null);
+  const [flagged, setFlagged] = useState<string | null>(null);
   const [graph, setGraph] = useState<RunGraph | null>(null);
 
   useEffect(() => {
@@ -95,6 +102,15 @@ export default function RunDetailPage({ runId }: { runId: string }) {
     setSaved(res.ok ? 'Correction saved as a candidate example.' : res.error.envelope.userMessage);
   };
 
+  const flagRun = async () => {
+    const res = await apiFetch(`/api/v1/system/runs/${run.id}/flag`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    setFlagged(res.ok ? 'Flagged for review.' : res.error.envelope.userMessage);
+  };
+
   const { run, stages, decisions } = detail;
   const decisionsByStage = new Map<string, RunDetail['decisions']>();
   for (const decision of decisions) {
@@ -103,19 +119,41 @@ export default function RunDetailPage({ runId }: { runId: string }) {
       decision,
     ]);
   }
+  const scoresByNode = new Map(
+    (detail.trajectory?.scores ?? []).map((score) => [score.nodeId, score]),
+  );
+  const trajectory = detail.trajectory;
 
   return (
     <section>
       <button type="button" onClick={() => navigate('/runs')}>
         ← All runs
+      </button>{' '}
+      <button type="button" onClick={flagRun}>
+        Flag this run
       </button>
+      {flagged ? <span aria-live="polite"> {flagged}</span> : null}
       <h2 style={{ marginBottom: 4 }}>Run {run.id}</h2>
       <p style={{ marginTop: 0 }}>
         <strong>{run.workflowId}</strong> v{run.workflowVersion} · {run.trigger} ·{' '}
         <strong style={{ color: STATUS_COLORS[run.status] ?? 'inherit' }}>{run.status}</strong>
         {run.error ? <span style={{ color: '#cf222e' }}> — {run.error}</span> : null}
       </p>
-
+      {trajectory ? (
+        <p aria-label="Trajectory quality">
+          <strong>Trajectory:</strong> {trajectory.steps} steps ·{' '}
+          {trajectory.pathEfficiency == null
+            ? 'no golden path'
+            : `${Math.round(trajectory.pathEfficiency * 100)}% path efficiency`}{' '}
+          · {trajectory.redundantSteps} redundant · {trajectory.wastedSteps} wasted
+          {trajectory.firstFailingNode ? (
+            <>
+              {' '}
+              · first failing node <code>{trajectory.firstFailingNode}</code>
+            </>
+          ) : null}
+        </p>
+      ) : null}
       {graph && (
         <>
           <h3>Graph</h3>
@@ -124,19 +162,28 @@ export default function RunDetailPage({ runId }: { runId: string }) {
             {graph.takenEdges.length > 0 ? graph.takenEdges.join(', ') : '—'}
           </p>
           <ol>
-            {graph.graph.nodes.map((node) => (
-              <li key={node.id}>
-                <code>{node.id}</code> {node.type}
-                {node.kind ? ` (${node.kind})` : ''}
-              </li>
-            ))}
+            {graph.graph.nodes.map((node) => {
+              const stepScore = scoresByNode.get(node.id);
+              return (
+                <li key={node.id}>
+                  <code>{node.id}</code> {node.type}
+                  {node.kind ? ` (${node.kind})` : ''}
+                  {stepScore ? (
+                    <span
+                      title={stepScore.findings.join(', ') || stepScore.evaluator}
+                      style={{ marginLeft: 8, color: stepScore.passed ? '#1a7f37' : '#cf222e' }}
+                    >
+                      score {stepScore.score.toFixed(2)} {stepScore.passed ? '✓' : '✗'}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
           </ol>
         </>
       )}
-
       <h3>Input</h3>
       <pre>{JSON.stringify(run.input, null, 2)}</pre>
-
       <h3>Stages</h3>
       <table cellPadding={6} style={{ borderCollapse: 'collapse' }}>
         <thead>
@@ -144,6 +191,7 @@ export default function RunDetailPage({ runId }: { runId: string }) {
             <th align="left">Stage</th>
             <th align="left">Kind</th>
             <th align="left">Status</th>
+            <th align="left">Score</th>
             <th align="left">Attempts</th>
             <th align="left">Duration</th>
           </tr>
@@ -182,6 +230,20 @@ export default function RunDetailPage({ runId }: { runId: string }) {
                     <div style={{ color: '#cf222e', fontSize: 12 }}>{stage.error}</div>
                   ) : null}
                 </td>
+                <td>
+                  {(() => {
+                    const stepScore = scoresByNode.get(stage.stageId);
+                    if (!stepScore) return '—';
+                    return (
+                      <span
+                        title={stepScore.findings.join(', ') || stepScore.evaluator}
+                        style={{ color: stepScore.passed ? '#1a7f37' : '#cf222e' }}
+                      >
+                        {stepScore.score.toFixed(2)}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td>{stage.attempts}</td>
                 <td>{duration}</td>
               </tr>
@@ -189,7 +251,6 @@ export default function RunDetailPage({ runId }: { runId: string }) {
           })}
         </tbody>
       </table>
-
       <h3>Correct this run</h3>
       <form onSubmit={submitCorrection}>
         <label htmlFor="gold">Expected output</label>
@@ -210,7 +271,6 @@ export default function RunDetailPage({ runId }: { runId: string }) {
         <button type="submit">Save correction</button>
       </form>
       {saved && <p role="status">{saved}</p>}
-
       <h3>Decision records</h3>
       {decisions.length === 0 && <p>No decision records for this run.</p>}
       <ol>

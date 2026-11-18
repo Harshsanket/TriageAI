@@ -1,5 +1,24 @@
 /** Execution-style ladder (Phase 18.3/18.T23). */
+import type { WorkflowGraph } from '../graph/v2.js';
+
 export type ExecutionRung = 1 | 2 | 3 | 4 | 5;
+
+/**
+ * Derive the lowest matching rung for a graph: agent loops → 4, a single
+ * bounded model choice → 3, event-driven lifecycles → 2, pipelines → 1.
+ * Rung 5 (teams) is derived by the team compiler, not inferred here.
+ */
+export function rungForGraph(graph: WorkflowGraph): ExecutionRung {
+  if (graph.nodes.some((node) => node.type === 'agent_step')) return 4;
+  if (graph.nodes.some((node) => node.type === 'llm_decision')) return 3;
+  if (graph.trigger.type === 'event') return 2;
+  return 1;
+}
+
+/** A graph calls a model when it has model-choice or agent-step nodes. */
+export function graphCallsModels(graph: WorkflowGraph): boolean {
+  return graph.nodes.some((node) => node.type === 'llm_decision' || node.type === 'agent_step');
+}
 
 export function validateExecutionStyle(args: {
   rung: ExecutionRung;

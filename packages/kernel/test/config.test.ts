@@ -121,6 +121,73 @@ describe('config', () => {
   });
 });
 
+describe('routing config (19.2)', () => {
+  it('defaults to an empty routing section', () => {
+    const cfg = buildKernelConfig(parseConfigFile({}), {});
+    expect(cfg.routing).toEqual({ tasks: {} });
+    expect(cfg.routing.prices).toBeUndefined();
+  });
+
+  it('parses task routes and the price table', () => {
+    const cfg = buildKernelConfig(
+      parseConfigFile({
+        routing: {
+          tasks: {
+            classify: {
+              primary: 'ollama:qwen2.5:1.5b',
+              fallback: 'openai:gpt-test',
+              qualityFloor: 0.4,
+              maxCostPerCall: 0.01,
+              sensitivity: 'restricted',
+            },
+          },
+          prices: { 'openai:gpt-test': { inputPer1k: 0.15, outputPer1k: 0.6 } },
+        },
+      }),
+      {},
+    );
+    expect(cfg.routing.tasks.classify).toEqual({
+      primary: 'ollama:qwen2.5:1.5b',
+      fallback: 'openai:gpt-test',
+      qualityFloor: 0.4,
+      maxCostPerCall: 0.01,
+      sensitivity: 'restricted',
+    });
+    expect(cfg.routing.prices).toEqual({
+      'openai:gpt-test': { inputPer1k: 0.15, outputPer1k: 0.6 },
+    });
+  });
+
+  it('rejects unknown keys and bad values in the routing section', () => {
+    expect(() => parseConfigFile({ routing: { escalate: [] } })).toThrow(
+      /Invalid triage.config.json/,
+    );
+    expect(() =>
+      parseConfigFile({ routing: { tasks: { classify: { primary: 'a:b', tier: 'large' } } } }),
+    ).toThrow(/Invalid triage.config.json/);
+    expect(() =>
+      parseConfigFile({ routing: { tasks: { classify: { primary: 'a:b', sensitivity: 'hot' } } } }),
+    ).toThrow(/Invalid triage.config.json/);
+    expect(() => parseConfigFile({ routing: { prices: { 'a:b': { outputPer1k: -1 } } } })).toThrow(
+      /Invalid triage.config.json/,
+    );
+  });
+
+  it('keeps routing through an overlay and validates overlay routes', () => {
+    const file = parseConfigFile({ routing: { tasks: { classify: { primary: 'a:b' } } } });
+    const merged = applyConfigOverlay(file, {
+      routing: { tasks: { summarise: { primary: 'c:d' } } },
+    });
+    expect(merged.routing.tasks).toEqual({
+      classify: { primary: 'a:b' },
+      summarise: { primary: 'c:d' },
+    });
+    expect(() =>
+      applyConfigOverlay(file, { routing: { tasks: { x: { primary: 'a:b', nope: 1 } } } }),
+    ).toThrow(/Invalid config overlay/);
+  });
+});
+
 describe('semver subset', () => {
   it('requires exact match for bare versions', () => {
     expect(satisfiesRange('1.2.3', '1.2.3').ok).toBe(true);

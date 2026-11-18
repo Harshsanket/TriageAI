@@ -15,12 +15,19 @@ import {
   AppError,
   callModel,
   classifySend,
+  estimateCostFromPrices,
   exportOtlpTrace,
   internal,
   invalid,
   policyBlocked,
 } from '@triageai/kernel';
-import type { TriageModule } from '@triageai/kernel';
+import type {
+  CallModelDeps,
+  ChatModel,
+  KernelConfig,
+  RoutingConfig,
+  TriageModule,
+} from '@triageai/kernel';
 
 const configSchema = z.object({}).strict();
 
@@ -574,36 +581,62 @@ export const aiPipelineModule: TriageModule = {
           modelVersion = cached.modelVersion;
           cacheHit = true;
         } else if (chatModel) {
-          const result = await callModel(
-            {
-              chatModel,
-              onTrace: async (trace) => {
-                await ctx.traces
-                  .record({
-                    traceId: trace.traceId,
-                    runId: stage.runId,
-                    task: trace.task,
-                    trace,
-                  })
-                  .catch(() => undefined);
-                const endpoint = ctx.env.TRIAGEAI_OTLP_ENDPOINT;
-                if (endpoint) {
-                  const capture =
-                    ctx.env.TRIAGEAI_TRACE_CAPTURE === 'full'
-                      ? 'full'
-                      : ctx.env.TRIAGEAI_TRACE_CAPTURE === 'off'
-                        ? 'off'
-                        : 'redacted';
-                  void exportOtlpTrace(trace, endpoint, capture, ctx.capabilities.egress).catch(
-                    (err: unknown) =>
-                      ctx.logger.warn(
-                        { err: (err as Error).message, traceId: trace.traceId },
-                        'OTLP trace export failed',
-                      ),
-                  );
-                }
-              },
+          // 19.2/25.T5 wiring: the injected chatModel may be the host runtime
+          // pool. Detect it structurally — a pool exposes `resolve(task)` — and
+          // hand callModel the task-bound resolver so `config.routing.tasks`
+          // picks the model. A bare ChatModel keeps the configured primary.
+          const pool = chatModel as ChatModel & {
+            resolve?: (
+              task: string,
+              stepName?: string,
+            ) => {
+              chatModel: ChatModel;
+              fallbackModel?: ChatModel;
+              reason: string;
+            };
+          };
+          const callModelDeps: CallModelDeps = {
+            chatModel,
+            onTrace: async (trace) => {
+              await ctx.traces
+                .record({
+                  traceId: trace.traceId,
+                  runId: stage.runId,
+                  task: trace.task,
+                  trace,
+                })
+                .catch(() => undefined);
+              const endpoint = ctx.env.TRIAGEAI_OTLP_ENDPOINT;
+              if (endpoint) {
+                const capture =
+                  ctx.env.TRIAGEAI_TRACE_CAPTURE === 'full'
+                    ? 'full'
+                    : ctx.env.TRIAGEAI_TRACE_CAPTURE === 'off'
+                      ? 'off'
+                      : 'redacted';
+                void exportOtlpTrace(trace, endpoint, capture, ctx.capabilities.egress).catch(
+                  (err: unknown) =>
+                    ctx.logger.warn(
+                      { err: (err as Error).message, traceId: trace.traceId },
+                      'OTLP trace export failed',
+                    ),
+                );
+              }
             },
+          };
+          const resolveTask = pool.resolve;
+          if (typeof resolveTask === 'function') {
+            callModelDeps.resolveModel = ({ task, stepName }) => resolveTask(task, stepName);
+          }
+          // 19.3: price-table cost estimates come from the kernel routing
+          // config; absent a table estCost stays 0 (never an invented price).
+          const routing = (ctx.config as KernelConfig & { routing?: RoutingConfig }).routing;
+          if (routing?.prices) {
+            const prices = routing.prices;
+            callModelDeps.estimateCost = (args) => estimateCostFromPrices(prices, args);
+          }
+          const result = await callModel(
+            callModelDeps,
             {
               id: input.task ?? 'answer',
               promptTemplateId: 'ai.generate',

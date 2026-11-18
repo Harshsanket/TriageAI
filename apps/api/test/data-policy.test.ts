@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
+import { PostgresDatabase } from '@triageai/kernel';
+
 import { buildApp } from '../src/app.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
@@ -88,7 +90,9 @@ describeIfDb('custom data policy (phase 23.6)', () => {
 
     for (const payload of [
       { overrides: { support_tickets: { retentionDays: 99_999 } } },
+      { overrides: { support_tickets: { retentionDays: 10 } } },
       { overrides: { secrets: { modelUse: 'allowed' } } },
+      { overrides: { audit_events: { modelUse: 'local_only' } } },
     ]) {
       const refused = await app.inject({
         method: 'PUT',
@@ -96,6 +100,46 @@ describeIfDb('custom data policy (phase 23.6)', () => {
         payload,
       });
       expect(refused.statusCode).toBe(400);
+    }
+  });
+
+  it('reports persisted send-gate counters from model traces (18.T18)', async () => {
+    const database = new PostgresDatabase(
+      process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai',
+    );
+    const baseline = (
+      await app.inject({ method: 'GET', url: '/api/v1/system/data-policy' })
+    ).json() as {
+      sendGate: { sent: number; redacted: number; withheld: number };
+    };
+    const traceId = `send-gate-${Date.now()}`;
+    await database.query(
+      `INSERT INTO model_call_traces (trace_id, run_id, task, trace) VALUES ($1, $2, $3, $4)`,
+      [
+        traceId,
+        'run-send-gate',
+        'chat',
+        {
+          securityEvents: [
+            'send_gate:allowed',
+            'send_gate:redacted:pii_or_internal_redaction',
+            'send_gate:withheld:secret',
+          ],
+        },
+      ],
+    );
+    try {
+      const after = (
+        await app.inject({ method: 'GET', url: '/api/v1/system/data-policy' })
+      ).json() as {
+        sendGate: { sent: number; redacted: number; withheld: number };
+      };
+      expect(after.sendGate.sent).toBe(baseline.sendGate.sent + 1);
+      expect(after.sendGate.redacted).toBe(baseline.sendGate.redacted + 1);
+      expect(after.sendGate.withheld).toBe(baseline.sendGate.withheld + 1);
+    } finally {
+      await database.query(`DELETE FROM model_call_traces WHERE trace_id = $1`, [traceId]);
+      await database.close();
     }
   });
 

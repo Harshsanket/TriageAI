@@ -18,6 +18,8 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 import type { KernelContext, KernelRouteDef, WorkflowDef } from '../packages/kernel/src/types.js';
+import type { WorkflowGraph } from '../packages/kernel/src/graph/v2.js';
+import { graphToMermaid } from '../packages/kernel/src/graph/compile.js';
 import { ROUTE_RULES } from '../apps/api/src/platform/auth/rbac.js';
 import type { RouteRule } from '../apps/api/src/platform/auth/rbac.js';
 import { MODULES } from '../apps/api/src/modules.js';
@@ -28,8 +30,8 @@ const ROOT = existsSync(join(process.cwd(), 'WORKFLOW.md'))
   : resolve(process.cwd(), '../..');
 const DOC_PATH = join(ROOT, 'WORKFLOW.md');
 
-/** One screen per section, about 400 lines total (DEVELOPMENT_PLAN §19.1). */
-export const LINE_BUDGET = 450;
+/** One screen per section, about 400 lines of prose; the generated graph block adds Mermaid. */
+export const LINE_BUDGET = 750;
 
 export const REQUIRED_SECTIONS = [
   '1. System design',
@@ -48,7 +50,7 @@ export const REQUIRED_SECTIONS = [
   '14. Errors and degradation',
 ] as const;
 
-export type BlockName = 'routes' | 'presets' | 'workflows' | 'models';
+export type BlockName = 'routes' | 'presets' | 'workflows' | 'graphs' | 'models';
 
 interface WorkflowSummary {
   id: string;
@@ -56,6 +58,7 @@ interface WorkflowSummary {
   version: string;
   trigger: string;
   stages: Array<{ id: string; kind: string; conditional: boolean }>;
+  graph?: WorkflowGraph;
 }
 
 function inert(): unknown {
@@ -88,6 +91,7 @@ function captureModules(): { workflows: WorkflowSummary[] } {
               kind: stage.kind,
               conditional: Boolean(stage.when),
             })),
+            ...(def.graph ? { graph: def.graph } : {}),
           });
         },
         startWorkflow: async () => ({ runId: '', deduped: false }),
@@ -161,8 +165,8 @@ export function generatePresetsBlock(presetsDir = join(ROOT, 'config/presets')):
   ].join('\n');
 }
 
-export function generateWorkflowsBlock(): string {
-  const { workflows } = captureModules();
+export function generateWorkflowsBlock(summaries?: WorkflowSummary[]): string {
+  const { workflows } = summaries ? { workflows: summaries } : captureModules();
   workflows.sort((a, b) => a.id.localeCompare(b.id));
   const rows = workflows.map((workflow) => {
     const stages = workflow.stages
@@ -177,6 +181,30 @@ export function generateWorkflowsBlock(): string {
     '',
     '`?` marks a stage with a `when` guard; the full expressions are in the module workflows.',
   ].join('\n');
+}
+
+/**
+ * Mermaid export for workflows that declare a v2 graph (18.T22). The same
+ * `graphToMermaid` renders a run's taken path in the inspector; here the full
+ * declared graph is shown so docs and code cannot drift.
+ */
+export function generateGraphsBlock(summaries?: WorkflowSummary[]): string {
+  const { workflows } = summaries ? { workflows: summaries } : captureModules();
+  const declared = workflows
+    .filter((workflow): workflow is WorkflowSummary & { graph: WorkflowGraph } =>
+      Boolean(workflow.graph),
+    )
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (declared.length === 0) {
+    return 'No workflow declares a v2 graph yet; v1 stage lists compile to a straight-line graph.';
+  }
+  return declared
+    .map((workflow) =>
+      [`### \`${workflow.id}\``, '', '```mermaid', graphToMermaid(workflow.graph), '```'].join(
+        '\n',
+      ),
+    )
+    .join('\n\n');
 }
 
 interface PresetModel {
@@ -213,10 +241,12 @@ function modelRow(tier: string, model: PresetModel): string {
 }
 
 export function buildBlocks(): Record<BlockName, string> {
+  const { workflows } = captureModules();
   return {
     routes: generateRoutesBlock(),
     presets: generatePresetsBlock(),
-    workflows: generateWorkflowsBlock(),
+    workflows: generateWorkflowsBlock(workflows),
+    graphs: generateGraphsBlock(workflows),
     models: generateModelsBlock(),
   };
 }

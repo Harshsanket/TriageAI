@@ -49,7 +49,12 @@ export const supportModule: TriageModule = {
       { method: 'PUT', path: '/api/v1/support/auto-reply-policies/:category' },
     ],
     events: {
-      publish: ['support.ticket.created', 'support.ticket.routed', 'support.ticket.status_changed'],
+      publish: [
+        'support.autonomy.observed',
+        'support.ticket.created',
+        'support.ticket.routed',
+        'support.ticket.status_changed',
+      ],
       subscribe: [
         'email.received',
         'email.reply_received',

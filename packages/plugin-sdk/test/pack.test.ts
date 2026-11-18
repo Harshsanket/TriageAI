@@ -1,6 +1,9 @@
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it } from 'vitest';
 
 import {
+  PackManifestSchema,
   generatePluginKeyPair,
   packPack,
   readPackPackage,
@@ -51,5 +54,39 @@ describe('pack format (Phase 22.T12)', () => {
 
   it('rejects a pack without modules', () => {
     expect(() => packPack({ manifest: { ...manifest, modules: [] } })).toThrow();
+  });
+
+  it('ships the ticket-solver descriptor as a valid signed pack fixture (22.T12)', async () => {
+    const raw = JSON.parse(
+      await readFile(new URL('./fixtures/ticket-solver.pack.json', import.meta.url), 'utf8'),
+    ) as unknown;
+    const descriptor = PackManifestSchema.parse(raw);
+    expect(descriptor.id).toBe('ticket-solver');
+    expect(descriptor.modules.map((entry) => entry.id)).toEqual([
+      'support',
+      'classifier-provider',
+      'llm-local',
+    ]);
+
+    const archive = packPack({
+      manifest: descriptor,
+      extraFiles: [
+        {
+          path: 'skills/handoff/SKILL.md',
+          content: '---\nname: handoff\ndescription: Write a concise handoff.\n---\n\nBody.',
+        },
+      ],
+    });
+    const keys = generatePluginKeyPair();
+    const signature = signPack(archive, keys.privateKey);
+    const verified = verifyPackPackage({
+      archive,
+      signature,
+      publicKeys: [keys.publicKey],
+    });
+    expect(verified.files.has('skills/handoff/SKILL.md')).toBe(true);
+    expect(verified.manifest.wiring).toMatchObject({
+      'capabilities.classifier.provider': 'classifier-provider',
+    });
   });
 });

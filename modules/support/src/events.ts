@@ -1,10 +1,12 @@
 /** Event subscribers: GitHub issue sync and auto-reply run failures. */
 import { ulid } from 'ulid';
+import { z } from 'zod';
 
 import type { KernelContext } from '@triageai/kernel';
 
 import type { SupportOptions } from './options.js';
 import type { SupportServices } from './services.js';
+import { messageDetection } from './services.js';
 import { canTransition, type TicketStatus } from './state.js';
 
 export function registerEventSubscribers(
@@ -13,6 +15,21 @@ export function registerEventSubscribers(
   svc: SupportServices,
 ): void {
   const { loadTicketRow, escalateAutoReply, transitionTicket } = svc;
+  // The host persists per-flow autonomy in core settings; the module reports
+  // the observed decision action instead of writing across schemas (15.T10).
+  ctx.registerEventSchema(
+    'support.autonomy.observed',
+    z
+      .object({
+        flow: z.literal('support.auto_reply'),
+        category: z.string().nullable().optional(),
+        action: z.enum(['reply', 'clarify', 'escalate']),
+        observedLevel: z.enum(['investigate', 'draft', 'internal_note', 'autopilot']),
+        runId: z.string().optional(),
+        ticketId: z.string().nullable().optional(),
+      })
+      .passthrough(),
+  );
   ctx.events.subscribe('integrations.github.issue_closed', async (payload) => {
     const event = payload as { ticketId?: string; ref?: string; actor?: string };
     if (!event.ticketId) return;
@@ -155,15 +172,20 @@ export function registerEventSubscribers(
           `email:${event.messageId}`,
         ],
       );
+      const inboundText = event.text.slice(0, 20_000);
+      const detection = messageDetection(inboundText);
       await ctx.database.query(
-        `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
-         VALUES ($1, $2, 'customer', $3, $4, $5)`,
+        `INSERT INTO support_ticket_messages
+           (id, ticket_id, author_type, author, body, meta, sensitivity, tags)
+         VALUES ($1, $2, 'customer', $3, $4, $5, $6, $7)`,
         [
           ulid(),
           ticketId,
           event.from,
-          event.text.slice(0, 20_000),
+          inboundText,
           { kind: 'email', messageId: event.messageId },
+          detection.sensitivity,
+          detection.tags,
         ],
       );
       await ctx.database.query(

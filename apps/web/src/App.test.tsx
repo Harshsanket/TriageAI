@@ -326,6 +326,11 @@ describe('dashboard (host page)', () => {
 
     expect(await screen.findByRole('heading', { name: 'Machine' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Dead letters' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Wake-ups and re-reads' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Cache use' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Quality' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Alerts and audit' })).toBeInTheDocument();
+    expect(screen.queryByText('Chat conversations')).not.toBeInTheDocument();
     window.history.pushState({}, '', '/system');
     window.dispatchEvent(new PopStateEvent('popstate'));
     await waitFor(() => expect(window.location.pathname).toBe('/dashboard'));

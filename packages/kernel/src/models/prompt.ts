@@ -75,5 +75,6 @@ export function sanitizeModelText(text: string): string {
   return text
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<img[^>]*>/gi, '[image removed]')
-    .replace(/javascript:/gi, '');
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '[image removed]')
+    .replace(/(?:javascript|data):/gi, '');
 }

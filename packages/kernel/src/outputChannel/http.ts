@@ -5,6 +5,7 @@
  * adapter gets the same behaviour and the contract suite can pin it.
  */
 import { AppError, fetchFailure, httpFailure, parseRetryAfterMs } from '../errors.js';
+import type { OutputChannelGuard } from '../outputChannel.js';
 import type {
   DeliveryContext,
   DeliveryResult,
@@ -185,6 +186,8 @@ export interface HttpOutputChannelOptions {
   fetchImpl?: typeof fetch;
   maxAttempts?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Adapter-level guard; the registry guard also runs before delivery. */
+  guard?: OutputChannelGuard;
 }
 
 /** Shared adapter shell: disabled check + retries + idempotent delivery cache. */
@@ -194,6 +197,11 @@ export class HttpOutputChannel implements OutputChannel {
   constructor(private readonly options: HttpOutputChannelOptions) {}
 
   async deliver(ctx: DeliveryContext, intent: OutboundIntent): Promise<DeliveryResult> {
+    await this.options.guard?.({
+      channel: this.options.channel,
+      ctx,
+      intent: { ...intent, channel: this.options.channel },
+    });
     if (!this.options.enabled()) {
       throw new AppError(
         'INTEGRATION_DISABLED',

@@ -48,6 +48,8 @@ interface TicketDetail {
     authorType: string;
     author: string | null;
     body: string;
+    meta?: { runId?: string | null; kind?: string } | null;
+    runId?: string | null;
     createdAt: string;
   }>;
   events: Array<{
@@ -82,6 +84,7 @@ export default function SupportApp() {
   const [priorityCode, setPriorityCode] = useState('');
   const [teamId, setTeamId] = useState('');
   const [assignee, setAssignee] = useState('');
+  const [flagged, setFlagged] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const res = await apiFetch<Ticket[]>(
@@ -125,6 +128,7 @@ export default function SupportApp() {
     }
     const detail = res.data;
     setSelected(detail);
+    setFlagged({});
     setPriorityCode(detail.ticket.priorityCode ?? policy.priorities[0] ?? '');
     setTeamId(detail.ticket.teamId ?? policy.teamIds[0] ?? '');
     setAssignee(detail.ticket.assigneeId ?? '');
@@ -208,6 +212,21 @@ export default function SupportApp() {
     if (!res.ok) setError(res.error);
     else await openTicket(selected.ticket.id);
     await load();
+  };
+
+  // 19.T6: flag the auto-reply run through the audited run-flag endpoint.
+  const flagReply = async (messageId: string, runId: string | null) => {
+    if (!runId) return;
+    const res = await apiFetch(`/api/v1/system/runs/${runId}/flag`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'user flagged ticket reply' }),
+    });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setFlagged((current) => ({ ...current, [messageId]: 'Flagged for review' }));
   };
 
   return (
@@ -421,6 +440,17 @@ export default function SupportApp() {
               {selected.messages.map((message) => (
                 <li key={message.id}>
                   <strong>{message.authorType}</strong> {message.author ?? ''}: {message.body}
+                  {!customer && message.runId ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      aria-label={`flag reply ${message.id}`}
+                      onClick={() => void flagReply(message.id, message.runId ?? null)}
+                      disabled={flagged[message.id] != null}
+                    >
+                      {flagged[message.id] ?? 'Flag reply'}
+                    </Button>
+                  ) : null}
                 </li>
               ))}
             </ul>

@@ -573,6 +573,29 @@ export const integrationsGitHubModule: TriageModule = {
       module: 'integrations-github',
       version: '0.1.0',
       trigger: { type: 'event' },
+      // v2 graph (18.3): one delivery stage. Dispatched by the action routes
+      // (not an event-bus subscription); the trigger filter is the action id
+      // every run must carry.
+      graph: {
+        id: 'integrations.github.sync_issue',
+        version: '0.1.0',
+        module: 'integrations-github',
+        trigger: { type: 'event', when: '${actionId} != null' },
+        start: 'sync',
+        nodes: [
+          {
+            id: 'sync',
+            type: 'stage',
+            kind: 'integrations.github.sync_issue',
+            input: { actionId: '$.actionId' },
+          },
+          { id: 'end', type: 'end', end: 'succeeded' },
+          { id: 'failed', type: 'end', end: 'failed' },
+        ],
+        edges: [{ from: 'sync', to: 'end', label: 'next' }],
+        defaultErrorEdge: { to: 'failed' },
+        budget: { maxSteps: 10, maxDurationMs: 300_000 },
+      },
       stages: [
         { id: 'sync', kind: 'integrations.github.sync_issue', input: { actionId: '$.actionId' } },
       ],
@@ -583,6 +606,27 @@ export const integrationsGitHubModule: TriageModule = {
       module: 'integrations-github',
       version: '0.1.0',
       trigger: { type: 'event' },
+      // v2 graph (18.3): closing a linked issue is a single declared stage.
+      graph: {
+        id: 'integrations.github.sync_status',
+        version: '0.1.0',
+        module: 'integrations-github',
+        trigger: { type: 'event', when: '${linkId} != null' },
+        start: 'close',
+        nodes: [
+          {
+            id: 'close',
+            type: 'stage',
+            kind: 'integrations.github.close_issue',
+            input: { linkId: '$.linkId', ticketId: '$.ticketId' },
+          },
+          { id: 'end', type: 'end', end: 'succeeded' },
+          { id: 'failed', type: 'end', end: 'failed' },
+        ],
+        edges: [{ from: 'close', to: 'end', label: 'next' }],
+        defaultErrorEdge: { to: 'failed' },
+        budget: { maxSteps: 10, maxDurationMs: 300_000 },
+      },
       stages: [
         {
           id: 'close',

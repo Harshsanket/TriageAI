@@ -21,9 +21,9 @@ import {
   type ExtractionProfile,
   type ExtractedDatasetDto,
 } from '@triageai/contracts';
-import { AppError, classifySend } from '@triageai/kernel';
+import { AppError, callModel, classifySend } from '@triageai/kernel';
 import type { KernelContext, TriageModule } from '@triageai/kernel';
-import { extractText } from '@triageai/rag';
+import { extractText, detect } from '@triageai/rag';
 
 import {
   categoryFor,
@@ -37,6 +37,35 @@ import {
   signedAmount,
   type TransactionFields,
 } from './parse.js';
+
+const SUGGESTED_CATEGORIES = [
+  'Groceries',
+  'Coffee',
+  'Transport',
+  'Subscriptions',
+  'Housing',
+  'Income',
+  'Shopping',
+  'Health',
+  'Travel',
+  'Utilities',
+  'Other',
+] as const;
+
+const CategorySuggestionSchema = z
+  .object({
+    assignments: z
+      .array(
+        z
+          .object({
+            description: z.string().min(1).max(500),
+            category: z.enum(SUGGESTED_CATEGORIES),
+          })
+          .strict(),
+      )
+      .max(20),
+  })
+  .strict();
 
 const configSchema = z
   .object({
@@ -135,6 +164,18 @@ const MIGRATIONS = [
       DROP TABLE IF EXISTS extracted_datasets;
     `,
   },
+  {
+    id: '0002-data-extract-row-tags',
+    sql: `
+      ALTER TABLE extracted_rows ADD COLUMN IF NOT EXISTS sensitivity TEXT NOT NULL DEFAULT 'internal'
+        CHECK (sensitivity IN ('public','internal','restricted','secret'));
+      ALTER TABLE extracted_rows ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `,
+    dropSql: `
+      ALTER TABLE IF EXISTS extracted_rows DROP COLUMN IF EXISTS tags;
+      ALTER TABLE IF EXISTS extracted_rows DROP COLUMN IF EXISTS sensitivity;
+    `,
+  },
 ];
 
 const datasetDto = (row: DatasetRow): ExtractedDatasetDto =>
@@ -182,7 +223,7 @@ export const dataExtractModule: TriageModule = {
       { method: 'POST', path: '/api/v1/data-extract/rules' },
     ],
     events: { publish: [], subscribe: ['kb.source.ingested'] },
-    capabilities: { consume: ['embedder', 'vectorStore'], provide: [] },
+    capabilities: { consume: ['embedder', 'vectorStore', 'chatModel'], provide: [] },
     stages: [],
     workflows: [],
     evals: [],
@@ -233,18 +274,88 @@ export const dataExtractModule: TriageModule = {
         )
       ).map((row) => ({ keyword: row.keyword, category: row.category }));
 
+    const suggestCategories = async (
+      datasetId: string,
+      rows: TransactionFields[],
+      ruleList: Array<{ keyword: string; category: string }>,
+    ): Promise<Map<string, { category: string; source: 'suggested' }>> => {
+      const suggestions = new Map<string, { category: string; source: 'suggested' }>();
+      const chatModel = ctx.capabilities.chatModel;
+      if (!chatModel) return suggestions;
+      const candidates = [
+        ...new Set(
+          rows
+            .filter((row) => !row.category && !categoryFor(row.description, ruleList))
+            .map((row) => row.description),
+        ),
+      ].slice(0, 20);
+      if (candidates.length === 0) return suggestions;
+      if (
+        classifySend({
+          sensitivity: 'restricted',
+          hosted: chatModel.describe().hosted,
+          modelUse: 'redacted',
+        }).decision === 'withheld'
+      ) {
+        return suggestions;
+      }
+      try {
+        const result = await callModel(
+          {
+            chatModel,
+            onTrace: async (trace) => {
+              await ctx.traces
+                .record({ traceId: trace.traceId, runId: datasetId, task: trace.task, trace })
+                .catch(() => undefined);
+            },
+          },
+          {
+            id: 'data_extract.categorize',
+            promptTemplateId: 'data_extract.categorize',
+            promptVersion: '1',
+            outputSchema: CategorySuggestionSchema,
+            maxOutputTokens: 512,
+            timeoutMs: 20_000,
+            requiredFields: [],
+          },
+          { runId: datasetId, workflowId: 'data_extract.import', stepName: 'categorize' },
+          {
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'Assign exactly one category from the allowed list to each merchant description. Return JSON {assignments:[{description,category}]}.',
+              },
+              { role: 'user', content: JSON.stringify(candidates) },
+            ],
+            structured: true,
+            temperature: 0,
+            sendGate: { sensitivity: 'restricted', modelUse: 'redacted' },
+          },
+        );
+        const parsed = result.parsed as z.infer<typeof CategorySuggestionSchema>;
+        for (const item of parsed.assignments) {
+          suggestions.set(item.description, { category: item.category, source: 'suggested' });
+        }
+      } catch {
+        // Proposals are optional; deterministic rules remain the source of truth.
+      }
+      return suggestions;
+    };
+
     const insertTransactionRows = async (
       datasetId: string,
       rows: TransactionFields[],
       ownerId: string | null,
     ) => {
       const ruleList = await rules(ownerId);
+      const suggestions = await suggestCategories(datasetId, rows, ruleList);
       let inserted = 0;
       let duplicates = 0;
       for (const row of rows) {
         const category = row.category
           ? { category: row.category, source: 'user' as const }
-          : categoryFor(row.description, ruleList);
+          : (categoryFor(row.description, ruleList) ?? suggestions.get(row.description) ?? null);
         const fields = {
           date: row.date,
           description: row.description,
@@ -266,9 +377,11 @@ export const dataExtractModule: TriageModule = {
             ].join('|'),
           )
           .digest('hex');
+        const detection = detect(JSON.stringify(fields));
         const result = await ctx.database.query<{ id: string }>(
-          `INSERT INTO extracted_rows (id, dataset_id, fields, category, category_source, dedupe_key)
-           VALUES ($1,$2,$3,$4,$5,$6)
+          `INSERT INTO extracted_rows
+             (id, dataset_id, fields, category, category_source, dedupe_key, sensitivity, tags)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            ON CONFLICT (dataset_id, dedupe_key) DO NOTHING
            RETURNING id`,
           [
@@ -278,6 +391,8 @@ export const dataExtractModule: TriageModule = {
             category?.category ?? null,
             category?.source ?? null,
             dedupeKey,
+            detection.sensitivity,
+            detection.tags,
           ],
         );
         if (result.length > 0) inserted += 1;
@@ -291,12 +406,14 @@ export const dataExtractModule: TriageModule = {
       let duplicates = 0;
       for (const row of rows) {
         const dedupeKey = createHash('sha256').update(JSON.stringify(row)).digest('hex');
+        const detection = detect(JSON.stringify(row));
         const result = await ctx.database.query<{ id: string }>(
-          `INSERT INTO extracted_rows (id, dataset_id, fields, dedupe_key)
-           VALUES ($1,$2,$3,$4)
+          `INSERT INTO extracted_rows
+             (id, dataset_id, fields, dedupe_key, sensitivity, tags)
+           VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT (dataset_id, dedupe_key) DO NOTHING
            RETURNING id`,
-          [ulid(), datasetId, row, dedupeKey],
+          [ulid(), datasetId, row, dedupeKey, detection.sensitivity, detection.tags],
         );
         if (result.length > 0) inserted += 1;
         else duplicates += 1;
@@ -317,6 +434,7 @@ export const dataExtractModule: TriageModule = {
             collection,
             documentId: dataset.id,
             text,
+            embeddingModel: embedded.modelVersion,
             metadata: {
               datasetId: dataset.id,
               title: dataset.title,
@@ -691,8 +809,19 @@ export const dataExtractModule: TriageModule = {
           .object({ mapping: z.record(z.string(), z.string()).optional() })
           .strict()
           .parse(request.body ?? {});
-        // Reconciliation is re-checked by the caller via a fresh import; here a
-        // human confirms that the inferred mapping is acceptable.
+        // Reconciliation is not bypassable by confirming the mapping: a
+        // statement whose balances do not reconcile stays out of charts.
+        if (dataset.review_reason?.includes('does not reconcile')) {
+          throw new AppError(
+            'data_extract.RECONCILIATION_FAILED',
+            'the statement does not reconcile; fix the rows and re-import before confirming',
+            undefined,
+            409,
+            { category: 'validation', retryable: false },
+          );
+        }
+        // A human confirms that the inferred mapping is acceptable; the
+        // reconciliation check above already covered the balance failure.
         await ctx.database.query(
           `UPDATE extracted_datasets
               SET status = 'ready', review_reason = NULL, mapping = $2, updated_at = now()

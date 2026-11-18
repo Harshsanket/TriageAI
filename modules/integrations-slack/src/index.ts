@@ -141,8 +141,6 @@ const textFor = (snapshot: TicketSnapshot, options: SlackOptions): string => {
   ].join('\n');
 };
 
-let flushTimer: ReturnType<typeof setInterval> | undefined;
-
 export const integrationsSlackModule: TriageModule = {
   id: 'integrations-slack',
   version: '0.1.0',
@@ -183,10 +181,7 @@ export const integrationsSlackModule: TriageModule = {
   },
   lifecycle: {
     health: async () => ({ status: 'healthy', detail: 'slack notifications' }),
-    onStop: async () => {
-      if (flushTimer) clearInterval(flushTimer);
-      flushTimer = undefined;
-    },
+    onStop: async () => {},
   },
   register(ctx: KernelContext) {
     const options = configSchema.parse(ctx.moduleOptions ?? {});
@@ -338,6 +333,25 @@ export const integrationsSlackModule: TriageModule = {
           { actionId: action.id, channel, critical },
         );
         if (status === 'approved') await dispatch(action.id);
+        if (status === 'batched' && options.batchWindowMs > 0) {
+          // No module timer: enqueue the flush with a delay on the queue. The
+          // scheduler's minute cron is a safety net; the idempotency key keeps
+          // one flush per batch window.
+          const bucket = Math.floor(Date.now() / options.batchWindowMs);
+          await ctx.queue
+            .startWorkflow(
+              'integrations.slack.flush',
+              { window: bucket },
+              {
+                idempotencyKey: `slack-flush:${bucket}`,
+                trigger: 'schedule',
+                delayMs: options.batchWindowMs,
+              },
+            )
+            .catch((err: Error) => {
+              ctx.logger.warn({ err: err.message }, 'slack batch flush dispatch failed');
+            });
+        }
       } catch (err) {
         ctx.logger.error(
           { ticketId: snapshot.ticketId, err: (err as Error).message },
@@ -516,6 +530,27 @@ export const integrationsSlackModule: TriageModule = {
       module: 'integrations-slack',
       version: '0.1.0',
       trigger: { type: 'event' },
+      // v2 graph (18.3): one delivery stage, dispatched by the action routes.
+      graph: {
+        id: 'integrations.slack.notify',
+        version: '0.1.0',
+        module: 'integrations-slack',
+        trigger: { type: 'event', when: '${actionId} != null' },
+        start: 'send',
+        nodes: [
+          {
+            id: 'send',
+            type: 'stage',
+            kind: 'integrations.slack.notify',
+            input: { actionId: '$.actionId' },
+          },
+          { id: 'end', type: 'end', end: 'succeeded' },
+          { id: 'failed', type: 'end', end: 'failed' },
+        ],
+        edges: [{ from: 'send', to: 'end', label: 'next' }],
+        defaultErrorEdge: { to: 'failed' },
+        budget: { maxSteps: 10, maxDurationMs: 300_000 },
+      },
       stages: [
         { id: 'send', kind: 'integrations.slack.notify', input: { actionId: '$.actionId' } },
       ],
@@ -526,24 +561,27 @@ export const integrationsSlackModule: TriageModule = {
       module: 'integrations-slack',
       version: '0.1.0',
       trigger: { type: 'schedule' },
+      // v2 graph (18.3): the batched flush is a single scheduled stage.
+      graph: {
+        id: 'integrations.slack.flush',
+        version: '0.1.0',
+        module: 'integrations-slack',
+        trigger: {
+          type: 'schedule',
+          schedule: { cron: '* * * * *', overlap: 'skip', silentWhenEmpty: true },
+        },
+        start: 'flush',
+        nodes: [
+          { id: 'flush', type: 'stage', kind: 'integrations.slack.flush_batch' },
+          { id: 'end', type: 'end', end: 'succeeded' },
+          { id: 'failed', type: 'end', end: 'failed' },
+        ],
+        edges: [{ from: 'flush', to: 'end', label: 'next' }],
+        defaultErrorEdge: { to: 'failed' },
+        budget: { maxSteps: 10, maxDurationMs: 300_000 },
+      },
       stages: [{ id: 'flush', kind: 'integrations.slack.flush_batch' }],
     });
-
-    if (options.batchWindowMs > 0) {
-      flushTimer = setInterval(() => {
-        const bucket = Math.floor(Date.now() / options.batchWindowMs);
-        void ctx.queue
-          .startWorkflow(
-            'integrations.slack.flush',
-            { window: bucket },
-            { idempotencyKey: `slack-flush:${bucket}`, trigger: 'schedule' },
-          )
-          .catch((err: Error) => {
-            ctx.logger.warn({ err: err.message }, 'slack batch flush dispatch failed');
-          });
-      }, options.batchWindowMs);
-      flushTimer.unref?.();
-    }
 
     registerActionRoutes(ctx, {
       provider: 'slack',

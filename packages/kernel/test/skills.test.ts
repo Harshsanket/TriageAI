@@ -4,10 +4,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  accountSkillIndex,
   loadSkillPack,
   parseSkillMarkdown,
+  promptTokens,
   readSkill,
   skillIndexForPrompt,
+  skillIndexTokens,
 } from '../src/skills/index.js';
 
 const roots: string[] = [];
@@ -47,5 +50,33 @@ describe('skills (phase 15)', () => {
     expect(skill.body).toBe('Body text.');
     expect(skill.resources).toContain('template.md');
     await expect(readSkill(root, 'missing')).rejects.toThrow(/not installed/);
+  });
+
+  it('accounts for the skill index deterministically (15.T5)', () => {
+    const index = [
+      {
+        name: 'handoff',
+        description: 'Write a concise structured handoff.',
+        source: 'test',
+        path: 'a',
+      },
+      { name: 'cite', description: 'Cite the policy name.', source: 'test', path: 'b' },
+    ];
+    const record = accountSkillIndex(index);
+    expect(record).toMatchObject({
+      skillCount: 2,
+      tokenMethod: 'chars/4',
+      skillIndexCharacters: skillIndexForPrompt(index).length,
+    });
+    expect(record.skillIndexTokens).toBe(Math.ceil(skillIndexForPrompt(index).length / 4));
+    expect(skillIndexTokens(index)).toBe(record.skillIndexTokens);
+    expect(promptTokens('abcd')).toBe(1);
+    expect(promptTokens('abcde')).toBe(2);
+    expect(accountSkillIndex([])).toMatchObject({
+      skillCount: 0,
+      skillIndexCharacters: 0,
+      skillIndexTokens: 0,
+    });
+    expect(accountSkillIndex(index)).toEqual(record);
   });
 });

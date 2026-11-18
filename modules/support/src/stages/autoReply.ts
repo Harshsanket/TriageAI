@@ -1,13 +1,14 @@
 /** Auto-reply path stages: policy, decision, deliver, clarify, escalate, dispatch. */
 import { ulid } from 'ulid';
 
-import { invalid, notFound } from '@triageai/kernel';
-import type { KernelContext } from '@triageai/kernel';
+import { autonomyForAction, invalid, notFound } from '@triageai/kernel';
+import type { AutonomyAction, KernelContext } from '@triageai/kernel';
 
 import { assertTransition } from '../state.js';
 import type { PolicyRow, AutoReplyRow } from '../rows.js';
 import type { SupportOptions } from '../options.js';
 import type { SupportServices } from '../services.js';
+import { messageDetection } from '../services.js';
 
 export function registerAutoReplyStages(
   ctx: KernelContext,
@@ -80,6 +81,7 @@ export function registerAutoReplyStages(
     execute: async (stage) => {
       const input = stage.input as {
         ticketId?: string;
+        category?: string | null;
         enabled?: boolean;
         fallbackPolicy?: string;
         sufficient?: boolean;
@@ -89,7 +91,7 @@ export function registerAutoReplyStages(
         answer?: string;
       };
       const reasons: string[] = [];
-      let action: 'none' | 'reply' | 'clarify' | 'escalate' = 'none';
+      let action: AutonomyAction = 'none';
 
       if (!input.enabled) {
         reasons.push('auto_reply_disabled');
@@ -126,14 +128,43 @@ export function registerAutoReplyStages(
         }
       }
 
+      const observedLevel = autonomyForAction(action);
+      if (action !== 'none') {
+        try {
+          await ctx.events.publish('support.autonomy.observed', {
+            flow: 'support.auto_reply',
+            category: input.category ?? null,
+            action,
+            observedLevel,
+            runId: stage.runId,
+            ticketId: input.ticketId ?? null,
+          });
+        } catch (err) {
+          ctx.logger.warn(
+            { runId: stage.runId, err: (err as Error).message },
+            'support.autonomy.observed publish failed',
+          );
+        }
+      }
+
       return {
-        output: { action, reasons, answerHash },
-        evidence: { kind: 'deterministic', action, reasons },
+        output: {
+          action,
+          reasons,
+          answerHash,
+          autonomy: {
+            flow: 'support.auto_reply',
+            category: input.category ?? null,
+            observedLevel,
+          },
+        },
+        evidence: { kind: 'deterministic', action, reasons, observedLevel },
         deterministic: {
           enabled: Boolean(input.enabled),
           sufficient: Boolean(input.sufficient),
           generated: Boolean(input.generated),
           validationPassed: input.passed ?? null,
+          autonomyLevel: observedLevel,
         },
         fallback:
           action === 'reply' || action === 'none'
@@ -189,9 +220,11 @@ export function registerAutoReplyStages(
         [autoReplyId, input.ticketId, stage.runId, input.answer, answerHash, input.citations ?? []],
       );
       const messageId = ulid();
+      const detection = messageDetection(input.answer);
       await ctx.database.query(
-        `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body, meta)
-         VALUES ($1, $2, 'system', 'system', $3, $4)`,
+        `INSERT INTO support_ticket_messages
+           (id, ticket_id, author_type, author, body, meta, sensitivity, tags)
+         VALUES ($1, $2, 'system', 'system', $3, $4, $5, $6)`,
         [
           messageId,
           input.ticketId,
@@ -204,6 +237,8 @@ export function registerAutoReplyStages(
             answerHash,
             customerVisible: true,
           },
+          detection.sensitivity,
+          detection.tags,
         ],
       );
       await ctx.database.query(

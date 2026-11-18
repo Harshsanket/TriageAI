@@ -5,10 +5,20 @@ import { ulid } from 'ulid';
 
 import { notFound } from '@triageai/kernel';
 import type { KernelContext } from '@triageai/kernel';
+import { detect } from '@triageai/rag';
 
 import { assertTransition, canTransition } from './state.js';
 import type { TicketStatus } from './state.js';
 import type { TicketRow } from './rows.js';
+
+/** 18.T15: deterministic write-time sensitivity/tags for ticket messages. */
+export function messageDetection(text: string): {
+  sensitivity: 'public' | 'internal' | 'restricted' | 'secret';
+  tags: string[];
+} {
+  const detection = detect(text);
+  return { sensitivity: detection.sensitivity, tags: detection.tags };
+}
 
 export function createSupportServices(ctx: KernelContext) {
   const hashAnswer = (answer: string): string =>
@@ -97,10 +107,12 @@ export function createSupportServices(ctx: KernelContext) {
       [ulid(), id, { from: ticket.status, to, note: note ?? null }, actor],
     );
     if (note) {
+      const detection = messageDetection(note);
       await ctx.database.query(
-        `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body)
-         VALUES ($1, $2, 'agent', $3, $4)`,
-        [ulid(), id, actor, note],
+        `INSERT INTO support_ticket_messages
+           (id, ticket_id, author_type, author, body, sensitivity, tags)
+         VALUES ($1, $2, 'agent', $3, $4, $5, $6)`,
+        [ulid(), id, actor, note, detection.sensitivity, detection.tags],
       );
     }
     try {

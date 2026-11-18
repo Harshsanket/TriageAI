@@ -1,18 +1,23 @@
 /**
  * The single model-call wrapper (Phase 18.9, ADR-0045).
  *
- * Every call goes through: limits, timeout, structured output validation, one
- * repair attempt, retryable-only retries, an optional fallback model, degraded
- * quality checks and a complete ModelCallTrace. Model text is never executed.
+ * Every call goes through: routing, the send gate, trust-level prompt
+ * assembly, limits, timeout, structured output validation, one repair attempt,
+ * retryable-only retries, an optional fallback model, degraded quality checks
+ * and a complete ModelCallTrace. Model text is never executed.
  */
 import { createHash } from 'node:crypto';
 
 import { ulid } from 'ulid';
 import type { ZodType } from 'zod';
 
+import type { ModelUse, Sensitivity } from '../data/classes.js';
+import { classifySend } from '../data/sendGate.js';
 import { AppError, timeout as timeoutError } from '../errors.js';
 import type { ErrorCategory } from '../errors.js';
 import type { ChatModel, ChatMessage, ChatRequest, ChatResponse, KernelLogger } from '../types.js';
+import { assemblePrompt, detectHijack, sanitizeModelText } from './prompt.js';
+import type { PromptPart } from './prompt.js';
 
 export interface ModelTask {
   id: string;
@@ -89,6 +94,8 @@ export interface CallModelContext {
   agentId?: string;
   /** Skill names/versions loaded into this call (ADR-0060). */
   skills?: Array<{ name: string; version: number }>;
+  /** Highest sensitivity the calling agent may receive; send-gate ceiling (18.8). */
+  egressClass?: Sensitivity;
 }
 
 export interface CallModelRequest {
@@ -105,6 +112,12 @@ export interface CallModelRequest {
   language?: string;
   /** Context-budget accounting copied onto the trace. */
   context?: ModelCallTrace['context'];
+  /** Trust-level prompt parts (18.10); when set they replace `messages`. */
+  parts?: PromptPart[];
+  /** Declared structured-choice labels; anything else is rejected as a hijack. */
+  choiceLabels?: string[];
+  /** Send-gate input (18.8): the class of what this request would carry. */
+  sendGate?: { sensitivity: Sensitivity; tags?: string[]; modelUse?: ModelUse };
 }
 
 export interface CallModelResult {
@@ -119,6 +132,12 @@ export interface CallModelResult {
 export interface CallModelDeps {
   chatModel: ChatModel;
   fallbackModel?: ChatModel;
+  /** Cost-aware routing (19.2): picks the models and names the reason. */
+  resolveModel?: (args: { task: string; stepName: string }) => {
+    chatModel: ChatModel;
+    fallbackModel?: ChatModel;
+    reason: string;
+  };
   logger?: KernelLogger;
   onTrace?: (trace: ModelCallTrace) => void | Promise<void>;
   /** Price estimate hook (Phase 19 price table); default 0. */
@@ -157,6 +176,10 @@ function promptHash(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
+function promptTextOf(messages: ChatMessage[]): string {
+  return messages.map((message) => `${message.role}: ${message.content}`).join('\n\n');
+}
+
 function parseStructured(
   text: string,
 ): { ok: true; value: unknown } | { ok: false; error: string } {
@@ -169,6 +192,13 @@ function parseStructured(
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
+}
+
+/** A structured choice outside the declared labels is a hijack attempt (18.10). */
+function isUndeclaredChoice(parsed: unknown, labels: string[]): boolean {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const choice = (parsed as Record<string, unknown>).choice;
+  return typeof choice === 'string' && detectHijack(choice, labels);
 }
 
 /** Deterministic degraded-output checks (18.9 step 7). */
@@ -233,27 +263,140 @@ function isRetryable(error: unknown): boolean {
   return error instanceof AppError && error.retryable;
 }
 
+/** Trace for a call that produced no successful model response (blocked or exhausted). */
+function failureTrace(args: {
+  context: CallModelContext;
+  task: ModelTask;
+  description: ReturnType<ChatModel['describe']>;
+  routingReason: string;
+  promptHash: string;
+  latencyMs: number;
+  retries: number;
+  fallbackUsed: ModelCallTrace['fallbackUsed'];
+  schemaValidFirstTry: boolean;
+  errorCategory: ErrorCategory;
+  errorCode: string;
+  securityEvents: string[];
+}): ModelCallTrace {
+  return {
+    traceId: ulid(),
+    runId: args.context.runId,
+    workflowId: args.context.workflowId,
+    workflowVersion: args.context.workflowVersion ?? '0',
+    stepName: args.context.stepName,
+    task: args.task.id,
+    provider: args.description.provider,
+    modelName: args.description.model,
+    modelVersion: args.description.model,
+    routingReason: args.routingReason,
+    promptTemplateId: args.task.promptTemplateId,
+    promptVersion: args.task.promptVersion,
+    promptHash: args.promptHash,
+    toolCalls: [],
+    latencyMs: args.latencyMs,
+    tokensIn: 0,
+    tokensOut: 0,
+    tokensCached: 0,
+    estCost: 0,
+    currency: 'USD',
+    retries: args.retries,
+    fallbackUsed: args.fallbackUsed,
+    errorCategory: args.errorCategory,
+    errorCode: args.errorCode,
+    schemaValidFirstTry: args.schemaValidFirstTry,
+    qualityChecks: [],
+    securityEvents: args.securityEvents,
+    at: new Date().toISOString(),
+  };
+}
+
 export async function callModel(
   deps: CallModelDeps,
   task: ModelTask,
   context: CallModelContext,
   request: CallModelRequest,
 ): Promise<CallModelResult> {
-  const promptText = request.messages
-    .map((message) => `${message.role}: ${message.content}`)
-    .join('\n\n');
+  const securityEvents: string[] = [];
   const started = Date.now();
   let retries = 0;
   let fallbackUsed: ModelCallTrace['fallbackUsed'] = 'none';
   let lastError: unknown;
   let model = deps.chatModel;
+  let fallbackModel = deps.fallbackModel;
   let modelReason = 'configured_primary';
   let schemaValidFirstTry = true;
+  let promptText = promptTextOf(request.messages);
+
+  // 1. Routing (19.2): the resolver decides which models serve this call.
+  if (deps.resolveModel) {
+    const resolved = deps.resolveModel({ task: task.id, stepName: context.stepName });
+    model = resolved.chatModel;
+    fallbackModel = resolved.fallbackModel;
+    modelReason = resolved.reason;
+  }
+  const primaryModel = model;
+
+  // 2. Send gate (18.8): one decision before anything reaches a model.
+  if (request.sendGate) {
+    const gate = classifySend({
+      sensitivity: request.sendGate.sensitivity,
+      modelUse: request.sendGate.modelUse,
+      tags: request.sendGate.tags,
+      hosted: primaryModel.describe().hosted,
+      egressClass: context.egressClass,
+    });
+    if (gate.decision === 'redacted') {
+      securityEvents.push(`send_gate:redacted:${gate.reason}`);
+    } else if (gate.decision === 'sent') {
+      securityEvents.push('send_gate:allowed');
+    } else {
+      securityEvents.push(`send_gate:withheld:${gate.reason}`);
+      const trace = failureTrace({
+        context,
+        task,
+        description: primaryModel.describe(),
+        routingReason: modelReason,
+        promptHash: promptHash(promptText),
+        latencyMs: Date.now() - started,
+        retries: 0,
+        fallbackUsed: 'none',
+        schemaValidFirstTry: true,
+        errorCategory: 'policy_blocked',
+        errorCode: 'model.SEND_GATE_BLOCKED',
+        securityEvents: [...securityEvents],
+      });
+      void deps.onTrace?.(trace);
+      throw new AppError(
+        'model.SEND_GATE_BLOCKED',
+        `send gate withheld the request (${gate.reason})`,
+        trace,
+        403,
+        { category: 'policy_blocked', retryable: false },
+      );
+    }
+  }
+
+  // 3. Trust-level prompt assembly (18.10): parts replace the raw messages.
+  let messages: ChatMessage[] = request.messages;
+  if (request.parts) {
+    try {
+      messages = assemblePrompt(request.parts);
+    } catch (err) {
+      throw new AppError(
+        'model.TRUST_BOUNDARY_INVALID',
+        `prompt assembly rejected the request: ${(err as Error).message}`,
+        undefined,
+        400,
+        { category: 'validation', retryable: false, cause: err },
+      );
+    }
+  }
+  promptText = promptTextOf(messages);
 
   for (let modelAttempt = 0; modelAttempt < 2; modelAttempt += 1) {
     if (modelAttempt === 1) {
-      if (!deps.fallbackModel) break;
-      model = deps.fallbackModel;
+      if (!fallbackModel) break;
+      model = fallbackModel;
       modelReason = 'primary_failed_fallback_model';
       fallbackUsed = 'fallback_model';
     }
@@ -273,7 +416,7 @@ export async function callModel(
         });
         let response = await Promise.race([
           model.chat({
-            messages: request.messages,
+            messages,
             tools: request.tools,
             toolChoice: request.toolChoice,
             maxTokens: task.maxOutputTokens,
@@ -296,7 +439,7 @@ export async function callModel(
               : first.error;
             response = await model.chat({
               messages: [
-                ...request.messages,
+                ...messages,
                 { role: 'assistant', content: response.message.content },
                 {
                   role: 'user',
@@ -328,6 +471,8 @@ export async function callModel(
         }
         return finish(response, undefined);
       } catch (err) {
+        // Policy decisions are final: never retried, never wrapped (18.8/18.10).
+        if (err instanceof AppError && err.category === 'policy_blocked') throw err;
         lastError = err;
         if (!isRetryable(err) || attempt >= MAX_PROVIDER_ATTEMPTS) break;
         await sleep(Math.min(2_000, 100 * 2 ** (attempt - 1)), request.signal);
@@ -339,6 +484,19 @@ export async function callModel(
     function finish(response: ChatResponse, parsed: unknown): CallModelResult {
       const description = model.describe();
       const latencyMs = Date.now() - started;
+      // Rendering policy (18.10): model text is sanitised before it leaves.
+      const sanitized = sanitizeModelText(response.message.content);
+      if (sanitized !== response.message.content) {
+        response.message.content = sanitized;
+        securityEvents.push('output_sanitized');
+      }
+      // Hijack detection (18.10): a structured choice outside the declared labels.
+      const hijacked =
+        request.structured === true &&
+        task.outputSchema !== undefined &&
+        request.choiceLabels !== undefined &&
+        isUndeclaredChoice(parsed, request.choiceLabels);
+      if (hijacked) securityEvents.push('hijack:undeclared_choice');
       const checks = qualityChecks(response, {
         expectAnswer: request.expectAnswer,
         language: request.language,
@@ -387,7 +545,10 @@ export async function callModel(
         responseFinishReason: response.stopReason,
         schemaValidFirstTry,
         qualityChecks: checks,
-        securityEvents: [],
+        securityEvents: [...securityEvents],
+        ...(hijacked
+          ? { errorCategory: 'policy_blocked' as const, errorCode: 'model.UNDECLARED_CHOICE' }
+          : {}),
         ...(context.skills && context.skills.length > 0 ? { skills: context.skills } : {}),
         ...(request.context ? { context: request.context } : {}),
         at: new Date().toISOString(),
@@ -399,41 +560,33 @@ export async function callModel(
         );
       }
       void deps.onTrace?.(trace);
+      if (hijacked) {
+        throw new AppError(
+          'model.UNDECLARED_CHOICE',
+          'model returned a structured choice outside the declared labels',
+          trace,
+          403,
+          { category: 'policy_blocked', retryable: false },
+        );
+      }
       return { response, trace, parsed, retries, fallbackUsed, qualityChecks: checks };
     }
   }
 
-  const description = deps.chatModel.describe();
-  const trace: ModelCallTrace = {
-    traceId: ulid(),
-    runId: context.runId,
-    workflowId: context.workflowId,
-    workflowVersion: context.workflowVersion ?? '0',
-    stepName: context.stepName,
-    task: task.id,
-    provider: description.provider,
-    modelName: description.model,
-    modelVersion: description.model,
+  const trace = failureTrace({
+    context,
+    task,
+    description: primaryModel.describe(),
     routingReason: modelReason,
-    promptTemplateId: task.promptTemplateId,
-    promptVersion: task.promptVersion,
     promptHash: promptHash(promptText),
-    toolCalls: [],
     latencyMs: Date.now() - started,
-    tokensIn: 0,
-    tokensOut: 0,
-    tokensCached: 0,
-    estCost: 0,
-    currency: 'USD',
     retries,
     fallbackUsed,
+    schemaValidFirstTry,
     errorCategory: lastError instanceof AppError ? lastError.category : 'dependency_unavailable',
     errorCode: lastError instanceof AppError ? lastError.code : 'model.CALL_FAILED',
-    schemaValidFirstTry,
-    qualityChecks: [],
-    securityEvents: [],
-    at: new Date().toISOString(),
-  };
+    securityEvents: [...securityEvents],
+  });
   void deps.onTrace?.(trace);
   throw new ModelCallError(trace, lastError);
 }

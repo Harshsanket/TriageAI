@@ -32,6 +32,7 @@ import {
 import { presetModels, searchHuggingFace } from './catalog.js';
 import { probeHardware } from './hardware.js';
 import { agentDefaults } from './agents.js';
+import { importDocsInternal } from './docsInternal.js';
 import { mergeInterfacesOverlay, planSetup, SECRET_ENV } from './plan.js';
 import { SecretStore } from './secrets.js';
 
@@ -569,6 +570,16 @@ export function registerSetupRoutes(
   });
 
   app.post('/api/v1/setup/plan', async (request) => plan(SetupAnswersSchema.parse(request.body)));
+
+  // 17.T4: read a local docs-internal checkout and reproduce its setup
+  // interview/instructions/principles for the wizard to prefill.
+  app.post('/api/v1/setup/docs-internal', async (request) => {
+    const body = z
+      .object({ root: z.string().trim().min(1).max(500) })
+      .strict()
+      .parse(request.body ?? {});
+    return importDocsInternal(body.root);
+  });
 
   app.post('/api/v1/setup/apply', async (request, reply) => {
     const answers = SetupAnswersSchema.parse(request.body);

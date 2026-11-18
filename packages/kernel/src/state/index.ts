@@ -16,6 +16,22 @@ export interface SharedStateEntry {
   updatedAt: string;
 }
 
+export interface SharedStateExport {
+  version: 1;
+  scopeType: ScopeType;
+  scopeId: string;
+  exportedAt: string;
+  entries: SharedStateEntry[];
+}
+
+const SENSITIVITY_ORDER = ['public', 'internal', 'restricted', 'secret'] as const;
+
+function stricterSensitivity(a: string, b: string): string {
+  const left = SENSITIVITY_ORDER.indexOf(a as (typeof SENSITIVITY_ORDER)[number]);
+  const right = SENSITIVITY_ORDER.indexOf(b as (typeof SENSITIVITY_ORDER)[number]);
+  return SENSITIVITY_ORDER[Math.max(left < 0 ? 1 : left, right < 0 ? 1 : right)]!;
+}
+
 export class SharedStateStore {
   constructor(private readonly database: Database) {}
 
@@ -51,10 +67,16 @@ export class SharedStateStore {
       throw conflict('state.VERSION_CONFLICT');
     }
     const nextVersion = (current?.version ?? 0) + 1;
+    // postgres-js serializes objects for jsonb; primitives need explicit JSON
+    // text so a boolean/string does not fail the jsonb cast.
+    const jsonValue =
+      typeof args.value === 'object' && args.value !== null
+        ? args.value
+        : JSON.stringify(args.value);
     const rows = await this.database.query<Record<string, unknown>>(
       `INSERT INTO shared_state
          (scope_type, scope_id, key, value, version, sensitivity, updated_by_run, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, now())
        ON CONFLICT (scope_type, scope_id, key) DO UPDATE
          SET value = EXCLUDED.value, version = EXCLUDED.version,
              sensitivity = EXCLUDED.sensitivity, updated_by_run = EXCLUDED.updated_by_run,
@@ -64,7 +86,7 @@ export class SharedStateStore {
         args.scopeType,
         args.scopeId,
         args.key,
-        args.value,
+        jsonValue,
         nextVersion,
         args.sensitivity ?? current?.sensitivity ?? 'internal',
         args.runId ?? null,
@@ -72,19 +94,81 @@ export class SharedStateStore {
     );
     await this.database.query(
       `INSERT INTO state_events (id, scope_type, scope_id, key, version, value, run_id, agent_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
       [
         ulid(),
         args.scopeType,
         args.scopeId,
         args.key,
         nextVersion,
-        args.value,
+        jsonValue,
         args.runId ?? null,
         args.agentId ?? null,
       ],
     );
     return rowToState(rows[0] as Record<string, unknown>);
+  }
+
+  /** Export one scope for backup/transfer (18.T3); secret values are withheld. */
+  async exportScope(scopeType: ScopeType, scopeId: string): Promise<SharedStateExport> {
+    const entries = (await this.list(scopeType, scopeId)).map((entry) =>
+      entry.sensitivity === 'secret' ? { ...entry, value: '[secret withheld]' } : entry,
+    );
+    return {
+      version: 1,
+      scopeType,
+      scopeId,
+      exportedAt: new Date().toISOString(),
+      entries,
+    };
+  }
+
+  /**
+   * Import a scope. `merge` upserts the payload keys; `replace` also removes
+   * keys absent from the payload. Sensitivity never gets looser than the
+   * existing row. Every write goes through `set`, so `state_events` records it.
+   */
+  async importScope(
+    payload: SharedStateExport,
+    options: { mode?: 'merge' | 'replace'; runId?: string; agentId?: string } = {},
+  ): Promise<{ imported: number; removed: number }> {
+    if (payload.version !== 1) throw conflict('state.EXPORT_VERSION_UNSUPPORTED');
+    if (
+      !['org', 'workspace', 'team', 'agent', 'run'].includes(payload.scopeType) ||
+      payload.scopeId.length === 0
+    ) {
+      throw conflict('state.EXPORT_INVALID');
+    }
+    const existing = await this.list(payload.scopeType, payload.scopeId);
+    const existingByKey = new Map(existing.map((entry) => [entry.key, entry]));
+    let removed = 0;
+    if (options.mode === 'replace') {
+      const keys = payload.entries.map((entry) => entry.key);
+      const rows = await this.database.query<{ key: string }>(
+        `DELETE FROM shared_state
+          WHERE scope_type = $1 AND scope_id = $2 AND NOT (key = ANY($3))
+          RETURNING key`,
+        [payload.scopeType, payload.scopeId, keys],
+      );
+      removed = rows.length;
+    }
+    let imported = 0;
+    for (const entry of payload.entries) {
+      const current = existingByKey.get(entry.key);
+      await this.set({
+        scopeType: payload.scopeType,
+        scopeId: payload.scopeId,
+        key: entry.key,
+        value: entry.value,
+        sensitivity: current
+          ? stricterSensitivity(current.sensitivity, entry.sensitivity)
+          : entry.sensitivity,
+        ...(options.runId ? { runId: options.runId } : {}),
+        ...(options.agentId ? { agentId: options.agentId } : {}),
+      });
+      imported += 1;
+    }
+    return { imported, removed };
   }
 }
 

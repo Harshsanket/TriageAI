@@ -23,10 +23,12 @@
     "eval:fixtures": "pnpm --filter @triageai/api exec tsx evals/exportFixtures.eval.ts",
     "seed:demo": "bash scripts/seed-demo.sh",
     "docs:workflow": "pnpm --filter @triageai/api exec tsx ../../scripts/docs-workflow.ts",
-    "docs:workflow:check": "pnpm --filter @triageai/api exec tsx ../../scripts/docs-workflow.ts --check"
+    "docs:workflow:check": "pnpm --filter @triageai/api exec tsx ../../scripts/docs-workflow.ts --check",
+    "pack:first-party": "pnpm --filter @triageai/api exec tsx ../../scripts/pack-first-party.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^16.5.0",

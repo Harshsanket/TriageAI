@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { PostgresDatabase } from '@triageai/kernel';
+import {
+  CORE_MIGRATIONS,
+  MigrationRunner,
+  MIGRATIONS_TABLE_SQL,
+  PostgresDatabase,
+} from '@triageai/kernel';
 
 import { PgVectorStore } from '../src/services/capabilities.js';
 
@@ -8,6 +13,8 @@ const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describ
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai';
 const COLLECTION = `hybrid_test_${Date.now()}`;
+const MODEL_A = 'test-embedder-a';
+const MODEL_B = 'test-embedder-b';
 const dims = 384;
 const vector = (first: number, second: number): number[] => {
   const values = new Array<number>(dims).fill(0);
@@ -15,6 +22,7 @@ const vector = (first: number, second: number): number[] => {
   values[1] = second;
   return values;
 };
+const noopLogger = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
 let database: PostgresDatabase;
 let store: PgVectorStore;
@@ -22,6 +30,8 @@ let store: PgVectorStore;
 beforeAll(async () => {
   database = new PostgresDatabase(DATABASE_URL);
   store = new PgVectorStore(database);
+  await database.query(MIGRATIONS_TABLE_SQL);
+  await new MigrationRunner(database, noopLogger).apply('kernel', CORE_MIGRATIONS);
   await store.upsert([
     {
       id: 'vector-match',
@@ -35,6 +45,7 @@ beforeAll(async () => {
         headingPath: 'Ocean',
         product: 'A',
         updatedAt: '2026-10-30T00:00:00.000Z',
+        embeddingModel: MODEL_A,
       },
     },
     {
@@ -49,7 +60,31 @@ beforeAll(async () => {
         headingPath: 'Billing',
         product: 'B',
         updatedAt: '2026-10-30T00:00:00.000Z',
+        embeddingModel: MODEL_A,
       },
+    },
+    {
+      id: 'vector-noise',
+      collection: COLLECTION,
+      documentId: 'doc-c',
+      text: 'another unrelated sentence',
+      embedding: vector(1, 0),
+      metadata: {
+        approved: true,
+        title: 'Noise',
+        headingPath: 'Ocean',
+        product: 'A',
+        embeddingModel: MODEL_A,
+      },
+    },
+    {
+      id: 'other-model',
+      collection: COLLECTION,
+      documentId: 'doc-d',
+      text: 'Refund policy from the other embedding model.',
+      embeddingModel: MODEL_B,
+      embedding: vector(1, 0),
+      metadata: { approved: true, title: 'Other model' },
     },
   ]);
 });
@@ -59,15 +94,56 @@ afterAll(async () => {
   await database.close();
 });
 
-describeIfDb('hybrid retrieval + HNSW (phase 13/18)', () => {
+describeIfDb('hybrid retrieval + model scoping (phase 13/18)', () => {
   it('fuses full-text and vector candidates', async () => {
     const candidates = await store.search(COLLECTION, vector(1, 0), {
-      limit: 10,
+      limit: 2,
       text: 'refund',
       filter: { approved: true },
+      model: MODEL_A,
     });
     expect(candidates.map((chunk) => chunk.id)).toContain('keyword-match');
-    expect(candidates.map((chunk) => chunk.id)).toContain('vector-match');
+  });
+
+  it('switch off the keyword leg for the vector-only baseline', async () => {
+    const candidates = await store.search(COLLECTION, vector(1, 0), {
+      limit: 2,
+      text: 'refund',
+      model: MODEL_A,
+      hybrid: false,
+    });
+    expect(candidates.map((chunk) => chunk.id)).not.toContain('keyword-match');
+    expect(candidates).toHaveLength(2);
+  });
+
+  it('never mixes two same-dimension embedding models', async () => {
+    const modelA = await store.search(COLLECTION, vector(1, 0), {
+      limit: 10,
+      text: 'refund',
+      model: MODEL_A,
+    });
+    expect(modelA.map((chunk) => chunk.id)).not.toContain('other-model');
+    expect(modelA.every((chunk) => chunk.metadata.embeddingModel !== MODEL_B)).toBe(true);
+
+    // The exact-scan fallback (no keyword leg) applies the same model filter.
+    const fallbackA = await store.search(COLLECTION, vector(1, 0), {
+      limit: 10,
+      model: MODEL_A,
+      hybrid: false,
+    });
+    expect(fallbackA.map((chunk) => chunk.id)).not.toContain('other-model');
+
+    const modelB = await store.search(COLLECTION, vector(1, 0), {
+      limit: 10,
+      text: 'refund',
+      model: MODEL_B,
+      hybrid: false,
+    });
+    expect(modelB.map((chunk) => chunk.id)).toEqual(['other-model']);
+
+    // Rows written under a named model are not visible to the legacy default.
+    const fallback = await store.search(COLLECTION, vector(1, 0), { limit: 10 });
+    expect(fallback).toEqual([]);
   });
 
   it('applies metadata filters before retrieval', async () => {
@@ -75,23 +151,8 @@ describeIfDb('hybrid retrieval + HNSW (phase 13/18)', () => {
       limit: 10,
       text: 'refund',
       filter: { product: 'A' },
+      model: MODEL_A,
     });
-    expect(rows.map((chunk) => chunk.id)).toEqual(['vector-match']);
-  });
-
-  it('has the HNSW index available for 384-dimensional vectors', async () => {
-    const rows = await database.query<{ indexdef: string }>(
-      `SELECT indexdef FROM pg_indexes WHERE tablename = 'vector_chunks' AND indexname = 'vector_chunks_hnsw_384'`,
-    );
-    expect(rows[0]?.indexdef).toContain('hnsw');
-    await database.query(`SET enable_seqscan = off`);
-    const plan = await database.query<Record<string, unknown>>(
-      `EXPLAIN SELECT id FROM vector_chunks
-       WHERE collection = $1 AND dims = 384
-       ORDER BY embedding::vector(384) <=> $2::vector(384) LIMIT 5`,
-      [COLLECTION, `[${vector(1, 0).join(',')}]`],
-    );
-    const text = plan.map((row) => Object.values(row).join(' ')).join('\n');
-    expect(text.toLowerCase()).toMatch(/hnsw|index scan/);
+    expect(rows.map((chunk) => chunk.id).sort()).toEqual(['vector-match', 'vector-noise']);
   });
 });

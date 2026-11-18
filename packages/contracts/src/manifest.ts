@@ -83,6 +83,7 @@ export const RunStatusSchema = z.enum([
   'CANCELLED_PENDING',
   'CANCELLED',
   'AWAITING',
+  'PAUSED',
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 

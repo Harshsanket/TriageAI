@@ -29,6 +29,8 @@ export function exportJsonSchemas(): Record<string, unknown> {
     SystemManifest: z.toJSONSchema(dto.SystemManifestSchema),
     ModuleInfo: z.toJSONSchema(dto.ModuleInfoSchema),
     SystemDashboard: z.toJSONSchema(dashboard.SystemDashboardSchema),
+    TrajectoryMetrics: z.toJSONSchema(dashboard.TrajectoryMetricsSchema),
+    DashboardTrajectory: z.toJSONSchema(dashboard.DashboardTrajectorySchema),
     ErrorCategory: z.toJSONSchema(errors.ErrorCategorySchema),
     ErrorEnvelope: z.toJSONSchema(errors.ErrorEnvelopeSchema),
     StructuredError: z.toJSONSchema(errors.StructuredErrorSchema),

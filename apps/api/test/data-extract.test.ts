@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { Kernel } from '@triageai/kernel';
+import type { ChatModel, Kernel } from '@triageai/kernel';
 import { PostgresDatabase } from '@triageai/kernel';
 
 import { buildApp } from '../src/app.js';
@@ -13,6 +13,30 @@ const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describ
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai';
 const TITLE = `Phase 20 grocery ${Date.now()}`;
+
+const fakeChat: ChatModel = {
+  describe: () => ({
+    provider: 'fake',
+    model: 'fake-chat',
+    hosted: false,
+    contextWindow: 8192,
+    maxOutput: 512,
+    supportsTools: false,
+    supportsStreaming: false,
+  }),
+  chat: async () => ({
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({
+        assignments: [{ description: 'ACME WIDGETS', category: 'Shopping' }],
+      }),
+    },
+    toolCalls: [],
+    usage: { inputTokens: 10, outputTokens: 10 },
+    stopReason: 'end',
+    modelVersion: 'fake-chat',
+  }),
+};
 
 const CSV = [
   'date,description,amount,direction,balance,account',
@@ -74,6 +98,7 @@ describeIfDb('structured extraction (phase 20)', () => {
       configPath,
       setup: false,
       authMode: 'disabled',
+      capabilities: { chatModel: fakeChat } as never,
     })) as FastifyInstance & { kernel?: Kernel };
   }, 60_000);
 
@@ -216,11 +241,84 @@ describeIfDb('structured extraction (phase 20)', () => {
     expect(body.pinnedDatasets.map((dataset) => dataset.id)).toContain(readyId);
   });
 
+  it('proposes categories for unknown merchants and marks them suggested (20.T6)', async () => {
+    const title = `${TITLE} suggestions`;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/data-extract/datasets',
+      payload: {
+        title,
+        content: [
+          'date,description,amount,direction,balance,account',
+          '2026-09-01,ACME WIDGETS,10.00,out,990.00,1234567890',
+        ].join('\n'),
+        mediaType: 'text/csv',
+        confirmMapping: true,
+        openingBalance: 1000,
+        closingBalance: 990,
+        sourceLabel: 'fixture',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const dataset = (res.json() as { dataset: { id: string } }).dataset;
+    const rows = await database.query<{ category: string; category_source: string }>(
+      `SELECT category, category_source FROM mod_data_extract.extracted_rows WHERE dataset_id = $1`,
+      [dataset.id],
+    );
+    expect(rows[0]).toMatchObject({ category: 'Shopping', category_source: 'suggested' });
+    await database.query(`DELETE FROM mod_data_extract.extracted_datasets WHERE id = $1`, [
+      dataset.id,
+    ]);
+  });
+
+  it('tags rows that contain PII at write time (18.T15)', async () => {
+    const title = `${TITLE} tagged`;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/data-extract/datasets',
+      payload: {
+        title,
+        content: [
+          'date,description,amount,direction,balance,account',
+          '2026-09-01,INVOICE alice@example.com,10.00,out,990.00,1234567890',
+        ].join('\n'),
+        mediaType: 'text/csv',
+        confirmMapping: true,
+        openingBalance: 1000,
+        closingBalance: 990,
+        sourceLabel: 'fixture',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const dataset = (res.json() as { dataset: { id: string } }).dataset;
+    const rows = await database.query<{ sensitivity: string; tags: string[] }>(
+      `SELECT sensitivity, tags FROM mod_data_extract.extracted_rows WHERE dataset_id = $1`,
+      [dataset.id],
+    );
+    expect(rows[0]?.sensitivity).toBe('restricted');
+    expect(rows[0]?.tags).toContain('pii:email');
+    await database.query(`DELETE FROM mod_data_extract.extracted_datasets WHERE id = $1`, [
+      dataset.id,
+    ]);
+  });
+
   it('keeps a statement that does not reconcile out of charts', async () => {
     const tampered = await importDataset(app, `${TITLE} tampered`, 2800, true);
     reviewId = tampered.dataset.id;
     expect(tampered.dataset.status).toBe('needs_review');
     expect(tampered.dataset.reviewReason).toMatch(/does not reconcile/);
+
+    const confirmed = await app.inject({
+      method: 'POST',
+      url: `/api/v1/data-extract/datasets/${tampered.dataset.id}/confirm`,
+      payload: {},
+    });
+    expect(confirmed.statusCode).toBe(409);
+    const after = await app.inject({
+      method: 'GET',
+      url: `/api/v1/data-extract/datasets/${tampered.dataset.id}`,
+    });
+    expect((after.json() as { status: string }).status).toBe('needs_review');
 
     const dashboard = await app.inject({ method: 'GET', url: '/api/v1/system/dashboard' });
     const body = dashboard.json() as { pinnedDatasets: Array<{ id: string }> };

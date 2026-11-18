@@ -34,6 +34,24 @@ describe('scope and intent gate (phase 18.9)', () => {
     });
   });
 
+  it('matches keywords as whole words, not substrings inside other words', async () => {
+    const shortScope = {
+      id: 'short',
+      intents: { greeting: { keywords: ['hi'] } },
+      refusalMessage: 'out of scope',
+    };
+    expect(await gateIntent({ scope: shortScope, text: 'hi there' })).toMatchObject({
+      action: 'allow',
+      intent: 'greeting',
+    });
+    // "this" contains "hi" as a substring; it must not satisfy the rule.
+    expect(await gateIntent({ scope: shortScope, text: 'send this to billing' })).toMatchObject({
+      action: 'clarify',
+      reason: 'rules_undecided_no_model',
+      modelCalls: 0,
+    });
+  });
+
   it('asks for clarification when rules are ambiguous and no model exists', async () => {
     const decision = await gateIntent({ scope, text: 'charged twice and cannot sign in' });
     expect(decision).toMatchObject({ action: 'clarify', modelCalls: 0 });

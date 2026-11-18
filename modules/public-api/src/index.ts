@@ -7,7 +7,15 @@ import { createHash, randomBytes } from 'node:crypto';
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
-import { AppError, invalid, notFound, rateLimited } from '@triageai/kernel';
+import {
+  AppError,
+  classifySend,
+  invalid,
+  notFound,
+  policyBlocked,
+  rateLimited,
+} from '@triageai/kernel';
+import { detect, maskPii } from '@triageai/rag';
 import type { TriageModule } from '@triageai/kernel';
 
 const configSchema = z
@@ -77,7 +85,7 @@ const MIGRATIONS = [
 const hashKey = (key: string): string => createHash('sha256').update(key).digest('hex');
 
 /** Scopes a public API key may hold. External-agent keys are a separate class. */
-const KEY_SCOPES = ['chat', 'embeddings', 'kb'] as const;
+const KEY_SCOPES = ['chat', 'embeddings', 'kb', 'tickets'] as const;
 type KeyScope = (typeof KEY_SCOPES)[number];
 
 function requireScope(key: ApiKey, scope: KeyScope): void {
@@ -137,6 +145,7 @@ export const publicApiModule: TriageModule = {
     storage: { schema: true },
     routes: [
       { method: 'GET', path: '/api/v1/public-api/external-agents' },
+      { method: 'GET', path: '/api/v1/public-api/external-agents/activity' },
       { method: 'GET', path: '/api/v1/public-api/keys' },
       { method: 'GET', path: '/v1/external-agents/handoffs' },
       { method: 'GET', path: '/v1/a2a/tasks/:id' },
@@ -388,6 +397,55 @@ export const publicApiModule: TriageModule = {
     });
 
     ctx.registerRoute({
+      method: 'GET',
+      url: '/api/v1/public-api/external-agents/activity',
+      handler: async () => {
+        const agents = await ctx.database.query<{
+          id: string;
+          name: string;
+          enabled: boolean;
+          created_at: string;
+        }>(
+          `SELECT id, name, enabled, created_at FROM public_external_agents ORDER BY created_at DESC`,
+        );
+        const handoffs = await ctx.database.query<Record<string, unknown>>(
+          `SELECT id, agent_id, from_agent_id, goal, status, handoff, created_at, fetched_at
+           FROM public_external_handoffs ORDER BY created_at DESC LIMIT 100`,
+        );
+        const steps = await ctx.database.query<Record<string, unknown>>(
+          `SELECT id, agent_id, run_id, step, payload, at
+           FROM public_external_steps ORDER BY at DESC LIMIT 100`,
+        );
+        return {
+          agents: agents.map((row) => ({
+            id: row.id,
+            name: row.name,
+            enabled: row.enabled,
+            createdAt: new Date(row.created_at).toISOString(),
+          })),
+          handoffs: handoffs.map((row) => ({
+            id: row.id,
+            agentId: row.agent_id,
+            fromAgentId: row.from_agent_id,
+            goal: row.goal,
+            status: row.status,
+            handoff: row.handoff,
+            createdAt: row.created_at,
+            fetchedAt: row.fetched_at ?? null,
+          })),
+          steps: steps.map((row) => ({
+            id: row.id,
+            agentId: row.agent_id,
+            runId: row.run_id ?? null,
+            step: row.step,
+            payload: row.payload,
+            at: row.at,
+          })),
+        };
+      },
+    });
+
+    ctx.registerRoute({
       method: 'POST',
       url: '/api/v1/public-api/external-agents/:id/handoffs',
       handler: async (request) => {
@@ -399,11 +457,28 @@ export const publicApiModule: TriageModule = {
           })
           .strict()
           .parse(request.body ?? {});
+        // 18.T16: handoffs leave for an external agent, so they pass the same
+        // send gate. Secrets are refused; PII is masked before storage.
+        const handoffText = JSON.stringify(body.handoff);
+        const detection = detect(handoffText);
+        const gate = classifySend({
+          sensitivity: detection.sensitivity,
+          tags: detection.tags,
+          hosted: false,
+          egressClass: 'restricted',
+        });
+        if (gate.decision === 'withheld') {
+          throw policyBlocked(`handoff cannot leave this instance (${gate.reason})`);
+        }
+        const handoff =
+          gate.decision === 'redacted'
+            ? (JSON.parse(maskPii(handoffText, 'prompt').text) as Record<string, unknown>)
+            : body.handoff;
         const id = ulid();
         await ctx.database.query(
           `INSERT INTO public_external_handoffs (id, agent_id, from_agent_id, goal, handoff)
            VALUES ($1, $2, $3, $4, $5)`,
-          [id, request.params.id, body.fromAgentId, body.goal, body.handoff],
+          [id, request.params.id, body.fromAgentId, body.goal, handoff],
         );
         return { id, agentId: request.params.id, goal: body.goal, status: 'pending' };
       },
@@ -647,6 +722,82 @@ export const publicApiModule: TriageModule = {
       version: '0.1.0',
       trigger: { type: 'endpoint' },
       fallbackPolicyId: 'return_uncertain',
+      // v2 graph (18.3): the v1 `when` skips become declared guard edges.
+      // Insufficient retrieval (or a failed validation) ends the run succeeded
+      // with no answer, exactly like the skipped v1 stages.
+      graph: {
+        id: 'public_api.completion',
+        version: '0.1.0',
+        module: 'public-api',
+        trigger: { type: 'endpoint' },
+        start: 'retrieve',
+        nodes: [
+          {
+            id: 'retrieve',
+            type: 'stage',
+            kind: 'ai.retrieve',
+            input: {
+              query: '$.question',
+              collection: '$.collection',
+              limit: '$.limit',
+              filter: { sourceEnabled: true },
+              audience: 'public',
+            },
+          },
+          {
+            id: 'generate',
+            type: 'stage',
+            kind: 'ai.generate',
+            input: {
+              question: '$.question',
+              chunks: '${stages.retrieve.output.chunks}',
+              style: 'assistant',
+            },
+          },
+          {
+            id: 'validate',
+            type: 'stage',
+            kind: 'ai.validate',
+            input: {
+              answer: '${stages.generate.output.answer}',
+              question: '$.question',
+              sources: '${stages.retrieve.output.chunks}',
+              policy: { maxChars: 4000 },
+            },
+          },
+          {
+            id: 'finalize',
+            type: 'stage',
+            kind: 'ai.finalize_answer',
+            input: {
+              answer: '${stages.generate.output.answer}',
+              sources: '${stages.retrieve.output.chunks}',
+            },
+          },
+          { id: 'end', type: 'end', end: 'succeeded' },
+          { id: 'failed', type: 'end', end: 'failed' },
+        ],
+        edges: [
+          {
+            from: 'retrieve',
+            to: 'generate',
+            label: 'sufficient',
+            when: '${stages.retrieve.output.sufficient}',
+          },
+          { from: 'retrieve', to: 'end', label: 'insufficient', isDefault: true },
+          { from: 'generate', to: 'validate', label: 'next' },
+          {
+            from: 'validate',
+            to: 'finalize',
+            label: 'passed',
+            when: '${stages.validate.output.passed}',
+          },
+          { from: 'validate', to: 'end', label: 'not_passed', isDefault: true },
+          { from: 'finalize', to: 'end', label: 'next' },
+        ],
+        defaultErrorEdge: { to: 'failed' },
+        budget: { maxSteps: 10, maxDurationMs: 300_000 },
+      },
       stages: [
         {
           id: 'retrieve',

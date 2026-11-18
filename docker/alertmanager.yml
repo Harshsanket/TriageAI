@@ -1,0 +1,37 @@
+# Alertmanager for the `observ` profile (Phase 18.4).
+#
+# No credentials are committed. The default receiver keeps alerts visible in
+# the Alertmanager UI (http://localhost:9093); uncomment one destination below
+# and keep `receiver: default` to deliver them.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: default
+      repeat_interval: 1h
+    - matchers: ['severity="warning"']
+      receiver: default
+
+receivers:
+  - name: default
+    # webhook_configs:
+    #   - url: 'http://host.docker.internal:9095/triageai-alerts'
+    # slack_configs:
+    #   - api_url: '<SLACK_WEBHOOK_URL>'
+    #     channel: '#triageai-alerts'
+    # email_configs:
+    #   - to: '<ALERT_EMAIL>'
+    #     from: '<ALERT_FROM>'
+    #     smarthost: '<SMTP_HOST>:587'
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']

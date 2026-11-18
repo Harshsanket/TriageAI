@@ -18,6 +18,8 @@ export interface DataClass {
     personalData: boolean;
   };
   retrieval: { methods: RetrievalMethod[]; contextFields: string[]; defaultLimit: number };
+  /** Columns a "forget me" request matches for this class (18.8). */
+  subjectColumns?: string[];
   sensitivity: Sensitivity;
   modelUse: ModelUse;
   trust: 'trusted' | 'untrusted';
@@ -50,6 +52,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
       defaultLimit: 50,
     },
     volatileFields: ['status', 'assignee_id', 'priority_code'],
+    bounds: { minRetentionDays: 30, maxRetentionDays: 730 },
   }),
   support_ticket_messages: cls({
     id: 'support_ticket_messages',
@@ -72,6 +75,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
       contextFields: ['title', 'summary'],
       defaultLimit: 50,
     },
+    bounds: { minRetentionDays: 30, maxRetentionDays: 365 },
   }),
   chat_messages: cls({
     id: 'chat_messages',
@@ -82,6 +86,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
       contextFields: ['role', 'content'],
       defaultLimit: 50,
     },
+    bounds: { minRetentionDays: 30, maxRetentionDays: 365 },
   }),
   user_preferences: cls({
     id: 'user_preferences',
@@ -89,6 +94,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     owner: 'kernel',
     retention: { mode: 'while_active', legalHoldable: false, personalData: true },
     retrieval: { methods: ['key'], contextFields: ['preferences'], defaultLimit: 1 },
+    subjectColumns: ['user_id'],
     sensitivity: 'internal',
     modelUse: 'never',
     trust: 'trusted',
@@ -103,6 +109,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
       contextFields: ['name', 'description'],
       defaultLimit: 5,
     },
+    subjectColumns: ['owner_id'],
     sensitivity: 'internal',
     modelUse: 'allowed',
     trust: 'trusted',
@@ -197,6 +204,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     store: 'postgres_partitioned',
     accessPattern: 'append-heavy; read by time range and run id',
     retention: { mode: 'days', days: 180, legalHoldable: true, personalData: true },
+    subjectColumns: ['owner_id'],
     sensitivity: 'restricted',
     modelUse: 'local_only',
   }),
@@ -209,6 +217,30 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     retention: { mode: 'days', days: 180, legalHoldable: true, personalData: true },
     sensitivity: 'restricted',
     modelUse: 'local_only',
+  }),
+  trajectory_metrics: cls({
+    id: 'trajectory_metrics',
+    description: 'Per-run trajectory and step scores',
+    owner: 'kernel',
+    accessPattern: 'keyed by run id; read by recent-run range',
+    retention: { mode: 'days', days: 180, legalHoldable: true, personalData: true },
+    retrieval: { methods: ['key', 'range'], contextFields: ['scores'], defaultLimit: 50 },
+    sensitivity: 'restricted',
+    modelUse: 'local_only',
+  }),
+  connection_stats: cls({
+    id: 'connection_stats',
+    description: 'Per-connection call/error counters and last test result',
+    owner: 'kernel',
+    accessPattern: 'keyed by connection id; read with the connections list',
+    retention: { mode: 'days', days: 400, legalHoldable: false, personalData: false },
+    retrieval: {
+      methods: ['key'],
+      contextFields: ['calls', 'errors', 'latency_ms'],
+      defaultLimit: 1,
+    },
+    sensitivity: 'internal',
+    modelUse: 'never',
   }),
   decision_records: cls({
     id: 'decision_records',
@@ -229,6 +261,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     retention: { mode: 'days', days: 400, legalHoldable: true, personalData: true },
     sensitivity: 'restricted',
     modelUse: 'never',
+    bounds: { minRetentionDays: 90, maxRetentionDays: 400, strictestModelUse: 'never' },
   }),
   cost_ledger: cls({
     id: 'cost_ledger',
@@ -238,6 +271,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     accessPattern: 'append-only; aggregate by day/provider',
     retention: { mode: 'days', days: 400, legalHoldable: true, personalData: false },
     modelUse: 'never',
+    bounds: { minRetentionDays: 30, maxRetentionDays: 400, strictestModelUse: 'never' },
   }),
   memories: cls({
     id: 'memories',
@@ -276,6 +310,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     description: 'Accounts',
     owner: 'kernel',
     retention: { mode: 'until_revoked', legalHoldable: true, personalData: true },
+    subjectColumns: ['id', 'email'],
     sensitivity: 'restricted',
     modelUse: 'never',
   }),
@@ -335,6 +370,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     description: 'Refresh-token session families',
     owner: 'kernel',
     retention: { mode: 'until_revoked', legalHoldable: false, personalData: true },
+    subjectColumns: ['user_id'],
     sensitivity: 'secret',
     modelUse: 'never',
   }),
@@ -344,6 +380,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     owner: 'kernel',
     retention: { mode: 'days', days: 365, legalHoldable: true, personalData: true },
     retrieval: { methods: ['key', 'range'], contextFields: ['input', 'gold'], defaultLimit: 50 },
+    subjectColumns: ['actor'],
   }),
   config_overlays: cls({
     id: 'config_overlays',
@@ -400,6 +437,22 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     sensitivity: 'restricted',
     modelUse: 'never',
   }),
+  schedule_state: cls({
+    id: 'schedule_state',
+    description: 'Scheduler watermark and last-run state per routine',
+    owner: 'kernel',
+    retention: { mode: 'while_active', legalHoldable: false, personalData: false },
+    sensitivity: 'internal',
+    modelUse: 'never',
+  }),
+  schedule_runs: cls({
+    id: 'schedule_runs',
+    description: 'Routine occurrence history for receipts (incl. no_change and overlap)',
+    owner: 'kernel',
+    retention: { mode: 'days', days: 365, legalHoldable: true, personalData: false },
+    sensitivity: 'internal',
+    modelUse: 'never',
+  }),
   settings: cls({
     id: 'settings',
     description: 'Install settings and setup state',
@@ -453,6 +506,7 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     retrieval: { methods: ['key', 'range'], contextFields: [], defaultLimit: 50 },
     sensitivity: 'restricted',
     modelUse: 'never',
+    bounds: { minRetentionDays: 1, maxRetentionDays: 90, strictestModelUse: 'never' },
   }),
 
   uptime_probes: cls({
@@ -522,6 +576,34 @@ export const DEFAULT_DATA_CLASSES: Record<string, DataClass> = {
     retrieval: { methods: ['key'], contextFields: ['state'], defaultLimit: 1 },
     sensitivity: 'restricted',
     modelUse: 'never',
+  }),
+
+  activity_events: cls({
+    id: 'activity_events',
+    description: 'Normalised activity index (runs, approvals, tools, config)',
+    owner: 'kernel',
+    accessPattern: 'append-only; read by time range, kind, actor and text',
+    retention: { mode: 'days', days: 400, legalHoldable: true, personalData: true },
+    retrieval: {
+      methods: ['range', 'fulltext'],
+      contextFields: ['summary', 'subject'],
+      defaultLimit: 100,
+    },
+    subjectColumns: ['actor'],
+    sensitivity: 'restricted',
+    modelUse: 'local_only',
+    bounds: { minRetentionDays: 30, maxRetentionDays: 400, strictestModelUse: 'local_only' },
+    trust: 'untrusted',
+  }),
+  legal_holds: cls({
+    id: 'legal_holds',
+    description: 'Admin legal holds that block class retention',
+    owner: 'kernel',
+    retention: { mode: 'until_revoked', legalHoldable: false, personalData: false },
+    retrieval: { methods: ['key'], contextFields: [], defaultLimit: 50 },
+    sensitivity: 'restricted',
+    modelUse: 'never',
+    trust: 'trusted',
   }),
 
   model_call_traces_partitioned: cls({

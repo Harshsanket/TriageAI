@@ -68,7 +68,13 @@ export const SkillUpdateRequestSchema = z
   .strict();
 export type SkillUpdateRequest = z.infer<typeof SkillUpdateRequestSchema>;
 
-export const SkillImportRequestSchema = z.object({ url: z.string().url().max(500) }).strict();
+export const SkillImportRequestSchema = z
+  .object({
+    url: z.string().url().max(500),
+    /** Re-import a moved branch/tag and replace the pinned commit explicitly. */
+    update: z.boolean().default(false),
+  })
+  .strict();
 
 export const SkillSuggestionActionSchema = z.object({ action: z.enum(['accept', 'ignore']) });
 

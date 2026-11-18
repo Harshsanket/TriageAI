@@ -7,6 +7,7 @@
  * under `/api/v1/system/*` (recorded in ADR-0011).
  */
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 
 import type { Kernel } from '@triageai/kernel';
 import { notFound } from '@triageai/kernel';
@@ -16,6 +17,9 @@ import {
   RunDtoSchema,
   StageRunDtoSchema,
 } from '@triageai/contracts';
+
+import { writeAudit } from '../services/audit.js';
+import { ensureTrajectory } from '../services/trajectory.js';
 
 interface RunRow {
   [key: string]: unknown;
@@ -27,6 +31,7 @@ interface RunRow {
   input: unknown;
   output: Record<string, unknown> | null;
   error: string | null;
+  pinned_versions?: Record<string, unknown> | null;
   created_at: Date | string;
   finished_at: Date | string | null;
 }
@@ -155,7 +160,8 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
   app.get('/api/v1/system/runs/:id', async (request) => {
     const { id } = request.params as { id: string };
     const runs = (await kernel.database.query(
-      `SELECT id, workflow_id, workflow_version, trigger, status, input, output, error, created_at, finished_at
+      `SELECT id, workflow_id, workflow_version, trigger, status, input, output, error,
+              pinned_versions, created_at, finished_at
        FROM workflow_runs WHERE id = $1`,
       [id],
     )) as unknown as RunRow[];
@@ -175,8 +181,13 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
       [id],
     )) as unknown as DecisionRow[];
 
-    return {
+    // 18.T24: trajectory + step scores are computed once for a finished run and
+    // then served from `trajectory_metrics` (documented on-demand path).
+    const trajectory = await ensureTrajectory(kernel, id);
+
+    const payload = {
       run: toRunDto(run),
+      trajectory,
       stages: stages.map((stage) =>
         StageRunDtoSchema.parse({
           id: stage.id,
@@ -209,6 +220,16 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
         outcome: decision.outcome ?? null,
       })),
     };
+    // 18.T3: a run can be exported as a versioned envelope for replay/backup.
+    if ((request.query as { export?: string }).export === '1') {
+      return {
+        version: 1 as const,
+        exportedAt: new Date().toISOString(),
+        pinnedVersions: run.pinned_versions ?? {},
+        ...payload,
+      };
+    }
+    return payload;
   });
 
   app.get('/api/v1/system/runs/:id/graph', async (request) => {
@@ -244,5 +265,68 @@ export function registerRunRoutes(app: FastifyInstance, kernel: Kernel): void {
     const { id } = request.params as { id: string };
     const cancelled = await kernel.workflowEngine.cancel(id);
     return { runId: id, cancelled };
+  });
+
+  // 19.T6: a user can flag a run whose output was wrong. Flags are audited
+  // (append-only) and feed the flag rate + the scenario case pipeline. 18.T30:
+  // the same call can attach user feedback / eval scores to the run's trace.
+  app.post('/api/v1/system/runs/:id/flag', async (request) => {
+    const { id } = request.params as { id: string };
+    const body = z
+      .object({
+        reason: z.string().trim().max(2000).optional(),
+        traceId: z.string().trim().max(200).optional(),
+        feedback: z
+          .object({
+            verdict: z.enum(['helpful', 'wrong', 'unsafe']),
+            note: z.string().trim().max(2000).optional(),
+          })
+          .strict()
+          .optional(),
+        evalScores: z
+          .array(
+            z
+              .object({
+                evaluator: z.string().trim().min(1).max(200),
+                score: z.number().min(0).max(1),
+              })
+              .strict(),
+          )
+          .max(20)
+          .optional(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    const rows = await kernel.database.query(`SELECT 1 FROM workflow_runs WHERE id = $1`, [id]);
+    if (rows.length === 0) throw notFound(`run ${id} not found`, { runId: id });
+    await writeAudit(kernel.database, {
+      actor: request.principal?.email ?? null,
+      action: 'run.flagged',
+      subject: id,
+      payload: {
+        reason: body.reason ?? null,
+        ...(body.traceId ? { traceId: body.traceId } : {}),
+        ...(body.feedback ? { feedback: body.feedback.verdict } : {}),
+        ...(body.evalScores ? { evalScores: body.evalScores.length } : {}),
+      },
+    });
+    if (body.feedback || body.evalScores) {
+      // Attach asynchronously to the named trace, else the run's latest trace.
+      await kernel.database.query(
+        `UPDATE model_call_traces
+            SET trace = jsonb_set(
+                  jsonb_set(trace, '{userFeedback}', $2::jsonb, true),
+                  '{evalScores}',
+                  COALESCE($3::jsonb, trace->'evalScores'),
+                  true
+                )
+          WHERE trace_id = COALESCE(
+            $4::text,
+            (SELECT trace_id FROM model_call_traces WHERE run_id = $1 ORDER BY at DESC LIMIT 1)
+          )`,
+        [id, body.feedback ?? null, body.evalScores ?? null, body.traceId ?? null],
+      );
+    }
+    return { runId: id, flagged: true };
   });
 }

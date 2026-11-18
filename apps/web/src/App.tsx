@@ -3,6 +3,8 @@ import type { ReactElement } from 'react';
 
 import type { SystemManifest } from '@triageai/contracts';
 
+import ApprovalsPage from './agents/ApprovalsPage';
+import AgentsPage from './agents/AgentsPage';
 import ConfigPage, { ConfigView } from './config/ConfigPage';
 import { useSetupStatus } from './config/setupApi';
 import HomePage from './home/HomePage';
@@ -32,6 +34,8 @@ const hostPages: Array<{
     render: (_route, manifest) => <DashboardPage manifest={manifest} />,
   },
   { label: 'Runs', path: '/runs', render: (route) => renderRuns(route) },
+  { label: 'Approvals', path: '/approvals', render: () => <ApprovalsPage /> },
+  { label: 'Agents', path: '/agents', render: () => <AgentsPage /> },
   { label: 'Feedback', path: '/feedback', render: () => <FeedbackPage /> },
   { label: 'Config', path: '/config', render: () => <ConfigPage /> },
 ];

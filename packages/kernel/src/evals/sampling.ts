@@ -66,3 +66,7 @@ export function scoreDeterministic(
     findings,
   };
 }
+
+// The judge lives in its own module; re-export it here so the existing evals
+// barrel (kernel index) keeps one import surface.
+export * from './judge.js';

@@ -2,13 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 
-import { PostgresDatabase } from '@triageai/kernel';
+import { PostgresDatabase, CORE_MIGRATIONS, MigrationRunner } from '@triageai/kernel';
 
 import { EgressClient, isPrivateAddress } from '../src/services/egress.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://triageai:triageai@localhost:5432/triageai';
+const noopLogger = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
 describe('egress private-range rules', () => {
   it('classifies loopback, private, link-local and metadata addresses', () => {
@@ -38,6 +39,9 @@ describeIfDb('egress client hardening (phase 21)', () => {
 
   beforeAll(async () => {
     database = new PostgresDatabase(DATABASE_URL);
+    // This suite uses the shared test DB directly (no app boot); make sure the
+    // audit table exists even when it runs before any booting test file.
+    await new MigrationRunner(database, noopLogger).apply('kernel', CORE_MIGRATIONS);
     server = createServer((request, response) => {
       if (request.url === '/cross-redirect') {
         const address = server.address();

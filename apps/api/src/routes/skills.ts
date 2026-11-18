@@ -128,6 +128,7 @@ export function registerSkillRoutes(app: FastifyInstance, kernel: Kernel): void 
         skill: await importSkillFromGithub(kernel, actorId(request), body, actor(request)),
       };
     } catch (err) {
+      if (err instanceof AppError) throw err;
       throw invalid((err as Error).message);
     }
   });

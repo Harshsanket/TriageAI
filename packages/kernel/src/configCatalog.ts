@@ -9,13 +9,23 @@ export interface ControlMeta {
   secret?: boolean;
 }
 
+/**
+ * Every top-level key of the parsed kernel config schema. The coverage test in
+ * `packages/kernel/test/opsEval2.test.ts` diffs this list against the real
+ * schema, so adding a field without metadata fails CI.
+ */
 export const KERNEL_CONFIG_FIELDS = [
   'profile',
   'queue',
   'modules',
   'capabilities',
+  'interfaces',
   'retention',
   'hosted',
+  'egress',
+  'routing',
+  'agents',
+  'appearance',
 ] as const;
 
 export const CONTROL_CATALOG: Record<(typeof KERNEL_CONFIG_FIELDS)[number], ControlMeta> = {
@@ -47,12 +57,20 @@ export const CONTROL_CATALOG: Record<(typeof KERNEL_CONFIG_FIELDS)[number], Cont
     default: {},
     applies: 'restart',
   },
+  interfaces: {
+    section: 'setup',
+    label: 'Interfaces',
+    help: 'Wizard interface choices; each one maps to a module set.',
+    default: [],
+    applies: 'restart',
+  },
   retention: {
     section: 'data',
     label: 'Retention',
     help: 'Delete runs, decisions, audit, candidates, messages and dead letters by age.',
     default: { enabled: false },
     applies: 'immediately',
+    danger: true,
   },
   hosted: {
     section: 'models',
@@ -60,6 +78,34 @@ export const CONTROL_CATALOG: Record<(typeof KERNEL_CONFIG_FIELDS)[number], Cont
     help: 'Opt-in API models with provider allowlist and daily budgets.',
     default: { enabled: false, allowedProviders: [] },
     applies: 'soft-reload',
+  },
+  egress: {
+    section: 'data',
+    label: 'Egress allowlist',
+    help: 'Hosts outbound HTTP may reach, each with the highest data class it may carry.',
+    default: { allowlist: [{ host: 'api.github.com', dataClass: 'public' }] },
+    applies: 'soft-reload',
+  },
+  routing: {
+    section: 'models',
+    label: 'Model routing',
+    help: 'Per-task primary/fallback runtimes, quality floors and price table.',
+    default: { tasks: {} },
+    applies: 'soft-reload',
+  },
+  agents: {
+    section: 'interfaces',
+    label: 'Agent identities',
+    help: 'Display names and colours used wherever an agent is shown.',
+    default: {},
+    applies: 'soft-reload',
+  },
+  appearance: {
+    section: 'interfaces',
+    label: 'Appearance defaults',
+    help: 'Instance defaults for theme, font size and motion.',
+    default: {},
+    applies: 'immediately',
   },
 };
 

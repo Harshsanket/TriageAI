@@ -22,7 +22,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: triageai-redis
-    profiles: [queue]
+    # `storage` also starts Redis so the Redis cache adapter works alongside
+    # MinIO (`docker compose --profile core --profile storage up -d`).
+    profiles: [queue, storage]
     ports:
       - '${TRIAGEAI_BIND:-127.0.0.1}:6379:6379'
     healthcheck:
@@ -30,6 +32,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # S3-compatible blob storage for `capabilities.blobStore.adapter: s3`
+  # (18.T12). The API creates the bucket on first put; console at :9001.
+  # Docker Hub's official minio/minio repository was removed in 2025; this
+  # maintained MinIO community build is API-compatible with the MinIO SDK.
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    container_name: triageai-minio
+    profiles: [storage]
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-triageai}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-triageai-dev-secret}
+    ports:
+      - '${TRIAGEAI_BIND:-127.0.0.1}:9000:9000'
+      - '${TRIAGEAI_BIND:-127.0.0.1}:9001:9001'
+    volumes:
+      - triageai-minio:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:9000/minio/health/live']
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
   api:
     build:
@@ -49,6 +74,9 @@ services:
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Optional OTLP/HTTP trace export; set to http://otel-collector:4318 with
+      # the observ profile. Empty keeps the exporter off (the default).
+      TRIAGEAI_OTLP_ENDPOINT: ${TRIAGEAI_OTLP_ENDPOINT:-}
       # 32+ chars; enables the encrypted secret store used by /config.
       TRIAGEAI_SECRET_KEY: ${TRIAGEAI_SECRET_KEY:-}
       # Phase 23.7: generated master.key lives here (mode 600), outside the DB.
@@ -70,6 +98,15 @@ services:
       TRIAGEAI_PLUGINS_DIR: /plugins
       TRIAGEAI_PLUGIN_REGISTRY: ${TRIAGEAI_PLUGIN_REGISTRY:-off}
       TRIAGEAI_PLUGIN_PUBLIC_KEYS: ${TRIAGEAI_PLUGIN_PUBLIC_KEYS:-}
+      # Phase 18.T11/T12: env named by capabilities.cache/blobStore. The
+      # storage profile starts Redis + MinIO with these defaults; memory and
+      # filesystem adapters ignore them.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      TRIAGEAI_S3_ENDPOINT: ${TRIAGEAI_S3_ENDPOINT:-http://minio:9000}
+      TRIAGEAI_S3_ACCESS_KEY: ${TRIAGEAI_S3_ACCESS_KEY:-triageai}
+      TRIAGEAI_S3_SECRET_KEY: ${TRIAGEAI_S3_SECRET_KEY:-triageai-dev-secret}
+      # Filesystem blob root when capabilities.blobStore.adapter=filesystem.
+      TRIAGEAI_BLOB_ROOT: ${TRIAGEAI_BLOB_ROOT:-/data/blobs}
     networks:
       - default
       - modules
@@ -77,6 +114,7 @@ services:
       - triageai-plugins:/plugins
       - triageai-secrets:/data/secrets
       - triageai-updates:/data/updates
+      - triageai-blobs:/data/blobs
     depends_on:
       postgres:
         condition: service_healthy
@@ -209,12 +247,18 @@ services:
     volumes:
       - triageai-ollama:/root/.ollama
 
+  # Observability stack. Run with `--profile core --profile observ` so the api
+  # service is scraped and can export OTLP traces to the collector.
   prometheus:
     image: prom/prometheus:v3.7.2
     container_name: triageai-prometheus
     profiles: [observ]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus-rules.yml:/etc/prometheus/rules/triageai.yml:ro
     ports:
       - '${TRIAGEAI_BIND:-127.0.0.1}:9090:9090'
 
@@ -229,6 +273,54 @@ services:
     ports:
       - '${TRIAGEAI_BIND:-127.0.0.1}:3310:3000'
 
+  alertmanager:
+    image: prom/alertmanager:v0.35.0
+    container_name: triageai-alertmanager
+    profiles: [observ]
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./docker/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - triageai-alertmanager:/alertmanager
+    ports:
+      - '${TRIAGEAI_BIND:-127.0.0.1}:9093:9093'
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    container_name: triageai-otel-collector
+    profiles: [observ]
+    command: ['--config=/etc/otelcol-contrib/config.yml']
+    depends_on:
+      - tempo
+    volumes:
+      - ./docker/otel-collector-config.yml:/etc/otelcol-contrib/config.yml:ro
+    ports:
+      - '${TRIAGEAI_BIND:-127.0.0.1}:4317:4317'
+      - '${TRIAGEAI_BIND:-127.0.0.1}:4318:4318'
+
+  loki:
+    image: grafana/loki:3.7.9
+    container_name: triageai-loki
+    profiles: [observ]
+    command: ['-config.file=/etc/loki/loki-config.yml']
+    volumes:
+      - ./docker/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - triageai-loki:/loki
+    ports:
+      - '${TRIAGEAI_BIND:-127.0.0.1}:3100:3100'
+
+  tempo:
+    image: grafana/tempo:2.9.5
+    container_name: triageai-tempo
+    profiles: [observ]
+    command: ['-config.file=/etc/tempo/tempo-config.yml']
+    volumes:
+      - ./docker/tempo-config.yml:/etc/tempo/tempo-config.yml:ro
+      - triageai-tempo:/var/tempo
+    ports:
+      - '${TRIAGEAI_BIND:-127.0.0.1}:3200:3200'
+
 networks:
   modules:
     internal: true
@@ -241,3 +333,8 @@ volumes:
   triageai-artifacts:
   triageai-ollama:
   triageai-plugins:
+  triageai-blobs:
+  triageai-minio:
+  triageai-alertmanager:
+  triageai-loki:
+  triageai-tempo:

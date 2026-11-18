@@ -123,3 +123,25 @@ export function scrubSecrets(text: string): string {
   const { text: masked } = maskPii(text, 'log');
   return masked;
 }
+
+/**
+ * Remove secret values only (API keys, JWTs, private keys, connection strings,
+ * secret assignments), leaving ordinary PII intact. Used at write time where a
+ * pasted key must not be stored but an email may legitimately remain.
+ */
+export function scrubSecretValues(text: string): string {
+  let output = text;
+  const replace = (pattern: RegExp, tag: string) => {
+    const global = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+    );
+    output = output.replace(global, `[REDACTED:${tag}]`);
+  };
+  replace(JWT, 'jwt');
+  replace(API_KEY, 'api_key');
+  replace(PRIVATE_KEY, 'private_key');
+  replace(CONNECTION, 'connection_string');
+  replace(ASSIGNMENT, 'secret');
+  return output;
+}

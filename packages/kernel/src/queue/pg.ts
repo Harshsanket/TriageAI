@@ -20,6 +20,9 @@ import { backoffFor } from './types.js';
 
 const DEFAULT_LEASE_SECONDS = 60;
 
+/** Background work waits while this many interactive jobs are pending. */
+const DEFAULT_BACKGROUND_DEFER_THRESHOLD = 25;
+
 function parseStructuredError(value: string | null): StructuredError | undefined {
   if (!value) return undefined;
   try {
@@ -59,11 +62,20 @@ export class PgQueue implements Queue {
     const id = ulid();
     const maxAttempts = (opts?.retries ?? 3) + 1;
     const rows = await this.database.query<{ id: string }>(
-      `INSERT INTO queue_jobs (id, queue, payload, idempotency_key, max_attempts)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO queue_jobs
+         (id, queue, payload, idempotency_key, max_attempts, priority, ready_at)
+       VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' milliseconds')::interval)
        ON CONFLICT (queue, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
        RETURNING id`,
-      [id, queue, JSON.stringify(payload ?? null), opts?.idempotencyKey ?? null, maxAttempts],
+      [
+        id,
+        queue,
+        JSON.stringify(payload ?? null),
+        opts?.idempotencyKey ?? null,
+        maxAttempts,
+        Math.trunc(opts?.priority ?? 0),
+        Math.max(0, Math.trunc(opts?.delayMs ?? 0)),
+      ],
     );
     if (rows[0]) return { id: rows[0].id, deduped: false };
     const existing = await this.database.query<{ id: string }>(
@@ -111,7 +123,10 @@ export class PgQueue implements Queue {
         });
         for (let i = 0; i < concurrency; i++) {
           if (state.stopped) break;
-          const claimed = await this.claimOne(queue);
+          const claimed = await this.claimOne(
+            queue,
+            opts?.backgroundDeferThreshold ?? DEFAULT_BACKGROUND_DEFER_THRESHOLD,
+          );
           if (!claimed) break;
           const work = this.runJob(claimed, handler, opts).finally(() => {
             const index = state.inflight.indexOf(work);
@@ -196,7 +211,10 @@ export class PgQueue implements Queue {
     });
   }
 
-  private async claimOne(queue: string): Promise<{
+  private async claimOne(
+    queue: string,
+    backgroundDeferThreshold: number,
+  ): Promise<{
     id: string;
     queue: string;
     payload: string;
@@ -213,7 +231,14 @@ export class PgQueue implements Queue {
       `WITH claimed AS (
          SELECT id FROM queue_jobs
          WHERE queue = $1 AND status = 'pending' AND ready_at <= now()
-         ORDER BY ready_at, created_at, id
+           AND (
+             priority > 0
+             OR $3::int <= 0
+             OR (SELECT count(*) FROM queue_jobs
+                  WHERE queue = $1 AND status = 'pending' AND priority > 0
+                    AND ready_at <= now()) < $3::int
+           )
+         ORDER BY priority DESC, ready_at, created_at, id
          FOR UPDATE SKIP LOCKED
          LIMIT 1
        )
@@ -223,7 +248,7 @@ export class PgQueue implements Queue {
          updated_at = now()
        WHERE id IN (SELECT id FROM claimed)
        RETURNING id, queue, payload, attempts, max_attempts`,
-      [queue, DEFAULT_LEASE_SECONDS],
+      [queue, DEFAULT_LEASE_SECONDS, Math.max(0, Math.trunc(backgroundDeferThreshold))],
     );
     return rows[0] ?? null;
   }

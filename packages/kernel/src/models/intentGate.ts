@@ -51,12 +51,18 @@ export function filterRequest(scope: IntentScope, text: string): IntentDecision 
   return null;
 }
 
+/** Whole-word/phrase match so short keywords like `hi` do not hit inside words. */
+function keywordMatches(text: string, keyword: string): boolean {
+  const escaped = keyword.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9_])${escaped}(?=$|[^a-z0-9_])`, 'i').test(text);
+}
+
 export function ruleIntent(scope: IntentScope, text: string): IntentDecision | null {
   const lower = text.toLowerCase();
   const matches = Object.entries(scope.intents)
     .map(([intent, config]) => ({
       intent,
-      hits: config.keywords.filter((keyword) => lower.includes(keyword.toLowerCase())).length,
+      hits: config.keywords.filter((keyword) => keywordMatches(lower, keyword)).length,
     }))
     .filter((entry) => entry.hits > 0)
     .sort((a, b) => b.hits - a.hits);

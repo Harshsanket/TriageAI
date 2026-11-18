@@ -308,6 +308,35 @@ export class GrantStore {
       approvedAt: new Date().toISOString(),
     };
   }
+
+  /**
+   * Put a previously-approved grant row back after a failed soft-reload
+   * (12.T2). Unlike `approve`, this preserves the original approval time and
+   * approver; it is only called by the install rollback path.
+   */
+  async restore(row: ModuleGrantRow): Promise<void> {
+    await this.database.query(
+      `INSERT INTO module_grants
+         (module_id, version, manifest_hash, permissions, run_mode, approved_by, approved_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (module_id) DO UPDATE
+         SET version = EXCLUDED.version,
+             manifest_hash = EXCLUDED.manifest_hash,
+             permissions = EXCLUDED.permissions,
+             run_mode = EXCLUDED.run_mode,
+             approved_by = EXCLUDED.approved_by,
+             approved_at = EXCLUDED.approved_at`,
+      [
+        row.moduleId,
+        row.version,
+        row.manifestHash,
+        row.permissions,
+        row.runMode,
+        row.approvedBy,
+        row.approvedAt,
+      ],
+    );
+  }
 }
 
 /** Parse a module's manifest once, with a clear boot error on malformed input. */

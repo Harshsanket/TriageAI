@@ -13,6 +13,7 @@ export type { ModuleManifest } from '@triageai/contracts';
 
 import type { EventBus } from './eventbus.js';
 import type { KnowledgeSource, KnowledgeSourceRegistry } from './sources/registry.js';
+import type { WorkflowGraph } from './graph/v2.js';
 
 export type CapabilityId =
   | 'storage'
@@ -155,6 +156,8 @@ export interface VectorChunk {
   documentId: string;
   text: string;
   metadata?: Record<string, unknown>;
+  /** Model that produced the embedding; scopes search to the same model (18.7). */
+  embeddingModel?: string;
 }
 
 export interface VectorMatch {
@@ -176,6 +179,13 @@ export interface VectorStore {
       text?: string;
       /** `public` also matches legacy chunks with no audience metadata. */
       audience?: 'public' | 'operator';
+      /**
+       * Embedding model that produced `embedding`. Rows written by another
+       * model are never mixed in (18.7); default `default`.
+       */
+      model?: string;
+      /** Fuse full-text candidates with vector candidates (default true). */
+      hybrid?: boolean;
     },
   ): Promise<VectorMatch[]>;
   deleteByDocument(collection: string, documentId: string): Promise<void>;
@@ -208,6 +218,8 @@ export interface Retriever {
       limit?: number;
       filter?: Record<string, unknown>;
       audience?: 'public' | 'operator';
+      /** Run hybrid (RRF) retrieval; false measures vector-only (18.T9 A/B). */
+      hybrid?: boolean;
     },
   ): Promise<RetrievalResult>;
   /** Drop cached results after a source/approval change (Phase 20.2). */
@@ -659,6 +671,8 @@ export interface QueueCapability {
       unit?: string;
       /** Await terminal completion up to this many ms (interactive ingestion). */
       waitMs?: number;
+      /** Delay the queued run start (e.g. a batched flush window). */
+      delayMs?: number;
     },
   ): Promise<QueueStartResult>;
   /** Deferred module work outside workflows (rare in Phase 1). */
@@ -684,6 +698,12 @@ export interface WorkflowDef {
   version: string;
   module: string;
   trigger: { type: 'endpoint' | 'manual' | 'event' | 'schedule'; config?: Record<string, unknown> };
+  /**
+   * Explicit control-flow graph (Phase 18.3, workflow graph v2). When present
+   * the engine executes the graph; `stages` stays for v1 straight-line defs.
+   * Validated at registration (boot) with kernel.WORKFLOW_INVALID on problems.
+   */
+  graph?: WorkflowGraph;
   stages: Array<{
     id: string;
     kind: string;
@@ -783,6 +803,12 @@ export interface QueueOptions {
   retries?: number;
   backoffMs?: number[];
   pollIntervalMs?: number;
+  /**
+   * Backpressure (18.3): while this many interactive jobs (priority > 0) are
+   * pending, background jobs (priority 0) are not claimed. Defaults to 25 for
+   * pg-queue; 0 disables the deferral.
+   */
+  backgroundDeferThreshold?: number;
 }
 
 export interface DeadLetterEntry {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -142,4 +143,39 @@ describeIfDb('chat context compaction', () => {
     );
     expect(count[0]?.count).toBeGreaterThanOrEqual(31);
   }, 60_000);
+
+  it('archives inactive conversations at 180 days and deletes archives at 365 (18.T32)', async () => {
+    const id = randomUUID();
+    await database.query(
+      `INSERT INTO mod_chat.chat_conversations (id, title, updated_at)
+       VALUES ($1, 'old conversation', now() - interval '200 days')`,
+      [id],
+    );
+    await database.query(
+      `INSERT INTO mod_chat.chat_messages (id, conversation_id, role, content)
+       VALUES ($1, $2, 'user', 'archive me')`,
+      [randomUUID(), id],
+    );
+    await app.kernel!.runRetention();
+    const live = await database.query(`SELECT 1 FROM mod_chat.chat_conversations WHERE id = $1`, [
+      id,
+    ]);
+    expect(live).toHaveLength(0);
+    const archived = await database.query<{ payload: { messages: unknown[] } }>(
+      `SELECT payload FROM mod_chat.chat_conversation_archive WHERE id = $1`,
+      [id],
+    );
+    expect(archived[0]?.payload.messages).toHaveLength(1);
+    await database.query(
+      `UPDATE mod_chat.chat_conversation_archive SET archived_at = now() - interval '400 days'
+        WHERE id = $1`,
+      [id],
+    );
+    await app.kernel!.runRetention();
+    const gone = await database.query(
+      `SELECT 1 FROM mod_chat.chat_conversation_archive WHERE id = $1`,
+      [id],
+    );
+    expect(gone).toHaveLength(0);
+  });
 });

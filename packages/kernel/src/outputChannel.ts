@@ -2,6 +2,10 @@
  * OutputChannel registry: the kernel routes deliveries by channel id without
  * knowing any provider vocabulary. Integration modules register their adapter
  * during `register()` (ADR-0018).
+ *
+ * A host-installed guard runs before every delivery so kill switches (18.5)
+ * apply to every adapter at once, including adapters that bypass the shared
+ * HTTP shell.
  */
 import { AppError, invalid } from './errors.js';
 import type {
@@ -14,8 +18,22 @@ import type {
   OutputChannelRegistry,
 } from './types.js';
 
-class Registry implements OutputChannelRegistry {
+export interface OutputChannelGuardContext {
+  channel: string;
+  ctx: DeliveryContext;
+  intent: OutboundIntent;
+}
+
+/** Throw to deny a delivery; the host guard also writes the audit row. */
+export type OutputChannelGuard = (context: OutputChannelGuardContext) => void | Promise<void>;
+
+export interface GuardedOutputChannelRegistry extends OutputChannelRegistry {
+  setGuard(guard: OutputChannelGuard | null): void;
+}
+
+class Registry implements GuardedOutputChannelRegistry {
   private readonly adapters = new Map<string, OutputChannel>();
+  private guard?: OutputChannelGuard;
 
   register(channel: string, adapter: OutputChannel): void {
     if (!channel.trim()) throw invalid('output channel id must not be empty');
@@ -33,7 +51,13 @@ class Registry implements OutputChannelRegistry {
     return [...this.adapters.keys()].sort();
   }
 
+  /** Install (or clear) the host kill-switch guard. */
+  setGuard(guard: OutputChannelGuard | null): void {
+    this.guard = guard ?? undefined;
+  }
+
   async deliver(ctx: DeliveryContext, intent: OutboundIntent): Promise<DeliveryResult> {
+    await this.guard?.({ channel: intent.channel, ctx, intent });
     return this.get(intent.channel).deliver(ctx, intent);
   }
 
@@ -58,6 +82,18 @@ class Registry implements OutputChannelRegistry {
   }
 }
 
-export function createOutputChannelRegistry(): OutputChannelRegistry {
+export function createOutputChannelRegistry(): GuardedOutputChannelRegistry {
   return new Registry();
+}
+
+/**
+ * Install a guard without widening `Capabilities.outputChannel` (modules keep
+ * seeing the read-only registry interface). No-op for registries that predate
+ * the seam, e.g. a test double.
+ */
+export function setOutputChannelGuard(
+  registry: OutputChannelRegistry | undefined,
+  guard: OutputChannelGuard | null,
+): void {
+  (registry as GuardedOutputChannelRegistry | undefined)?.setGuard(guard);
 }

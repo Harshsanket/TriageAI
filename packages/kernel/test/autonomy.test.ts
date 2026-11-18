@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   archiveCutoff,
+  autonomyForAction,
   buildRunReceipt,
   firstIrreversiblePark,
+  isCleanAutonomyAction,
   nextAutonomy,
+  planToolSequence,
   validateAgentDefinition,
   validateRoutine,
 } from '../src/operations/autonomy.js';
@@ -46,6 +49,23 @@ describe('run receipt + reversibility (phase 15)', () => {
       ]),
     ).toEqual({ parkAt: 1 });
   });
+
+  it('plans reversible calls before the park point', () => {
+    expect(
+      planToolSequence([
+        { tool: 'kb.search', undo: 'free' },
+        { tool: 'calendar.create_event', undo: 'compensable' },
+        { tool: 'email.send', undo: 'none' },
+        { tool: 'kb.create_document', undo: 'compensable' },
+      ]),
+    ).toEqual({ execute: [0, 1], parkAt: 2, remaining: [2, 3] });
+    expect(
+      planToolSequence([
+        { tool: 'kb.search', undo: 'free' },
+        { tool: 'kb.create_document', undo: 'compensable' },
+      ]),
+    ).toEqual({ execute: [0, 1], parkAt: null, remaining: [] });
+  });
 });
 
 describe('flow autonomy (phase 15)', () => {
@@ -68,6 +88,33 @@ describe('flow autonomy (phase 15)', () => {
         { clean: true, targetProduction: true },
       ),
     ).toMatchObject({ level: 'draft', reason: 'production_target' });
+  });
+
+  it('suggests the next level without raising it', () => {
+    const result = nextAutonomy(
+      { level: 'draft', cleanRunStreak: 4, promoteAfter: 5 },
+      { clean: true },
+    );
+    expect(result).toMatchObject({
+      level: 'draft',
+      cleanRunStreak: 5,
+      changed: false,
+      reason: 'promotion_suggested',
+      suggestedLevel: 'internal_note',
+    });
+    expect(
+      nextAutonomy({ level: 'autopilot', cleanRunStreak: 9, promoteAfter: 5 }, { clean: true }),
+    ).not.toHaveProperty('suggestedLevel');
+  });
+
+  it('maps support auto-reply decisions onto autonomy levels', () => {
+    expect(autonomyForAction('reply')).toBe('autopilot');
+    expect(autonomyForAction('clarify')).toBe('draft');
+    expect(autonomyForAction('escalate')).toBe('investigate');
+    expect(autonomyForAction('none')).toBe('investigate');
+    expect(isCleanAutonomyAction('reply')).toBe(true);
+    expect(isCleanAutonomyAction('clarify')).toBe(false);
+    expect(isCleanAutonomyAction('escalate')).toBe(false);
   });
 });
 

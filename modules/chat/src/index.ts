@@ -14,12 +14,36 @@ import {
   ChatMessageDtoSchema,
   ChatSendMessageRequestSchema,
 } from '@triageai/contracts';
-import { AppError, callModel, invalid, notFound } from '@triageai/kernel';
-import type { KernelContext, TriageModule } from '@triageai/kernel';
+import {
+  AppError,
+  callModel,
+  classifySend,
+  estimateCostFromPrices,
+  exportOtlpTrace,
+  gateIntent,
+  invalid,
+  notFound,
+  sanitizeModelText,
+  scopeMessage,
+} from '@triageai/kernel';
+import type {
+  CallModelDeps,
+  ChatModel,
+  IntentScope,
+  KernelConfig,
+  KernelContext,
+  ModelCallTrace,
+  RoutingConfig,
+  TriageModule,
+} from '@triageai/kernel';
 import {
   buildChatContext,
   chatTokenBudget,
+  detect,
   estimateTokens,
+  maskPii,
+  redactPii,
+  scrubSecretValues,
   type ChatContextItem,
 } from '@triageai/rag';
 
@@ -118,6 +142,19 @@ const MIGRATIONS = [
       ALTER TABLE IF EXISTS chat_conversations DROP COLUMN IF EXISTS summary_version;
     `,
   },
+  {
+    id: '0006-chat-conversation-archive',
+    sql: `
+      CREATE TABLE IF NOT EXISTS chat_conversation_archive (
+        id TEXT PRIMARY KEY,
+        payload JSONB NOT NULL,
+        archived_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS chat_conversation_archive_at
+        ON chat_conversation_archive (archived_at);
+    `,
+    dropSql: 'DROP TABLE IF EXISTS chat_conversation_archive;',
+  },
 ];
 
 interface MessageRow {
@@ -127,6 +164,7 @@ interface MessageRow {
   role: string;
   content: string;
   citations: string[] | null;
+  run_id?: string | null;
   created_at: Date | string;
 }
 
@@ -137,6 +175,7 @@ const messageDto = (row: MessageRow) =>
     role: row.role,
     content: row.content,
     citations: row.citations ?? [],
+    runId: row.run_id ?? null,
     createdAt: new Date(row.created_at).toISOString(),
   });
 
@@ -162,7 +201,7 @@ export const chatModule: TriageModule = {
       consume: ['queue', 'eventBus', 'embedder', 'vectorStore', 'systemStatus', 'chatModel'],
       provide: [],
     },
-    stages: ['chat.deliver', 'chat.gate', 'chat.load', 'chat.seed', 'chat.status'],
+    stages: ['chat.deliver', 'chat.gate', 'chat.load', 'chat.scope', 'chat.seed', 'chat.status'],
     workflows: ['chat.reply'],
     evals: [],
     tools: [],
@@ -180,7 +219,7 @@ export const chatModule: TriageModule = {
   },
   configSchema,
   migrations: MIGRATIONS,
-  tables: ['chat_conversations', 'chat_messages'],
+  tables: ['chat_conversations', 'chat_messages', 'chat_conversation_archive'],
   manifest: {
     // 23.3: one chat. The home page is the conversation surface; `/chat`
     // links redirect there, so the module owns no separate page.
@@ -218,7 +257,7 @@ export const chatModule: TriageModule = {
         };
         if (!input.messageId) throw invalid('chat.load requires messageId');
         const rows = await ctx.database.query<MessageRow>(
-          `SELECT id, conversation_id, role, content, citations, created_at
+          `SELECT id, conversation_id, role, content, citations, run_id, created_at
            FROM chat_messages WHERE id = $1`,
           [input.messageId],
         );
@@ -239,7 +278,7 @@ export const chatModule: TriageModule = {
         );
         const conversation = conversationRows[0];
         const historyRows = await ctx.database.query<MessageRow>(
-          `SELECT id, conversation_id, role, content, citations, created_at
+          `SELECT id, conversation_id, role, content, citations, run_id, created_at
            FROM chat_messages
            WHERE conversation_id = $1 AND created_at < $2
            ORDER BY created_at DESC LIMIT 200`,
@@ -275,6 +314,7 @@ export const chatModule: TriageModule = {
         let summary = conversation?.summary ?? null;
         let summaryVersion = Number(conversation?.summary_version ?? 0);
         let summaryModel = conversation?.summary_model ?? null;
+        let summaryGateNote: string | null = null;
         let compacted = false;
         let degraded = false;
         let coveredThrough: string | null = null;
@@ -305,6 +345,7 @@ export const chatModule: TriageModule = {
             summary = summarised.text;
             summaryModel = summarised.model;
             degraded = summarised.degraded;
+            summaryGateNote = summarised.gateNote ?? null;
             summaryVersion += 1;
             compacted = true;
             droppedForCompaction = older.length;
@@ -396,6 +437,7 @@ export const chatModule: TriageModule = {
                   model: summaryModel,
                   degraded,
                   summarisedTurns: droppedForCompaction,
+                  ...(summaryGateNote ? { sendGate: summaryGateNote } : {}),
                 }
               : null,
           },
@@ -453,6 +495,9 @@ export const chatModule: TriageModule = {
                 collection,
                 documentId: `chat-seed-${input.conversationId}`,
                 text: input.question.slice(0, 4000),
+                // Model-scoped reads (18.T9): a seed is only retrievable by the
+                // embedder that produced its vector.
+                embeddingModel: embedded.modelVersion,
                 embedding: embedded.vectors[0] as number[],
                 metadata: {
                   approved: true,
@@ -574,6 +619,126 @@ export const chatModule: TriageModule = {
       },
     });
 
+    // 18.T26 per-app scope declaration: the chat surface answers knowledge
+    // questions from the user's knowledge base, general questions, small talk
+    // and operator status questions (the deterministic `chat.status` stage).
+    // Actions on external systems and destructive requests are out of scope.
+    const CHAT_SCOPE: IntentScope = {
+      id: 'chat',
+      intents: {
+        knowledge: {
+          keywords: [
+            'kb',
+            'knowledge',
+            'document',
+            'documentation',
+            'docs',
+            'policy',
+            'refund',
+            'cite',
+            'citation',
+            'source',
+            'according to',
+          ],
+        },
+        general: {
+          keywords: [
+            'hi',
+            'hello',
+            'hey',
+            'thanks',
+            'thank you',
+            'good morning',
+            'good afternoon',
+            'good evening',
+            'help',
+            'please',
+            'answer',
+          ],
+        },
+        support: {
+          keywords: ['uptime', 'storage', 'health', 'queue', 'dead letter', 'system status'],
+        },
+      },
+      outOfScopeExamples: [
+        'Send this to the billing team by email',
+        'Delete the refund policy document',
+        'Run the deploy pipeline for me',
+        'Book a meeting with support tomorrow',
+      ],
+      // The chat surface's one can't-answer text (23.T3): scope refusals reuse
+      // it so users see a single negative answer. No config override exists
+      // today; the text is hardcoded here (18.T26 note).
+      refusalMessage: 'I could not verify this from the knowledge base.',
+      maxChars: 20_000,
+    };
+
+    ctx.registerStageHandler('chat.scope', {
+      execute: async (stage) => {
+        const input = stage.input as { question?: string };
+        const text = (input.question ?? '').trim();
+        const chatModel = ctx.capabilities.chatModel;
+        const model: CallModelDeps | undefined = chatModel
+          ? {
+              chatModel,
+              onTrace: (trace) => recordChatTrace(ctx, stage.runId, trace),
+            }
+          : undefined;
+        const decision = await gateIntent({
+          scope: CHAT_SCOPE,
+          text,
+          // The small-model rung needs the chatModel capability; filters and
+          // keyword rules run without it (≤ 1 small call, 0 tools by design).
+          ...(model ? { model } : {}),
+          context: { runId: stage.runId, workflowId: stage.workflowId, stepName: stage.stageId },
+        });
+        // Gate outages (no small model configured, model unavailable) fail
+        // open: refusing everything would turn a gate outage into a chat
+        // outage. Explicit refusals and low-confidence model decisions return
+        // the scope message with no retrieval and no generation.
+        const gateUnavailable =
+          decision.reason === 'rules_undecided_no_model' || decision.reason === 'model_unavailable';
+        const refused = !gateUnavailable && decision.action !== 'allow';
+        const answer = refused ? scopeMessage(CHAT_SCOPE, decision) : undefined;
+        if (refused) {
+          ctx.logger.info(
+            {
+              runId: stage.runId,
+              reason: decision.reason,
+              confidence: decision.confidence ?? null,
+            },
+            'chat scope gate returned the scope message',
+          );
+        }
+        return {
+          output: {
+            refused,
+            action: decision.action,
+            reason: decision.reason,
+            intent: decision.intent ?? null,
+            modelCalls: decision.modelCalls,
+            answer,
+          },
+          evidence: {
+            kind: 'deterministic',
+            action: decision.action,
+            reason: decision.reason,
+            intent: decision.intent ?? null,
+            confidence: decision.confidence ?? null,
+            modelCalls: decision.modelCalls,
+            toolCalls: decision.toolCalls,
+          },
+          deterministic: {
+            action: decision.action,
+            reason: decision.reason,
+            intent: decision.intent ?? null,
+            refused,
+            modelCalls: decision.modelCalls,
+          },
+        };
+      },
+    });
+
     const SMALL_TALK =
       /^(hi|hello|hey|good (morning|afternoon|evening)|thanks|thank you|how are you|what'?s up|who are you|bye|goodbye)\b/i;
 
@@ -625,9 +790,11 @@ export const chatModule: TriageModule = {
           runId?: string;
           direct?: boolean;
           smallTalk?: boolean;
+          scopeAnswer?: string;
         };
         if (!input.conversationId) throw invalid('chat.deliver requires conversationId');
         const statusAnswer = (input as { statusAnswer?: string }).statusAnswer;
+        const scopeAnswer = input.scopeAnswer;
         if (input.runId) {
           const existing = await ctx.database.query<{ id: string }>(
             `SELECT id FROM chat_messages WHERE run_id = $1 AND role = 'assistant' LIMIT 1`,
@@ -660,17 +827,26 @@ export const chatModule: TriageModule = {
         const generatedAnswer = generated?.answer?.trim();
         const answer = statusAnswer
           ? statusAnswer
-          : directValidated
-            ? generatedAnswer || refusal
-            : finalized?.answer?.trim() || refusal;
+          : scopeAnswer
+            ? scopeAnswer
+            : directValidated
+              ? generatedAnswer || refusal
+              : finalized?.answer?.trim() || refusal;
         const citations =
-          statusAnswer || input.direct || finalized?.refused ? [] : (finalized?.citations ?? []);
+          statusAnswer || scopeAnswer || input.direct || finalized?.refused
+            ? []
+            : (finalized?.citations ?? []);
 
         const messageId = ulid();
+        // 18.T28 sanitised delivery: model text is sanitised once, at the
+        // boundary that persists it. `callModel` already sanitises its output;
+        // this is idempotent and also covers the generator path (ai.generate
+        // without a ChatModel) and the scope/status answers.
+        const stored = sanitizeModelText(answer);
         await ctx.database.query(
           `INSERT INTO chat_messages (id, conversation_id, role, content, citations, run_id)
            VALUES ($1, $2, 'assistant', $3, $4, $5)`,
-          [messageId, input.conversationId, answer, citations, input.runId ?? null],
+          [messageId, input.conversationId, stored, citations, input.runId ?? null],
         );
         await ctx.database.query(`UPDATE chat_conversations SET updated_at = now() WHERE id = $1`, [
           input.conversationId,
@@ -678,7 +854,7 @@ export const chatModule: TriageModule = {
         return {
           output: {
             messageId,
-            answer,
+            answer: stored,
             citations,
             refused: directValidated ? false : (finalized?.refused ?? true),
             direct: Boolean(input.direct),
@@ -698,6 +874,7 @@ export const chatModule: TriageModule = {
             validationPassed: validated?.passed ?? null,
             direct: Boolean(input.direct),
             smallTalk: Boolean(input.smallTalk),
+            scopeRefused: Boolean(scopeAnswer),
           },
         };
       },
@@ -747,6 +924,170 @@ export const chatModule: TriageModule = {
       version: '0.2.0',
       trigger: { type: 'endpoint' },
       fallbackPolicyId: 'return_uncertain',
+      // v2 graph (18.3/18.T20): the v1 `when` skips become declared guard
+      // edges; deliver always runs and ends the graph.
+      graph: {
+        id: 'chat.reply',
+        version: '0.2.0',
+        module: 'chat',
+        trigger: { type: 'endpoint' },
+        start: 'load',
+        nodes: [
+          {
+            id: 'load',
+            type: 'stage',
+            kind: 'chat.load',
+            input: {
+              messageId: '$.messageId',
+              conversationId: '$.conversationId',
+              ownerId: '${run.input.ownerId}',
+            },
+          },
+          {
+            id: 'status',
+            type: 'stage',
+            kind: 'chat.status',
+            input: {
+              message: '${stages.load.output.message}',
+              operator: '${run.input.operator}',
+            },
+          },
+          {
+            id: 'scope',
+            type: 'stage',
+            kind: 'chat.scope',
+            input: { question: '${stages.load.output.message}' },
+          },
+          {
+            id: 'seed',
+            type: 'stage',
+            kind: 'chat.seed',
+            input: {
+              conversationId: '${stages.load.output.conversationId}',
+              question: '${stages.load.output.question}',
+              ownerId: '${run.input.ownerId}',
+            },
+          },
+          {
+            id: 'retrieve',
+            type: 'stage',
+            kind: 'ai.retrieve',
+            input: {
+              query: '${stages.load.output.question}',
+              collection: '${stages.seed.output.collection}',
+              limit: options.retrievalLimit,
+              filter: { sourceEnabled: true },
+              audience: 'public',
+              bypassOnFailure: true,
+            },
+          },
+          {
+            id: 'gate',
+            type: 'stage',
+            kind: 'chat.gate',
+            input: {
+              question: '${stages.load.output.question}',
+              seedBootstrapped: '${stages.seed.output.bootstrapped}',
+              retrievalBypassed: '${stages.retrieve.output.bypassed}',
+              retrievalSufficient: '${stages.retrieve.output.sufficient}',
+              knowledgeMode: options.knowledgeMode,
+            },
+          },
+          {
+            id: 'generate',
+            type: 'stage',
+            kind: 'ai.generate',
+            input: {
+              question: '${stages.load.output.question}',
+              chunks: '${stages.retrieve.output.chunks}',
+              style: 'assistant',
+              mode: '${stages.gate.output.mode}',
+              maxTokens: options.maxAnswerTokens,
+              contextBudget: '${stages.load.output.context}',
+            },
+          },
+          {
+            id: 'validate',
+            type: 'stage',
+            kind: 'ai.validate',
+            input: {
+              answer: '${stages.generate.output.answer}',
+              question: '${stages.load.output.question}',
+              sources: '${stages.retrieve.output.chunks}',
+              allowUngrounded: '${stages.gate.output.direct}',
+              policy: { maxChars: 8000 },
+            },
+          },
+          {
+            id: 'finalize',
+            type: 'stage',
+            kind: 'ai.finalize_answer',
+            input: {
+              answer: '${stages.generate.output.answer}',
+              sources: '${stages.retrieve.output.chunks}',
+            },
+          },
+          {
+            id: 'deliver',
+            type: 'stage',
+            kind: 'chat.deliver',
+            input: {
+              conversationId: '${stages.load.output.conversationId}',
+              runId: '${run.id}',
+              direct: '${stages.gate.output.direct}',
+              smallTalk: '${stages.gate.output.smallTalk}',
+              scopeAnswer: '${stages.scope.output.answer}',
+              statusAnswer: '${stages.status.output.answer}',
+            },
+          },
+          { id: 'end', type: 'end', end: 'succeeded' },
+          { id: 'failed', type: 'end', end: 'failed' },
+        ],
+        edges: [
+          { from: 'load', to: 'status', label: 'next' },
+          {
+            from: 'status',
+            to: 'deliver',
+            label: 'status_intent',
+            when: '${stages.status.output.statusIntent}',
+          },
+          { from: 'status', to: 'scope', label: 'conversation', isDefault: true },
+          {
+            from: 'scope',
+            to: 'deliver',
+            label: 'refused',
+            when: '${stages.scope.output.refused}',
+          },
+          { from: 'scope', to: 'seed', label: 'in_scope', isDefault: true },
+          {
+            from: 'seed',
+            to: 'gate',
+            label: 'bootstrapped',
+            when: '${stages.seed.output.bootstrapped}',
+          },
+          { from: 'seed', to: 'retrieve', label: 'kb', isDefault: true },
+          { from: 'retrieve', to: 'gate', label: 'next' },
+          {
+            from: 'gate',
+            to: 'generate',
+            label: 'allowed',
+            when: '${stages.gate.output.allowed}',
+          },
+          { from: 'gate', to: 'deliver', label: 'not_allowed', isDefault: true },
+          { from: 'generate', to: 'validate', label: 'next' },
+          {
+            from: 'validate',
+            to: 'finalize',
+            label: 'passed',
+            when: '${stages.validate.output.passed} && ${stages.gate.output.grounded}',
+          },
+          { from: 'validate', to: 'deliver', label: 'not_passed', isDefault: true },
+          { from: 'finalize', to: 'deliver', label: 'next' },
+          { from: 'deliver', to: 'end', label: 'next' },
+        ],
+        defaultErrorEdge: { to: 'failed' },
+        budget: { maxSteps: 30, maxDurationMs: 300_000 },
+      },
       stages: [
         {
           id: 'load',
@@ -766,9 +1107,17 @@ export const chatModule: TriageModule = {
           },
         },
         {
+          id: 'scope',
+          kind: 'chat.scope',
+          when: '!${stages.status.output.statusIntent}',
+          input: {
+            question: '${stages.load.output.message}',
+          },
+        },
+        {
           id: 'seed',
           kind: 'chat.seed',
-          when: '!${stages.status.output.statusIntent}',
+          when: '!${stages.status.output.statusIntent} && !${stages.scope.output.refused}',
           input: {
             conversationId: '${stages.load.output.conversationId}',
             question: '${stages.load.output.question}',
@@ -778,7 +1127,7 @@ export const chatModule: TriageModule = {
         {
           id: 'retrieve',
           kind: 'ai.retrieve',
-          when: '!${stages.status.output.statusIntent} && !${stages.seed.output.bootstrapped}',
+          when: '!${stages.status.output.statusIntent} && !${stages.seed.output.bootstrapped} && !${stages.scope.output.refused}',
           input: {
             query: '${stages.load.output.question}',
             collection: '${stages.seed.output.collection}',
@@ -791,7 +1140,7 @@ export const chatModule: TriageModule = {
         {
           id: 'gate',
           kind: 'chat.gate',
-          when: '!${stages.status.output.statusIntent}',
+          when: '!${stages.status.output.statusIntent} && !${stages.scope.output.refused}',
           input: {
             question: '${stages.load.output.question}',
             seedBootstrapped: '${stages.seed.output.bootstrapped}',
@@ -842,6 +1191,7 @@ export const chatModule: TriageModule = {
             runId: '${run.id}',
             direct: '${stages.gate.output.direct}',
             smallTalk: '${stages.gate.output.smallTalk}',
+            scopeAnswer: '${stages.scope.output.answer}',
             statusAnswer: '${stages.status.output.answer}',
           },
         },
@@ -923,7 +1273,7 @@ export const chatModule: TriageModule = {
         await assertVisible(id, request.ownerScope);
         const before = (request.query as Record<string, string>).before ?? null;
         const rows = await ctx.database.query<MessageRow>(
-          `SELECT id, conversation_id, role, content, citations, created_at
+          `SELECT id, conversation_id, role, content, citations, run_id, created_at
            FROM chat_messages
            WHERE conversation_id = $1 AND ($2::timestamptz IS NULL OR created_at < $2)
            ORDER BY created_at DESC LIMIT $3`,
@@ -1019,27 +1369,36 @@ export const chatModule: TriageModule = {
           [id],
         );
         const messages = await ctx.database.query<MessageRow>(
-          `SELECT id, conversation_id, role, content, citations, created_at
+          `SELECT id, conversation_id, role, content, citations, run_id, created_at
            FROM chat_messages WHERE conversation_id = $1 ORDER BY created_at`,
           [id],
         );
         const format = (request.query as Record<string, string>).format ?? 'markdown';
+        // 18.T31: exports use the same masking as the prompt/UI path.
+        const masked = (text: string) => maskPii(text, 'prompt').text;
         if (format === 'json') {
           return {
-            conversation: summaryDto(conversation[0] as Record<string, unknown>),
-            messages: messages.map(messageDto),
+            conversation: {
+              ...summaryDto(conversation[0] as Record<string, unknown>),
+              title: masked(String(conversation[0]?.title ?? 'Conversation')),
+              summary: conversation[0]?.summary ? masked(String(conversation[0].summary)) : null,
+            },
+            messages: messages.map((message) => ({
+              ...messageDto(message),
+              content: masked(message.content),
+            })),
           };
         }
         const lines = [
-          `# ${String(conversation[0]?.title ?? 'Conversation')}`,
+          `# ${masked(String(conversation[0]?.title ?? 'Conversation'))}`,
           conversation[0]?.summary
             ? `
-_Summary: ${String(conversation[0].summary)}_
+_Summary: ${masked(String(conversation[0].summary))}_
 `
             : '',
           ...messages.map(
             (message) =>
-              `## ${message.role}\n\n${message.content}${
+              `## ${message.role}\n\n${masked(message.content)}${
                 (message.citations ?? []).length > 0
                   ? `\n\nSources: ${(message.citations ?? []).join(', ')}`
                   : ''
@@ -1055,6 +1414,8 @@ _Summary: ${String(conversation[0].summary)}_
       url: '/api/v1/chat/messages',
       handler: async (request) => {
         const body = ChatSendMessageRequestSchema.parse(request.body);
+        // 18.T15: scrub secrets once, before the title, storage and workflow.
+        const scrubbed = scrubSecretValues(body.text);
 
         let conversationId = body.conversationId;
         if (conversationId) {
@@ -1063,16 +1424,28 @@ _Summary: ${String(conversation[0].summary)}_
           conversationId = ulid();
           await ctx.database.query(
             `INSERT INTO chat_conversations (id, title, owner_id) VALUES ($1, $2, $3)`,
-            [conversationId, body.text.slice(0, 80), request.actorId ?? null],
+            [conversationId, scrubbed.slice(0, 80), request.actorId ?? null],
           );
         }
         const messageId = ulid();
+        // A pasted secret never lands in storage; the scrubbed text is also
+        // what the workflow sees, so it cannot reach a model either.
+        if (scrubbed !== body.text) {
+          await ctx.audit
+            .append({
+              actor: request.actorId ?? 'anonymous',
+              action: 'chat.secret_scrubbed',
+              subject: conversationId,
+              payload: { messageId },
+            })
+            .catch(() => undefined);
+        }
         await ctx.database.query(
           `INSERT INTO chat_messages (id, conversation_id, role, content) VALUES ($1, $2, 'user', $3)`,
-          [messageId, conversationId, body.text],
+          [messageId, conversationId, scrubbed],
         );
         const ownerId = request.ownerScope ?? request.actorId ?? null;
-        const notice = await captureSkillFromMessage(ctx, ownerId, body.text, request.actorId);
+        const notice = await captureSkillFromMessage(ctx, ownerId, scrubbed, request.actorId);
         if (notice) {
           await ctx.database.query(
             `INSERT INTO chat_messages (id, conversation_id, role, content, citations)
@@ -1100,6 +1473,8 @@ _Summary: ${String(conversation[0].summary)}_
       contentType: 'text/event-stream',
       handler: async (request) => {
         const body = ChatSendMessageRequestSchema.parse(request.body);
+        // 18.T15: scrub secrets once, before the title, storage and workflow.
+        const scrubbed = scrubSecretValues(body.text);
         let conversationId = body.conversationId;
         if (conversationId) {
           await assertVisible(conversationId, request.ownerScope);
@@ -1107,16 +1482,28 @@ _Summary: ${String(conversation[0].summary)}_
           conversationId = ulid();
           await ctx.database.query(
             `INSERT INTO chat_conversations (id, title, owner_id) VALUES ($1, $2, $3)`,
-            [conversationId, body.text.slice(0, 80), request.actorId ?? null],
+            [conversationId, scrubbed.slice(0, 80), request.actorId ?? null],
           );
         }
         const messageId = ulid();
+        // A pasted secret never lands in storage; the scrubbed text is also
+        // what the workflow sees, so it cannot reach a model either.
+        if (scrubbed !== body.text) {
+          await ctx.audit
+            .append({
+              actor: request.actorId ?? 'anonymous',
+              action: 'chat.secret_scrubbed',
+              subject: conversationId,
+              payload: { messageId },
+            })
+            .catch(() => undefined);
+        }
         await ctx.database.query(
           `INSERT INTO chat_messages (id, conversation_id, role, content) VALUES ($1, $2, 'user', $3)`,
-          [messageId, conversationId, body.text],
+          [messageId, conversationId, scrubbed],
         );
         const ownerId = request.ownerScope ?? request.actorId ?? null;
-        const notice = await captureSkillFromMessage(ctx, ownerId, body.text, request.actorId);
+        const notice = await captureSkillFromMessage(ctx, ownerId, scrubbed, request.actorId);
         if (notice) {
           await ctx.database.query(
             `INSERT INTO chat_messages (id, conversation_id, role, content, citations)
@@ -1135,9 +1522,14 @@ _Summary: ${String(conversation[0].summary)}_
           { trigger: 'endpoint' },
         );
 
-        // SSE v1 (Phase 13.T5): status now, then the validated final message.
-        // Text is never provisional in the response: the workflow validates
-        // before `chat.deliver` writes it.
+        // SSE v1 (Phase 13.T5) + 19.T7 deviation: the ChatModel contract is
+        // `chat(request) → full ChatResponse` and every adapter sets
+        // `stream: false`, so no token stream exists to render provisionally.
+        // Instead of faking tokens, this endpoint sends `status`, then the
+        // validated final message (`provisional: false`) once `chat.deliver`
+        // has written it. Validation therefore always precedes delivery; a
+        // later provider-level token stream can flip `provisional` without
+        // changing this contract.
         return new ReadableStream<Uint8Array>({
           async start(controller) {
             const encoder = new TextEncoder();
@@ -1154,7 +1546,7 @@ _Summary: ${String(conversation[0].summary)}_
             try {
               for (;;) {
                 const rows = await ctx.database.query<MessageRow>(
-                  `SELECT id, conversation_id, role, content, citations, created_at
+                  `SELECT id, conversation_id, role, content, citations, run_id, created_at
                    FROM chat_messages WHERE run_id = $1 AND role = 'assistant' LIMIT 1`,
                   [started.runId],
                 );
@@ -1191,13 +1583,64 @@ _Summary: ${String(conversation[0].summary)}_
                   COUNT(*)::int AS count
              FROM chat_messages WHERE created_at > now() - interval '14 days' GROUP BY 1`,
         );
-        return { usageChat: rows };
+        const contextRows = await database.query<{
+          conversations: number;
+          average_percent: number | null;
+          compacted: number;
+        }>(
+          `SELECT COUNT(*)::int AS conversations,
+                  AVG((context->>'percent')::numeric)::float AS average_percent,
+                  COUNT(*) FILTER (WHERE (context->>'compacted')::boolean)::int AS compacted
+             FROM chat_conversations
+            WHERE deleted_at IS NULL AND context IS NOT NULL`,
+        );
+        return {
+          usageChat: rows,
+          context: {
+            conversations: Number(contextRows[0]?.conversations ?? 0),
+            averagePercent:
+              contextRows[0]?.average_percent == null
+                ? null
+                : Number(contextRows[0].average_percent.toFixed(1)),
+            compacted: Number(contextRows[0]?.compacted ?? 0),
+          },
+        };
       },
     });
 
     ctx.registerRetentionTask({
       id: 'chat.messages',
       apply: async ({ database, cutoffs }) => {
+        // 18.T32: inactive conversations move to the cold archive at 180 days
+        // (snapshot first, then remove the live rows); archive rows are deleted
+        // at 365 days. Soft-deleted conversations keep the 30-day rule.
+        const inactive = await database.query<{ id: string }>(
+          `SELECT id FROM chat_conversations
+            WHERE deleted_at IS NULL AND updated_at < now() - interval '180 days'`,
+        );
+        for (const row of inactive) {
+          await database.query(
+            `INSERT INTO chat_conversation_archive (id, payload)
+             SELECT $1,
+                    jsonb_build_object(
+                      'conversation', to_jsonb(c),
+                      'messages', COALESCE(
+                        (SELECT jsonb_agg(to_jsonb(m) ORDER BY m.created_at)
+                           FROM chat_messages m WHERE m.conversation_id = c.id),
+                        '[]'::jsonb
+                      )
+                    )
+               FROM chat_conversations c WHERE c.id = $1
+             ON CONFLICT (id) DO NOTHING`,
+            [row.id],
+          );
+          await database.query(`DELETE FROM chat_conversations WHERE id = $1`, [row.id]);
+          await ctx.knowledge.deleteCollection(`chat_bootstrap_${row.id}`).catch(() => undefined);
+        }
+        const purged = await database.query<{ id: string }>(
+          `DELETE FROM chat_conversation_archive
+            WHERE archived_at < now() - interval '365 days' RETURNING id`,
+        );
         // Soft-deleted conversations are hard-deleted after 30 days
         // (Phase 13.T4), independent of the message cutoff.
         const expired = await database.query<{ id: string }>(
@@ -1208,12 +1651,12 @@ _Summary: ${String(conversation[0].summary)}_
         for (const row of expired) {
           await ctx.knowledge.deleteCollection(`chat_bootstrap_${row.id}`).catch(() => undefined);
         }
-        if (!cutoffs.messages) return expired.length;
+        if (!cutoffs.messages) return expired.length + inactive.length + purged.length;
         const rows = await database.query(
           `DELETE FROM chat_messages WHERE created_at < $1 RETURNING id`,
           [cutoffs.messages],
         );
-        return rows.length + expired.length;
+        return rows.length + expired.length + inactive.length + purged.length;
       },
     });
   },
@@ -1257,11 +1700,35 @@ function deterministicSummary(turns: MessageRow[], existing: string | null): str
     .slice(0, 4_000);
 }
 
+async function recordChatTrace(
+  ctx: KernelContext,
+  runId: string,
+  trace: ModelCallTrace,
+): Promise<void> {
+  await ctx.traces
+    .record({ traceId: trace.traceId, runId, task: trace.task, trace })
+    .catch(() => undefined);
+  const endpoint = ctx.env.TRIAGEAI_OTLP_ENDPOINT;
+  if (!endpoint) return;
+  const capture =
+    ctx.env.TRIAGEAI_TRACE_CAPTURE === 'full'
+      ? 'full'
+      : ctx.env.TRIAGEAI_TRACE_CAPTURE === 'off'
+        ? 'off'
+        : 'redacted';
+  await exportOtlpTrace(trace, endpoint, capture, ctx.capabilities.egress).catch((err: unknown) =>
+    ctx.logger.warn(
+      { err: (err as Error).message, traceId: trace.traceId },
+      'OTLP trace export failed',
+    ),
+  );
+}
+
 async function summariseOlderTurns(
   ctx: KernelContext,
   stage: { runId: string; workflowId: string; stageId: string; workflowVersion?: string },
   args: { turns: MessageRow[]; existing: string | null; conversationId: string },
-): Promise<{ text: string; model: string; degraded: boolean }> {
+): Promise<{ text: string; model: string; degraded: boolean; gateNote?: string }> {
   const fallback = deterministicSummary(args.turns, args.existing);
   const chatModel = ctx.capabilities.chatModel;
   if (!chatModel || args.turns.length === 0) {
@@ -1271,21 +1738,66 @@ async function summariseOlderTurns(
     .map((turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.content}`)
     .join('\n')
     .slice(0, 12_000);
+  let prompt = [
+    'Compact this conversation for a later turn.',
+    'Keep facts, decisions, open questions and citations. Do not add new facts.',
+    args.existing ? `Existing summary:\n${args.existing}` : 'Existing summary: none',
+    `Conversation:\n${transcript}`,
+    'Reply with a concise plain-text summary.',
+  ].join('\n\n');
+  // 18.T16 send gate, module-side (the kernel `callModel` sendGate wiring is a
+  // parallel task): the compaction prompt would carry the transcript to the
+  // active model. A secret never reaches a model; on a hosted destination the
+  // prompt goes out redacted (ai-pipeline pattern). A withheld decision skips
+  // the summariser for the deterministic compactor (26.T5) and logs the gate
+  // note — `securityEvents` live on the kernel trace, so the module records
+  // it on the stage evidence instead. A local model receives the transcript
+  // as today.
+  if (chatModel.describe().hosted) {
+    const detection = detect(prompt);
+    const gate = classifySend({
+      sensitivity: detection.hasSecret ? 'secret' : 'internal',
+      hosted: true,
+      tags: detection.tags,
+    });
+    if (gate.decision === 'withheld') {
+      const note = `send_gate:withheld:${gate.reason}`;
+      ctx.logger.warn(
+        { conversationId: args.conversationId, reason: gate.reason, tags: detection.tags },
+        `${note} — chat.compact skipped, deterministic summary used`,
+      );
+      return {
+        text: fallback || 'No earlier context.',
+        model: 'deterministic',
+        degraded: true,
+        gateNote: note,
+      };
+    }
+    prompt = redactPii(maskPii(prompt, 'prompt').text).text;
+  }
   try {
+    const deps: CallModelDeps = {
+      chatModel,
+      onTrace: (trace) => recordChatTrace(ctx, stage.runId, trace),
+    };
+    // 19.T2/19.T3: when the host capability is the runtime pool, let routing
+    // pick the task's model and use the configured price table for cost.
+    const pooled = chatModel as ChatModel & {
+      resolve?: (task: string, stepName: string) => ChatModel;
+    };
+    if (typeof pooled.resolve === 'function') {
+      const resolveTask = pooled.resolve.bind(pooled);
+      deps.resolveModel = ({ task, stepName }) => ({
+        chatModel: resolveTask(task, stepName),
+        reason: `task_route:${task}`,
+      });
+    }
+    const routing = (ctx.config as KernelConfig & { routing?: RoutingConfig }).routing;
+    if (routing?.prices) {
+      deps.estimateCost = (args) => estimateCostFromPrices(routing.prices, args);
+    }
     const result = await callModel(
-      {
-        chatModel,
-        onTrace: async (trace) => {
-          await ctx.traces
-            .record({
-              traceId: trace.traceId,
-              runId: stage.runId,
-              task: trace.task,
-              trace,
-            })
-            .catch(() => undefined);
-        },
-      },
+      deps,
       {
         id: 'chat.compact',
         promptTemplateId: 'chat.compact',
@@ -1304,20 +1816,16 @@ async function summariseOlderTurns(
         messages: [
           {
             role: 'user',
-            content: [
-              'Compact this conversation for a later turn.',
-              'Keep facts, decisions, open questions and citations. Do not add new facts.',
-              args.existing ? `Existing summary:\n${args.existing}` : 'Existing summary: none',
-              `Conversation:\n${transcript}`,
-              'Reply with a concise plain-text summary.',
-            ].join('\n\n'),
+            content: prompt,
           },
         ],
         temperature: 0,
         expectAnswer: true,
       },
     );
-    const text = result.response.message.content.trim();
+    // 18.T28: the stored summary is sanitised at the persistence boundary
+    // (idempotent; callModel already sanitised the response).
+    const text = sanitizeModelText(result.response.message.content.trim());
     if (text.length > 0) {
       await ctx.costLedger
         .record({

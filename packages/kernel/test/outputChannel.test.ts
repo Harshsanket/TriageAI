@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { AppError } from '../src/errors.js';
+import { AppError, policyBlocked } from '../src/errors.js';
 import { createOutputChannelRegistry } from '../src/outputChannel.js';
+import { HttpOutputChannel } from '../src/outputChannel/http.js';
 
 const ctx = {
   runId: 'run-1',
@@ -38,5 +39,43 @@ describe('OutputChannel registry', () => {
     const adapter = { deliver: async () => ({ ref: 'r', channel: 'c' }) };
     registry.register('c', adapter);
     expect(() => registry.register('c', adapter)).toThrow(/already registered/);
+  });
+
+  it('runs the host guard before delivery and can be cleared', async () => {
+    const registry = createOutputChannelRegistry();
+    registry.register('c', { deliver: async () => ({ ref: 'r', channel: 'c' }) });
+    registry.setGuard(() => {
+      throw policyBlocked('read-only mode blocks outbound deliveries');
+    });
+    await expect(registry.deliver(ctx, { channel: 'c', body: 'hi' })).rejects.toMatchObject({
+      code: 'POLICY_BLOCKED',
+      category: 'policy_blocked',
+    });
+
+    registry.setGuard(null);
+    await expect(registry.deliver(ctx, { channel: 'c', body: 'hi' })).resolves.toMatchObject({
+      ref: 'r',
+    });
+  });
+
+  it('runs an adapter-level guard before an HTTP request', async () => {
+    let fetched = 0;
+    const channel = new HttpOutputChannel({
+      channel: 'http-test',
+      enabled: () => true,
+      guard: () => {
+        throw policyBlocked('blocked by the host guard');
+      },
+      request: () => ({ url: 'https://example.test/hook' }),
+      parse: () => ({ ref: 'http-ref' }),
+      fetchImpl: async () => {
+        fetched += 1;
+        return new Response('{}', { status: 200 });
+      },
+    });
+    await expect(channel.deliver(ctx, { channel: 'http-test', body: 'hi' })).rejects.toMatchObject({
+      code: 'POLICY_BLOCKED',
+    });
+    expect(fetched).toBe(0);
   });
 });

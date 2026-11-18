@@ -109,6 +109,7 @@ describeIfDb('model registry promotion + rollback (phase 6)', () => {
          FROM decision_records dr
          JOIN stage_runs sr ON sr.id = dr.stage_run_id
          WHERE dr.run_id = $1 AND sr.kind = 'ai.classify'
+           AND (dr.outcome->>'transition') IS DISTINCT FROM 'true'
          LIMIT 1`,
         [runId],
       );

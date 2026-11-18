@@ -41,6 +41,8 @@ export const ChatMessageDtoSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
   citations: z.array(z.string()),
+  /** Run that produced an assistant answer; enables the 19.T6 flag button. */
+  runId: z.string().nullable().default(null),
   createdAt: z.string(),
 });
 export type ChatMessageDto = z.infer<typeof ChatMessageDtoSchema>;

@@ -89,6 +89,26 @@ describeIfDb('support vertical slice (phase 3, no LLM)', () => {
     await app.close();
   });
 
+  it('tags ticket messages at write time (18.T15)', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/support/tickets',
+      payload: {
+        subject: 'Email contact',
+        body: 'Please write to alice@example.com about the invoice.',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const { ticketId } = created.json() as { ticketId: string };
+    const rows = await app.kernel!.database.query<{ sensitivity: string; tags: string[] }>(
+      `SELECT sensitivity, tags FROM mod_support.support_ticket_messages
+        WHERE ticket_id = $1 ORDER BY created_at LIMIT 1`,
+      [ticketId],
+    );
+    expect(rows[0]?.sensitivity).toBe('restricted');
+    expect(rows[0]?.tags).toContain('pii:email');
+  });
+
   it('classifies, routes, and resolves a billing ticket with full decision trail', async () => {
     const created = await app.inject({
       method: 'POST',
@@ -108,11 +128,15 @@ describeIfDb('support vertical slice (phase 3, no LLM)', () => {
     const run = await app.inject({ method: 'GET', url: `/api/v1/system/runs/${runId}` });
     const runBody = run.json() as {
       run: { status: string };
-      stages: Array<{ stageId: string; status: string }>;
-      decisions: Array<{ deterministic: unknown }>;
+      stages: Array<{ id: string; stageId: string; status: string }>;
+      decisions: Array<{ stageRunId: string; deterministic: unknown; outcome: unknown }>;
     };
     expect(runBody.run.status).toBe('SUCCEEDED');
-    expect(runBody.stages.map((stage) => [stage.stageId, stage.status])).toEqual([
+    expect(
+      runBody.stages
+        .filter((stage) => stage.stageId !== 'end')
+        .map((stage) => [stage.stageId, stage.status]),
+    ).toEqual([
       ['load', 'SUCCEEDED'],
       ['classify', 'SUCCEEDED'],
       ['route', 'SUCCEEDED'],
@@ -120,7 +144,16 @@ describeIfDb('support vertical slice (phase 3, no LLM)', () => {
       ['team', 'SUCCEEDED'],
       ['apply', 'SUCCEEDED'],
     ]);
-    expect(runBody.decisions).toHaveLength(6);
+    // Graph execution also writes one hop record per transition; assert the six
+    // stage decisions by stage id rather than by total decision count.
+    const stageNameById = new Map(runBody.stages.map((stage) => [stage.id, stage.stageId]));
+    const stageDecisions = runBody.decisions
+      .filter(
+        (decision) => (decision.outcome as { transition?: boolean } | null)?.transition !== true,
+      )
+      .map((decision) => stageNameById.get(decision.stageRunId))
+      .filter((stageId) => stageId !== undefined && stageId !== 'end');
+    expect(stageDecisions).toEqual(['load', 'classify', 'route', 'priority', 'team', 'apply']);
     // threshold values + rule ids are in decision records (ADR-0005)
     expect(JSON.stringify(runBody.decisions)).toContain('thresholds');
   });

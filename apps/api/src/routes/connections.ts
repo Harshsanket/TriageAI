@@ -206,6 +206,67 @@ function customViews(stored: StoredConnection[], allow: Set<string>): Connection
   });
 }
 
+interface ConnectionStatRow {
+  [key: string]: unknown;
+  connection_id: string;
+  calls: number | string;
+  errors: number | string;
+  last_success_at: string | Date | null;
+  last_error: string | null;
+  latency_ms: number | null;
+}
+
+/** 23.T10: hydrate the counters recorded by connection tests/egress. */
+async function withStats(kernel: Kernel, views: ConnectionView[]): Promise<ConnectionView[]> {
+  if (views.length === 0) return views;
+  const rows = await kernel.database
+    .query<ConnectionStatRow>(
+      `SELECT connection_id, calls, errors, last_success_at, last_error, latency_ms
+         FROM connection_stats WHERE connection_id = ANY($1)`,
+      [views.map((view) => view.id)],
+    )
+    .catch(() => []);
+  const byId = new Map(rows.map((row) => [row.connection_id, row]));
+  return views.map((view) => {
+    const stat = byId.get(view.id);
+    if (!stat) return view;
+    return {
+      ...view,
+      calls: Number(stat.calls),
+      errors: Number(stat.errors),
+      lastSuccessAt: stat.last_success_at
+        ? new Date(stat.last_success_at).toISOString()
+        : view.lastSuccessAt,
+      lastError: stat.last_error ?? view.lastError,
+      latencyMs: stat.latency_ms ?? view.latencyMs,
+    };
+  });
+}
+
+async function recordConnectionTest(
+  kernel: Kernel,
+  id: string,
+  ok: boolean,
+  latencyMs: number,
+  error?: string,
+): Promise<void> {
+  await kernel.database
+    .query(
+      `INSERT INTO connection_stats
+         (connection_id, calls, errors, last_success_at, last_error, latency_ms)
+       VALUES ($1, 1, $2, CASE WHEN $3 THEN now() ELSE NULL END, $4, $5)
+       ON CONFLICT (connection_id) DO UPDATE SET
+         calls = connection_stats.calls + 1,
+         errors = connection_stats.errors + EXCLUDED.errors,
+         last_success_at = COALESCE(EXCLUDED.last_success_at, connection_stats.last_success_at),
+         last_error = EXCLUDED.last_error,
+         latency_ms = EXCLUDED.latency_ms,
+         updated_at = now()`,
+      [id, ok ? 0 : 1, ok, error ?? null, latencyMs],
+    )
+    .catch(() => undefined);
+}
+
 export async function readConnections(
   kernel: Kernel,
   runtime: SetupRuntime,
@@ -216,8 +277,9 @@ export async function readConnections(
   const allow = new Set(
     (kernel.config.egress?.allowlist ?? []).map((entry) => entry.host.toLowerCase()),
   );
+  const connections = [...configConnections(kernel, names), ...customViews(stored, allow)];
   return {
-    connections: [...configConnections(kernel, names), ...customViews(stored, allow)],
+    connections: await withStats(kernel, connections),
     secrets: [...names],
   };
 }
@@ -298,17 +360,28 @@ export function registerConnectionRoutes(
         { method: 'GET', signal: AbortSignal.timeout(5_000) },
         { purpose: `connection.test:${target.name}` },
       );
+      const latencyMs = Date.now() - started;
+      await recordConnectionTest(
+        kernel,
+        id,
+        response.ok,
+        latencyMs,
+        response.ok ? undefined : `HTTP ${response.status}`,
+      );
       return {
         ok: response.ok,
         status: response.status,
-        latencyMs: Date.now() - started,
+        latencyMs,
       };
     } catch (err) {
+      const latencyMs = Date.now() - started;
+      const message = (err as Error).message;
+      await recordConnectionTest(kernel, id, false, latencyMs, message);
       return {
         ok: false,
         status: null,
-        latencyMs: Date.now() - started,
-        error: (err as Error).message,
+        latencyMs,
+        error: message,
       };
     }
   });

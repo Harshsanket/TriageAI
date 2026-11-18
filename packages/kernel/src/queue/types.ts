@@ -13,6 +13,15 @@ export interface QueueSubscription {
 export interface EnqueueOptions {
   idempotencyKey?: string;
   retries?: number;
+  /**
+   * Priority lane (18.3 fairness): higher values are claimed first. The kernel
+   * enqueues interactive work (chat, API, manual runs) at 1 and background
+   * work (schedules, evals, digests) at 0. Adapters that cannot reorder may
+   * ignore it; pg-queue honours it.
+   */
+  priority?: number;
+  /** Delay before the job becomes claimable (scheduled flush, retry backoff). */
+  delayMs?: number;
 }
 
 export interface EnqueueResult {

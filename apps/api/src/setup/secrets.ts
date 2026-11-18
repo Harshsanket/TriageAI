@@ -73,6 +73,46 @@ export class SecretStore {
     await writeAudit(this.database, { actor, action: 'secret.set', subject: name });
   }
 
+  /**
+   * Decrypt one secret by name (Phase 15.T7 connector credentials and OAuth
+   * token sets). Returns `null` when the row is missing; a row that fails
+   * authentication throws so callers never act on a half-decrypted value.
+   */
+  async get(name: string): Promise<string | null> {
+    if (!this.key) throw new Error('secret store unavailable: set TRIAGEAI_SECRET_KEY (32+ chars)');
+    if (!SecretStore.isValidName(name)) throw new Error(`invalid secret name ${name}`);
+    const rows = await this.database.query<SecretRow>(
+      `SELECT name, ciphertext, iv, tag FROM secrets WHERE name = $1`,
+      [name],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    const decipher = createDecipheriv('aes-256-gcm', this.key, Buffer.from(row.iv, 'base64'));
+    decipher.setAAD(Buffer.from(row.name));
+    decipher.setAuthTag(Buffer.from(row.tag, 'base64'));
+    const value = Buffer.concat([
+      decipher.update(Buffer.from(row.ciphertext, 'base64')),
+      decipher.final(),
+    ]).toString('utf8');
+    await this.database
+      .query(`UPDATE secrets SET last_used_at = now() WHERE name = $1`, [row.name])
+      .catch(() => undefined);
+    return value;
+  }
+
+  /** Erase one secret (connector removal / OAuth revoke); audited by name only. */
+  async delete(name: string, actor: string): Promise<boolean> {
+    if (!SecretStore.isValidName(name)) throw new Error(`invalid secret name ${name}`);
+    const rows = await this.database.query<{ name: string }>(
+      `DELETE FROM secrets WHERE name = $1 RETURNING name`,
+      [name],
+    );
+    if (rows.length > 0) {
+      await writeAudit(this.database, { actor, action: 'secret.deleted', subject: name });
+    }
+    return rows.length > 0;
+  }
+
   async list(): Promise<
     Array<{ name: string; updatedBy: string; updatedAt: string; lastUsedAt: string | null }>
   > {

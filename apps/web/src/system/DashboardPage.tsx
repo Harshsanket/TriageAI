@@ -65,6 +65,55 @@ export function AgentShareBar({ agents }: { agents: SystemDashboard['agents'] })
   );
 }
 
+/** 18.T24 "Trajectory quality" tile: average path efficiency + wasted steps. */
+export function TrajectoryQualityTile({
+  trajectory,
+}: {
+  trajectory: SystemDashboard['trajectory'];
+}) {
+  return (
+    <article className="dashboard__tile" aria-labelledby="dashboard-trajectory">
+      <h3 id="dashboard-trajectory">Trajectory quality</h3>
+      <p className="dashboard__value">
+        {trajectory.runs === 0
+          ? 'No trajectories yet'
+          : trajectory.averagePathEfficiency == null
+            ? 'Path efficiency not measured'
+            : `${Math.round(trajectory.averagePathEfficiency * 100)}% path efficiency`}
+      </p>
+      <dl className="dashboard__facts">
+        <div>
+          <dt>Runs measured</dt>
+          <dd>{trajectory.runs}</dd>
+        </div>
+        <div>
+          <dt>Wasted steps</dt>
+          <dd>{trajectory.wastedSteps}</dd>
+        </div>
+        <div>
+          <dt>Redundant steps</dt>
+          <dd>{trajectory.redundantSteps}</dd>
+        </div>
+        <div>
+          <dt>Step pass rate</dt>
+          <dd>
+            {trajectory.stepPassRate == null
+              ? '—'
+              : `${Math.round(trajectory.stepPassRate * 100)}%`}
+          </dd>
+        </div>
+        <div>
+          <dt>Most common failing step</dt>
+          <dd>{trajectory.mostCommonFailingStep ?? '—'}</dd>
+        </div>
+      </dl>
+      <button className="dashboard__link" type="button" onClick={() => navigate('/runs')}>
+        Open runs
+      </button>
+    </article>
+  );
+}
+
 function totalUsers(data: SystemDashboard): number {
   const { customer, agent, admin } = data.security.usersByRole;
   return customer + agent + admin;
@@ -85,6 +134,15 @@ interface HardwareSnapshot {
 }
 
 const gb = (bytes: number): string => `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+
+const ratioPct = (value: number | null | undefined, digits = 0): string =>
+  value == null ? '—' : `${(value * 100).toFixed(digits)}%`;
+
+const money = (value: number | null | undefined): string =>
+  value == null ? '—' : `$${value.toFixed(value < 0.01 ? 6 : 2)}`;
+
+const compactNumber = (value: number | null | undefined): string =>
+  value == null ? '—' : value.toLocaleString();
 
 function bucketLabel(bucket: string, window: string): string {
   const [year, month, day] = bucket.slice(0, 10).split('-');
@@ -267,6 +325,20 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
   const [deadLetters, setDeadLetters] = useState<DeadLetterDto[]>([]);
   const [connectionCount, setConnectionCount] = useState<number | null>(null);
   const [refreshMs, setRefreshMs] = useState(600_000);
+  const [liveNonce, setLiveNonce] = useState(0);
+
+  // 19.T5: prefer the existing server-sent activity stream; the polling timer
+  // remains the fallback (and the only path when EventSource is unavailable).
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return;
+    const source = new EventSource('/api/v1/system/events');
+    const onActivity = () => setLiveNonce((nonce) => nonce + 1);
+    source.addEventListener('activity', onActivity);
+    return () => {
+      source.removeEventListener('activity', onActivity);
+      source.close();
+    };
+  }, []);
 
   useEffect(() => {
     void apiFetch<{ refreshMs: number }>('/api/v1/system/dashboard-settings').then((result) => {
@@ -298,7 +370,7 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
       disposed = true;
       clearInterval(timer);
     };
-  }, [refreshMs]);
+  }, [refreshMs, liveNonce]);
 
   useEffect(() => {
     let disposed = false;
@@ -370,6 +442,17 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
 
   const knowledgeEnabled = manifest.modules.some((module) => module.id === 'kb');
   const derivativesEnabled = manifest.modules.some((module) => module.id === 'data-extract');
+  const chatEnabled = manifest.modules.some((module) => module.id === 'chat');
+  const wakeTriggers = data
+    ? Object.entries(
+        data.wakeUps.points.reduce<Record<string, number>>((totals, point) => {
+          for (const [trigger, count] of Object.entries(point.byTrigger)) {
+            totals[trigger] = (totals[trigger] ?? 0) + count;
+          }
+          return totals;
+        }, {}),
+      ).sort(([, a], [, b]) => b - a)
+    : [];
 
   return (
     <section className="dashboard">
@@ -520,24 +603,87 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
                 <dt>Calls today</dt>
                 <dd>{data.efficiency.modelCallsToday}</dd>
               </div>
+              <div>
+                <dt>Task completion (7 d)</dt>
+                <dd>
+                  {ratioPct(data.taskCompletion.rate)} ({data.taskCompletion.succeeded}/
+                  {data.taskCompletion.started})
+                </dd>
+              </div>
+              <div>
+                <dt>Cost / token</dt>
+                <dd>{money(data.unitCosts.costPerTokenUsd)}</dd>
+              </div>
+              <div>
+                <dt>Cost / step</dt>
+                <dd>{money(data.unitCosts.costPerStepUsd)}</dd>
+              </div>
+              <div>
+                <dt>Cost / completed run</dt>
+                <dd>{money(data.unitCosts.costPerCompletedRunUsd)}</dd>
+              </div>
             </dl>
           </article>
 
-          <article className="dashboard__tile" aria-labelledby="dashboard-models">
+          <article
+            className="dashboard__tile dashboard__tile--wide"
+            aria-labelledby="dashboard-models"
+          >
             <h3 id="dashboard-models">Model routing</h3>
-            <p className="dashboard__value">{data.modelCalls.today} calls today</p>
-            {data.modelCalls.byProvider.length === 0 ? (
+            <p className="dashboard__value">
+              {data.routing.calls} calls · {data.modelCalls.today} today
+            </p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Escalations (7 d)</dt>
+                <dd>{data.routing.escalations}</dd>
+              </div>
+              <div>
+                <dt>Fallbacks</dt>
+                <dd>{data.routing.fallbacks}</dd>
+              </div>
+              <div>
+                <dt>Schema repairs</dt>
+                <dd>{data.routing.repairs}</dd>
+              </div>
+            </dl>
+            {Object.keys(data.routing.byTier).length > 0 ? (
+              <ul className="dashboard__list" aria-label="Calls by tier">
+                {Object.entries(data.routing.byTier)
+                  .sort(([, a], [, b]) => b - a)
+                  .map(([tier, calls]) => (
+                    <li key={tier}>
+                      <span>{tier}</span>
+                      <span>{calls}</span>
+                    </li>
+                  ))}
+              </ul>
+            ) : null}
+            {data.routing.byModel.length === 0 ? (
               <p className="dashboard__empty">No model calls yet.</p>
             ) : (
-              <ul className="dashboard__list" aria-label="Calls by provider">
-                {data.modelCalls.byProvider.map((provider) => (
-                  <li key={provider.provider}>
-                    <span>{provider.provider}</span>
-                    <span>{provider.calls}</span>
+              <ul className="dashboard__list" aria-label="Calls by model">
+                {data.routing.byModel.map((model) => (
+                  <li key={`${model.provider}/${model.model}`}>
+                    <span>
+                      {model.provider} / {model.model} · {model.tier}
+                    </span>
+                    <span>
+                      {model.calls} calls · {money(model.costUsd)}
+                    </span>
                   </li>
                 ))}
               </ul>
             )}
+            {data.routing.byReason.length > 0 ? (
+              <p className="dashboard__empty">
+                Reasons:{' '}
+                {data.routing.byReason
+                  .slice(0, 4)
+                  .map((entry) => `${entry.reason} (${entry.calls})`)
+                  .join(' · ')}
+              </p>
+            ) : null}
           </article>
 
           <article
@@ -764,6 +910,18 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
                         {agent.runs} runs · {agent.tokens.toLocaleString()} tokens · $
                         {agent.cost.toFixed(4)}
                       </span>
+                      <span>
+                        {agent.status ?? 'idle'}
+                        {agent.currentStep != null
+                          ? ` · step ${agent.currentStep}/${agent.stepLimit ?? '?'}`
+                          : ''}
+                        {agent.contextPercent != null
+                          ? ` · context ${agent.contextPercent.toFixed(0)}%`
+                          : ''}
+                        {agent.watchdog?.flag
+                          ? ` · watchdog: ${agent.watchdog.flag.replace('_', ' ')}`
+                          : ''}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -828,6 +986,379 @@ export default function DashboardPage({ manifest }: { manifest: SystemManifest }
               </ul>
             </article>
           )}
+
+          <TrajectoryQualityTile trajectory={data.trajectory} />
+
+          <article className="dashboard__tile" aria-labelledby="dashboard-flags">
+            <h3 id="dashboard-flags">Flagged runs</h3>
+            <p className="dashboard__value">{(data.flags.rate * 100).toFixed(1)}%</p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Flagged (24 h)</dt>
+                <dd>
+                  {data.flags.total} of {data.flags.runs} runs
+                </dd>
+              </div>
+            </dl>
+            <button className="dashboard__link" type="button" onClick={() => navigate('/runs')}>
+              Open runs
+            </button>
+          </article>
+
+          <article className="dashboard__tile" aria-labelledby="dashboard-suggestions">
+            <h3 id="dashboard-suggestions">Pipeline suggestions</h3>
+            {data.suggestions.filter((suggestion) => suggestion.suggest).length === 0 ? (
+              <p className="dashboard__empty">No stable-path agent workflows yet.</p>
+            ) : (
+              <ul className="dashboard__list">
+                {data.suggestions
+                  .filter((suggestion) => suggestion.suggest)
+                  .slice(0, 4)
+                  .map((suggestion) => (
+                    <li key={suggestion.workflowId}>
+                      <strong>{suggestion.workflowId}</strong> ·{' '}
+                      {(suggestion.share * 100).toFixed(0)}% of {suggestion.runs} runs ·{' '}
+                      {suggestion.path.join(' → ')}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </article>
+
+          <article className="dashboard__tile" aria-labelledby="dashboard-context">
+            <h3 id="dashboard-context">Context</h3>
+            <p className="dashboard__value">
+              {data.contextPacks.available
+                ? `${data.contextPacks.totalContexts} context packs (7 d)`
+                : 'not measured'}
+            </p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Limit</dt>
+                <dd>{compactNumber(data.contextPacks.contextLimit)}</dd>
+              </div>
+              <div>
+                <dt>Used avg / p95</dt>
+                <dd>
+                  {compactNumber(data.contextPacks.averageUsedTokens)} /{' '}
+                  {compactNumber(data.contextPacks.p95UsedTokens)}
+                </dd>
+              </div>
+              <div>
+                <dt>Budget avg / p95</dt>
+                <dd>
+                  {data.contextPacks.averagePercent == null
+                    ? '—'
+                    : `${data.contextPacks.averagePercent.toFixed(0)}% / ${(data.contextPacks.p95Percent ?? 0).toFixed(0)}%`}
+                </dd>
+              </div>
+              {chatEnabled ? (
+                <>
+                  <div>
+                    <dt>Chat conversations</dt>
+                    <dd>{data.context ? data.context.conversations : '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Chat context used</dt>
+                    <dd>
+                      {data.context?.averagePercent == null
+                        ? '—'
+                        : `${data.context.averagePercent.toFixed(0)}%`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Compacted</dt>
+                    <dd>{data.context ? data.context.compacted : '—'}</dd>
+                  </div>
+                </>
+              ) : null}
+            </dl>
+            <button className="dashboard__link" type="button" onClick={() => navigate('/agents')}>
+              Open agents
+            </button>
+          </article>
+
+          <article className="dashboard__tile" aria-labelledby="dashboard-routines">
+            <h3 id="dashboard-routines">Routines</h3>
+            <p className="dashboard__value">{data.routines.schedules}</p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>No-change runs</dt>
+                <dd>{data.routines.noChange}</dd>
+              </div>
+              <div>
+                <dt>Skipped overlaps</dt>
+                <dd>{data.routines.skippedOverlap}</dd>
+              </div>
+              <div>
+                <dt>Useful-run rate (7 d)</dt>
+                <dd>
+                  {ratioPct(data.routines.usefulRunRate)} ({data.routines.usefulRuns}/
+                  {data.routines.scheduledRuns})
+                </dd>
+              </div>
+              <div>
+                <dt>Cost / useful run</dt>
+                <dd>{money(data.routines.costPerUsefulRun)}</dd>
+              </div>
+              <div>
+                <dt>No-change share</dt>
+                <dd>{ratioPct(data.routines.noChangeShare)}</dd>
+              </div>
+            </dl>
+            {data.routines.bySchedule.length > 0 ? (
+              <ul className="dashboard__list" aria-label="Routine receipts">
+                {data.routines.bySchedule.slice(0, 5).map((routine) => (
+                  <li key={routine.scheduleId}>
+                    <span>
+                      {routine.scheduleId} · {routine.suggestion.replace('_', ' ')}
+                    </span>
+                    <span>
+                      {routine.runs} runs · {ratioPct(routine.usefulRunRate)} useful ·{' '}
+                      {money(routine.costPerUsefulRun)}/useful
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <button className="dashboard__link" type="button" onClick={() => navigate('/config')}>
+              Open schedules
+            </button>
+          </article>
+
+          <article
+            className="dashboard__tile dashboard__tile--wide"
+            aria-labelledby="dashboard-wakeups"
+          >
+            <h3 id="dashboard-wakeups">Wake-ups and re-reads</h3>
+            <p className="dashboard__value">
+              {data.wakeUps.total} wake-ups (7 d) · re-read{' '}
+              {data.wakeUps.averageReReadRatio == null
+                ? 'not measured'
+                : data.wakeUps.averageReReadRatio.toFixed(1)}
+            </p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Probes (no-change)</dt>
+                <dd>{data.wakeUps.probes}</dd>
+              </div>
+              <div>
+                <dt>Runs over threshold</dt>
+                <dd>
+                  {data.wakeUps.runsAboveThreshold} (limit {data.wakeUps.reReadThreshold})
+                </dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{data.wakeUps.alert ? 'above threshold' : 'within budget'}</dd>
+              </div>
+            </dl>
+            <BarChart
+              label="Wake-ups per day"
+              points={data.wakeUps.points.map((point) => ({
+                label: bucketLabel(point.date, 'month'),
+                value: point.total,
+              }))}
+            />
+            {wakeTriggers.length > 0 ? (
+              <ul className="dashboard__list" aria-label="Wake-ups by trigger">
+                {wakeTriggers.map(([trigger, count]) => (
+                  <li key={trigger}>
+                    <span>{trigger}</span>
+                    <span>{count}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {data.wakeUps.topRuns.length > 0 ? (
+              <ul className="dashboard__list" aria-label="Most expensive runs by context size">
+                {data.wakeUps.topRuns.map((run) => (
+                  <li key={run.runId}>
+                    <button
+                      className="dashboard__run"
+                      type="button"
+                      onClick={() => navigate(`/runs/${run.runId}`)}
+                    >
+                      {run.workflowId}
+                    </button>
+                    <span>
+                      {run.tokensIn.toLocaleString()} in + {run.tokensCached.toLocaleString()}{' '}
+                      cached ÷ {run.tokensOut.toLocaleString()} out · re-read{' '}
+                      {run.reReadRatio == null ? '—' : run.reReadRatio.toFixed(1)} ·{' '}
+                      {money(run.costUsd)}
+                      {run.contextParts.length > 0
+                        ? ` · ${run.contextParts
+                            .map((part) => `${part.source}:${part.tokens}`)
+                            .join(', ')}`
+                        : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <button className="dashboard__link" type="button" onClick={() => navigate('/runs')}>
+              Open runs
+            </button>
+          </article>
+
+          <article className="dashboard__tile" aria-labelledby="dashboard-cache">
+            <h3 id="dashboard-cache">Cache use</h3>
+            <p className="dashboard__value">
+              {ratioPct(data.caches.generation.hitRate)} generation hits
+            </p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Generation lookups</dt>
+                <dd>
+                  {data.caches.generation.lookups} · {data.caches.generation.hits} hits
+                </dd>
+              </div>
+              <div>
+                <dt>Prompt cache hit rate</dt>
+                <dd>{ratioPct(data.caches.prompt.hitRate)}</dd>
+              </div>
+              <div>
+                <dt>Prompt tokens cached</dt>
+                <dd>{data.caches.prompt.tokensCached.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Est. prompt savings</dt>
+                <dd>
+                  {data.caches.prompt.savedUsd == null
+                    ? 'not priced'
+                    : money(data.caches.prompt.savedUsd)}
+                </dd>
+              </div>
+              <div>
+                <dt>Dashboard response cache</dt>
+                <dd>
+                  {ratioPct(data.responseCache.hitRate)} · {data.responseCache.hits} hits /{' '}
+                  {data.responseCache.misses} misses
+                </dd>
+              </div>
+            </dl>
+          </article>
+
+          <article className="dashboard__tile" aria-labelledby="dashboard-coordination">
+            <h3 id="dashboard-coordination">Coordination overhead</h3>
+            <p className="dashboard__value">
+              {data.coordination.available
+                ? `${((data.coordination.overhead ?? 0) * 100).toFixed(0)}%`
+                : 'Not measured'}
+            </p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Threshold</dt>
+                <dd>{Math.round(data.coordination.threshold * 100)}%</dd>
+              </div>
+              {data.coordination.available ? (
+                <div>
+                  <dt>Status</dt>
+                  <dd>{data.coordination.alert ? 'above threshold' : 'within budget'}</dd>
+                </div>
+              ) : (
+                <div>
+                  <dt>Why</dt>
+                  <dd>no supervision/handoff/review tasks in the last 7 days</dd>
+                </div>
+              )}
+            </dl>
+          </article>
+
+          <article
+            className="dashboard__tile dashboard__tile--wide"
+            aria-labelledby="dashboard-quality"
+          >
+            <h3 id="dashboard-quality">Quality</h3>
+            <p className="dashboard__value">
+              {data.quality.passRate == null
+                ? 'not measured'
+                : `${Math.round(data.quality.passRate * 100)}%`}
+            </p>
+            <dl className="dashboard__facts">
+              <div>
+                <dt>Eval reports (30 d)</dt>
+                <dd>{data.quality.reports}</dd>
+              </div>
+              <div>
+                <dt>Drift</dt>
+                <dd>
+                  {data.quality.drift == null ? 'unknown' : data.quality.drift ? 'flagged' : 'none'}
+                </dd>
+              </div>
+              <div>
+                <dt>Refusal rate</dt>
+                <dd>{ratioPct(data.quality.refusalRate)}</dd>
+              </div>
+              <div>
+                <dt>Escalation rate</dt>
+                <dd>{ratioPct(data.quality.escalationRate)}</dd>
+              </div>
+              <div>
+                <dt>Auto-resolve rate</dt>
+                <dd>{ratioPct(data.quality.autoResolveRate)}</dd>
+              </div>
+              <div>
+                <dt>Valid-schema rate</dt>
+                <dd>
+                  {ratioPct(data.schemaValidity.rate)} ({data.schemaValidity.validFirstTry}/
+                  {data.schemaValidity.calls})
+                </dd>
+              </div>
+              <div>
+                <dt>Tool-call success</dt>
+                <dd>
+                  {ratioPct(data.toolCalls.successRate)} ({data.toolCalls.ok}/{data.toolCalls.calls}
+                  )
+                </dd>
+              </div>
+              <div>
+                <dt>Retrieval hit rate</dt>
+                <dd>
+                  {ratioPct(data.retrieval.hitRate)} ({data.retrieval.hits}/
+                  {data.retrieval.retrievals})
+                </dd>
+              </div>
+            </dl>
+            <button className="dashboard__link" type="button" onClick={() => navigate('/feedback')}>
+              Open feedback
+            </button>
+          </article>
+
+          <article
+            className="dashboard__tile dashboard__tile--wide"
+            aria-labelledby="dashboard-audit"
+          >
+            <h3 id="dashboard-audit">Alerts and audit</h3>
+            {data.alerts.length > 0 ? (
+              <ul className="dashboard__list" aria-label="Active alerts">
+                {data.alerts.map((alert) => (
+                  <li key={alert.id}>
+                    <span
+                      className={`dashboard__dot dashboard__dot--${alert.severity === 'critical' ? 'down' : 'degraded'}`}
+                    >
+                      {alert.severity}
+                    </span>
+                    <span>{alert.message}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="dashboard__empty">No alerts firing.</p>
+            )}
+            <p className="dashboard__value">{data.audit.lastDay} actions (24 h)</p>
+            <ul className="dashboard__list">
+              {data.audit.recent.map((entry) => (
+                <li key={`${entry.at}-${entry.action}`}>
+                  <strong>{entry.action}</strong> · {entry.actor ?? 'system'} ·{' '}
+                  {new Date(entry.at).toLocaleTimeString()}
+                </li>
+              ))}
+            </ul>
+            <button className="dashboard__link" type="button" onClick={() => navigate('/system')}>
+              Open audit
+            </button>
+          </article>
 
           <article className="dashboard__tile" aria-labelledby="dashboard-security">
             <h3 id="dashboard-security">Security</h3>

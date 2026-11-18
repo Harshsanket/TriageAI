@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
+import type { Kernel } from '@triageai/kernel';
+
 import { buildApp } from '../src/app.js';
 
 const describeIfDb = process.env.SKIP_DB_TESTS === '1' ? describe.skip : describe;
@@ -44,6 +46,21 @@ describeIfDb('connected APIs (phase 23.7)', () => {
       secretName: 'TEST_CONNECTION_TOKEN',
       status: 'ready',
     });
+
+    // 23.T10: counters recorded by connection tests hydrate the view.
+    const kernel = (app as FastifyInstance & { kernel: Kernel }).kernel;
+    await kernel.database.query(
+      `INSERT INTO connection_stats
+         (connection_id, calls, errors, last_success_at, last_error, latency_ms)
+       VALUES ($1, 3, 1, now(), 'boom', 42)`,
+      [id],
+    );
+    const counted = await app.inject({ method: 'GET', url: '/api/v1/connections' });
+    expect(
+      (counted.json() as { connections: Array<Record<string, unknown>> }).connections.find(
+        (entry) => entry.id === id,
+      ),
+    ).toMatchObject({ calls: 3, errors: 1, lastError: 'boom', latencyMs: 42 });
 
     const refusedTest = await app.inject({
       method: 'POST',

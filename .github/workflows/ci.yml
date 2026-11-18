@@ -232,10 +232,48 @@ jobs:
           name: generation-eval-report
           path: apps/api/evals/reports/generation-latest.json
 
+  scenario-eval:
+    name: Scenario eval (8 categories, floors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run scenario eval (per-category pass floors)
+        run: pnpm --filter @triageai/api exec tsx evals/scenarios.eval.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scenario-eval-report
+          path: apps/api/evals/reports/scenarios-latest.json
+
+  redteam-eval:
+    name: Red-team eval (tool/MCP taint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run red-team eval (zero unsafe actions)
+        run: pnpm --filter @triageai/api exec tsx evals/redteam.eval.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redteam-eval-report
+          path: apps/api/evals/reports/redteam-latest.json
+
   merged-eval:
     name: Merged eval report (single format)
     runs-on: ubuntu-latest
-    needs: [classification-eval, retrieval-eval, generation-eval]
+    needs: [classification-eval, retrieval-eval, generation-eval, scenario-eval, redteam-eval]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -254,6 +292,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: generation-eval-report
+          path: apps/api/evals/reports
+      - uses: actions/download-artifact@v4
+        with:
+          name: scenario-eval-report
+          path: apps/api/evals/reports
+      - uses: actions/download-artifact@v4
+        with:
+          name: redteam-eval-report
           path: apps/api/evals/reports
       - run: pnpm install --frozen-lockfile
       - name: Merge suites into the registry report format

@@ -46,9 +46,18 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 
 | Method | Path | Roles |
 | --- | --- | --- |
+| GET | `/api/v1/activity` | agent, admin |
+| GET | `/api/v1/agents` | agent, admin |
+| POST | `/api/v1/agents` | admin |
+| GET | `/api/v1/agents/:id` | agent, admin |
+| POST | `/api/v1/agents/:id/memory/:memoryId/promote` | admin |
+| POST | `/api/v1/agents/:id/pause` | admin |
+| POST | `/api/v1/agents/:id/resume` | admin |
+| POST | `/api/v1/agents/:id/run` | admin |
 | GET | `/api/v1/approvals` | agent, admin |
 | POST | `/api/v1/approvals/:id/approve` | admin |
 | POST | `/api/v1/approvals/:id/reject` | admin |
+| POST | `/api/v1/approvals/batch` | agent, admin |
 | POST | `/api/v1/auth/login` | public |
 | POST | `/api/v1/auth/logout` | public |
 | GET | `/api/v1/auth/me` | customer, agent, admin |
@@ -72,6 +81,16 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | POST | `/api/v1/connections/:id/disable` | admin |
 | PUT | `/api/v1/connections/:id/secret` | admin |
 | POST | `/api/v1/connections/:id/test` | admin |
+| GET | `/api/v1/connectors` | admin |
+| POST | `/api/v1/connectors` | admin |
+| DELETE | `/api/v1/connectors/:id` | admin |
+| PUT | `/api/v1/connectors/:id` | admin |
+| POST | `/api/v1/connectors/:id/complete` | admin |
+| POST | `/api/v1/connectors/:id/import` | admin |
+| POST | `/api/v1/connectors/:id/oauth/start` | admin |
+| POST | `/api/v1/connectors/:id/sync` | admin |
+| POST | `/api/v1/connectors/:id/test` | admin |
+| GET | `/api/v1/connectors/oauth/callback` | public |
 | GET | `/api/v1/data-extract/datasets` | agent, admin |
 | POST | `/api/v1/data-extract/datasets` | admin |
 | DELETE | `/api/v1/data-extract/datasets/:id` | admin |
@@ -119,6 +138,10 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | GET | `/api/v1/kb/storage` | agent, admin |
 | POST | `/api/v1/mcp` | admin |
 | GET | `/api/v1/mcp/card` | admin |
+| GET | `/api/v1/mcp/connections` | admin |
+| POST | `/api/v1/mcp/connections` | admin |
+| POST | `/api/v1/mcp/connections/:id/complete` | admin |
+| POST | `/api/v1/mcp/connections/:id/import` | admin |
 | GET | `/api/v1/me/preferences` | customer, agent, admin |
 | PUT | `/api/v1/me/preferences` | customer, agent, admin |
 | GET | `/api/v1/models` | agent, admin |
@@ -137,15 +160,21 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | GET | `/api/v1/public-api/external-agents` | admin |
 | POST | `/api/v1/public-api/external-agents` | admin |
 | POST | `/api/v1/public-api/external-agents/:id/handoffs` | admin |
+| GET | `/api/v1/public-api/external-agents/activity` | admin |
 | POST | `/api/v1/public-api/kb/search` | key |
 | GET | `/api/v1/public-api/keys` | admin |
 | POST | `/api/v1/public-api/keys` | admin |
 | POST | `/api/v1/public-api/keys/:id/revoke` | admin |
+| POST | `/api/v1/public-api/mcp` | key |
+| GET | `/api/v1/public-api/tickets` | key |
+| POST | `/api/v1/public-api/tickets` | key |
+| GET | `/api/v1/public-api/tickets/:id` | key |
 | POST | `/api/v1/setup/add` | admin |
 | GET | `/api/v1/setup/agent-defaults` | admin |
 | PUT | `/api/v1/setup/appearance-defaults` | admin |
 | POST | `/api/v1/setup/apply` | admin |
 | GET | `/api/v1/setup/config/effective` | admin |
+| POST | `/api/v1/setup/docs-internal` | admin |
 | GET | `/api/v1/setup/draft` | admin |
 | PUT | `/api/v1/setup/draft` | admin |
 | POST | `/api/v1/setup/erase` | admin |
@@ -191,8 +220,12 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | PATCH | `/api/v1/support/tickets/:id/triage` | agent, admin |
 | GET | `/api/v1/support/triage-policy` | agent, admin |
 | GET | `/api/v1/system/alerts` | admin |
+| GET | `/api/v1/system/approval-policy` | admin |
+| PUT | `/api/v1/system/approval-policy` | admin |
 | GET | `/api/v1/system/audit` | admin |
 | GET | `/api/v1/system/audit/verify` | admin |
+| GET | `/api/v1/system/autonomy` | admin |
+| PUT | `/api/v1/system/autonomy/:flow` | admin |
 | POST | `/api/v1/system/base-memory/refresh` | admin |
 | GET | `/api/v1/system/candidates` | agent, admin |
 | POST | `/api/v1/system/candidates` | agent, admin |
@@ -213,10 +246,14 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | POST | `/api/v1/system/deadletters/:id/replay` | admin |
 | GET | `/api/v1/system/events` | agent, admin |
 | GET | `/api/v1/system/feedback-insights` | agent, admin |
+| POST | `/api/v1/system/forget-me` | admin |
 | GET | `/api/v1/system/hw` | admin |
 | GET | `/api/v1/system/jobs` | customer, agent, admin |
 | POST | `/api/v1/system/jobs/:id/cancel` | customer, agent, admin |
 | GET | `/api/v1/system/jobs/stream` | customer, agent, admin |
+| GET | `/api/v1/system/legal-holds` | admin |
+| POST | `/api/v1/system/legal-holds` | admin |
+| DELETE | `/api/v1/system/legal-holds/:id` | admin |
 | GET | `/api/v1/system/manifest` | customer, agent, admin |
 | GET | `/api/v1/system/model-runtimes` | admin |
 | GET | `/api/v1/system/modules` | admin |
@@ -227,14 +264,22 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | GET | `/api/v1/system/runs` | agent, admin |
 | GET | `/api/v1/system/runs/:id` | agent, admin |
 | POST | `/api/v1/system/runs/:id/cancel` | agent, admin |
+| POST | `/api/v1/system/runs/:id/flag` | agent, admin |
 | GET | `/api/v1/system/runs/:id/graph` | agent, admin |
 | GET | `/api/v1/system/runs/daily` | agent, admin |
+| GET | `/api/v1/system/schedules` | admin |
+| GET | `/api/v1/system/schedules/:id/receipt` | admin |
+| POST | `/api/v1/system/schedules/:id/run` | admin |
+| PUT | `/api/v1/system/schedules/:id/suggestion` | admin |
 | GET | `/api/v1/system/storage` | admin |
 | GET | `/api/v1/system/update` | admin |
 | POST | `/api/v1/system/update/apply` | admin |
 | POST | `/api/v1/system/update/check` | admin |
 | POST | `/api/v1/system/update/download` | admin |
 | GET | `/api/v1/system/usage` | admin |
+| GET | `/api/v1/system/workflows` | admin |
+| GET | `/api/v1/teams` | agent, admin |
+| POST | `/api/v1/teams/run` | admin |
 | GET | `/api/v1/tools` | admin |
 | GET | `/healthz` | public |
 | GET | `/metrics` | admin |
@@ -279,7 +324,7 @@ Declared workflows (generated from module registrations):
 
 | Workflow | Module | Version | Trigger | Stages |
 | --- | --- | --- | --- | --- |
-| `chat.reply` | chat | 0.2.0 | endpoint | load → status → seed? → retrieve? → gate? → generate? → validate? → finalize? → deliver |
+| `chat.reply` | chat | 0.2.0 | endpoint | load → status → scope? → seed? → retrieve? → gate? → generate? → validate? → finalize? → deliver |
 | `echo.run` | echo | 0.1.0 | endpoint | upper → wrap |
 | `integrations.github.sync_issue` | integrations-github | 0.1.0 | event | sync |
 | `integrations.github.sync_status` | integrations-github | 0.1.0 | event | close |
@@ -293,6 +338,188 @@ Declared workflows (generated from module registrations):
 `?` marks a stage with a `when` guard; the full expressions are in the module workflows.
 
 <!-- /generated:workflows -->
+
+Declared graphs (generated Mermaid for v2 workflows):
+
+<!-- generated:graphs -->
+
+### `chat.reply`
+
+```mermaid
+flowchart TD
+  load[load]
+  status[status]
+  scope[scope]
+  seed[seed]
+  retrieve[retrieve]
+  gate[gate]
+  generate[generate]
+  validate[validate]
+  finalize[finalize]
+  deliver[deliver]
+  end([succeeded])
+  failed([failed])
+  load -->|next| status
+  status -->|status_intent| deliver
+  status -->|conversation| scope
+  scope -->|refused| deliver
+  scope -->|in_scope| seed
+  seed -->|bootstrapped| gate
+  seed -->|kb| retrieve
+  retrieve -->|next| gate
+  gate -->|allowed| generate
+  gate -->|not_allowed| deliver
+  generate -->|next| validate
+  validate -->|passed| finalize
+  validate -->|not_passed| deliver
+  finalize -->|next| deliver
+  deliver -->|next| end
+```
+
+### `echo.run`
+
+```mermaid
+flowchart TD
+  upper[upper]
+  wrap[wrap]
+  end([succeeded])
+  failed([failed])
+  upper -->|next| wrap
+  wrap -->|next| end
+```
+
+### `integrations.github.sync_issue`
+
+```mermaid
+flowchart TD
+  sync[sync]
+  end([succeeded])
+  failed([failed])
+  sync -->|next| end
+```
+
+### `integrations.github.sync_status`
+
+```mermaid
+flowchart TD
+  close[close]
+  end([succeeded])
+  failed([failed])
+  close -->|next| end
+```
+
+### `integrations.slack.flush`
+
+```mermaid
+flowchart TD
+  flush[flush]
+  end([succeeded])
+  failed([failed])
+  flush -->|next| end
+```
+
+### `integrations.slack.notify`
+
+```mermaid
+flowchart TD
+  send[send]
+  end([succeeded])
+  failed([failed])
+  send -->|next| end
+```
+
+### `kb.ingest`
+
+```mermaid
+flowchart TD
+  prepare[prepare]
+  embed[embed]
+  index[index]
+  end([succeeded])
+  failed([failed])
+  prepare -->|next| embed
+  embed -->|next| index
+  index -->|next| end
+```
+
+### `public_api.completion`
+
+```mermaid
+flowchart TD
+  retrieve[retrieve]
+  generate[generate]
+  validate[validate]
+  finalize[finalize]
+  end([succeeded])
+  failed([failed])
+  retrieve -->|sufficient| generate
+  retrieve -->|insufficient| end
+  generate -->|next| validate
+  validate -->|passed| finalize
+  validate -->|not_passed| end
+  finalize -->|next| end
+```
+
+### `support.auto_reply`
+
+```mermaid
+flowchart TD
+  load[load]
+  policy[policy]
+  retrieve[retrieve]
+  generate[generate]
+  validate[validate]
+  finalize[finalize]
+  decision[decision]
+  deliver[deliver]
+  clarify[clarify]
+  escalate[escalate]
+  end([succeeded])
+  escalated([escalated])
+  failed([failed])
+  load -->|next| policy
+  policy -->|enabled| retrieve
+  policy -->|disabled| decision
+  retrieve -->|sufficient| generate
+  retrieve -->|insufficient| decision
+  generate -->|answered| validate
+  generate -->|empty_answer| decision
+  generate -->|fallback| escalated
+  validate -->|passed| finalize
+  validate -->|not_passed| decision
+  finalize -->|next| decision
+  decision -->|reply| deliver
+  decision -->|clarify| clarify
+  decision -->|escalate| escalate
+  decision -->|none| end
+  deliver -->|next| end
+  clarify -->|next| end
+  escalate -->|next| end
+```
+
+### `support.triage`
+
+```mermaid
+flowchart TD
+  load[load]
+  classify[classify]
+  route[route]
+  priority[priority]
+  team[team]
+  apply[apply]
+  end([succeeded])
+  escalated([escalated])
+  failed([failed])
+  load -->|next| classify
+  classify -->|next| route
+  classify -->|fallback| escalated
+  route -->|next| priority
+  priority -->|next| team
+  team -->|next| apply
+  apply -->|next| end
+```
+
+<!-- /generated:graphs -->
 
 Fallbacks: `halt_run`, `return_uncertain`, `request_clarification`,
 `escalate_human`, `retry_alternative_retrieval`; model calls use `callModel`.

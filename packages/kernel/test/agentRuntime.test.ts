@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { AgentCheckpointStore, runAgent, type AgentDefinition } from '../src/agents/runtime.js';
+import { buildAgentStepContext, gateContextItems } from '../src/agents/context.js';
 import { CORE_MIGRATIONS } from '../src/migrations.js';
 import { MigrationRunner, PostgresDatabase } from '../src/storage.js';
 import { ToolRegistry } from '../src/tools/index.js';
@@ -95,6 +96,35 @@ afterAll(async () => {
   await database.close();
 });
 
+describe('context pack send gate (18.T16)', () => {
+  it('withholds secrets and redacts PII before packing', () => {
+    const gated = gateContextItems(
+      [
+        {
+          ref: 'memory:secret',
+          source: 'memory',
+          text: 'token sk-abcdefghijklmnop1234',
+          reason: 'memory_match',
+          tokens: 5,
+          sensitivity: 'internal',
+        },
+        {
+          ref: 'memory:pii',
+          source: 'memory',
+          text: 'email alice@example.com',
+          reason: 'memory_match',
+          tokens: 5,
+          sensitivity: 'internal',
+        },
+      ],
+      false,
+    );
+    expect(gated[0]?.send).toBe('withheld');
+    expect(gated[1]?.send).not.toBe('withheld');
+    expect(gated[1]?.text).not.toContain('alice@example.com');
+  });
+});
+
 describeIfDb('agent runtime (phase 16.1 core)', () => {
   it('runs a bounded structured loop and checkpoints every step', async () => {
     const chatModel = makeModel([
@@ -152,5 +182,70 @@ describeIfDb('agent runtime (phase 16.1 core)', () => {
     expect(resumed.resumed).toBe(true);
     expect(resumed.state).toMatchObject({ status: 'done', step: 2 });
     expect(second.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('gates tool observations before the next model call (18.T16)', async () => {
+    const secret = 'sk-abcdefghijklmnop1234';
+    const tools = registry();
+    tools.register({
+      name: 'kb.get_secret',
+      version: '1.0.0',
+      owner: 'kb',
+      description: 'Return a tool result that contains a pasted secret.',
+      examples: [{ query: 'x' }],
+      input: z.object({ query: z.string() }).strict(),
+      output: z.object({ hits: z.array(z.string()) }).strict(),
+      access: 'read',
+      risk: 'low',
+      scopes: ['kb:read'],
+      egressClass: 'internal',
+      idempotent: true,
+      timeoutMs: 1000,
+      undo: 'free',
+      retry: { maxAttempts: 0, backoff: 'none', retryOn: [] },
+      handler: async () => ({ hits: [secret] }),
+    });
+    const model = makeModel([
+      response(
+        '{"decision":"call_tool","tool":"kb.get_secret","args":{"query":"x"},"reason":"need it"}',
+      ),
+      response('{"decision":"done","answer":"ok","reason":"done"}'),
+    ]);
+    const store = new AgentCheckpointStore(database);
+    await runAgent({
+      runId: `test-gate-${Date.now()}`,
+      definition: { ...definition, tools: ['kb.search', 'kb.get_secret'] },
+      goal: 'fetch the thing',
+      chatModel: model,
+      tools,
+      store,
+      logger,
+    });
+    const calls = (model.chat as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const secondCall = JSON.stringify(calls[1] ?? []);
+    expect(secondCall).not.toContain(secret);
+    expect(secondCall).toContain('withheld');
+  });
+
+  it('drops short-term history for scheduled runs (18.T33)', async () => {
+    const state = {
+      goal: 'what about that open item',
+      step: 0,
+      status: 'running' as const,
+      notes: ['chatty history that must not leak'],
+    };
+    const base = {
+      definition,
+      goal: state.goal,
+      state,
+      step: 0,
+      hosted: false,
+      windowTokens: 8192,
+      lastTool: 'kb.search',
+    };
+    const scheduled = await buildAgentStepContext({ ...base, trigger: 'schedule' });
+    expect(scheduled.promptText).not.toContain('chatty history');
+    const interactive = await buildAgentStepContext({ ...base, trigger: 'endpoint' });
+    expect(interactive.promptText).toContain('chatty history');
   });
 });

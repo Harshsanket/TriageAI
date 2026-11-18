@@ -28,6 +28,8 @@ const CORE_TABLES = new Set([
   'audit_events',
   'queue_jobs',
   'queue_deadletters',
+  'schedule_state',
+  'schedule_runs',
   'vector_chunks',
   'users',
   'auth_sessions',
@@ -164,8 +166,13 @@ export class MigrationRunner {
     options: { schema?: string } = {},
   ): Promise<MigrationResult> {
     // Tests and tools may reach the runner before a kernel boot has created the
-    // ledger; `IF NOT EXISTS` keeps this idempotent for every caller.
-    await this.database.query(MIGRATIONS_TABLE_SQL);
+    // ledger; `IF NOT EXISTS` keeps this idempotent for every caller. The
+    // advisory lock (same key as bootKernel) also keeps concurrent CREATE TABLE
+    // calls from racing on the table's pg_type row (duplicate-key failure).
+    await this.database.transaction(async (tx) => {
+      await tx.query(`SELECT pg_advisory_xact_lock(hashtext('kernel:migrations-table'))`);
+      await tx.query(MIGRATIONS_TABLE_SQL);
+    });
     const result: MigrationResult = { applied: [], conflicts: [], alreadyApplied: [] };
     for (const migration of migrations) {
       const checksum = checksumSql(migration.sql);

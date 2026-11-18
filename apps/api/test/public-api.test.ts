@@ -91,6 +91,18 @@ describeIfDb('public API (phase 13)', () => {
     expect(created.statusCode).toBe(200);
     const { key, id } = created.json() as { key: string; id: string };
 
+    // 13.T1: the same key can drive the MCP edge surface.
+    const mcp = await app.inject({
+      method: 'POST',
+      url: '/api/v1/public-api/mcp',
+      headers: { authorization: `Bearer ${key}` },
+      payload: { jsonrpc: '2.0', id: 1, method: 'initialize' },
+    });
+    expect(mcp.statusCode).toBe(200);
+    expect(
+      (mcp.json() as { result: { serverInfo: { name: string } } }).result.serverInfo.name,
+    ).toBe('triageai');
+
     const completion = await app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
@@ -142,6 +154,73 @@ describeIfDb('public API (phase 13)', () => {
     expect(after.json()).toMatchObject({ code: 'public_api.KEY_INVALID' });
   });
 
+  it('ends succeeded without generating when retrieval is insufficient (graph guard)', async () => {
+    const insufficient: Capabilities = {
+      ...fakeCapabilities,
+      retriever: {
+        search: async () => ({
+          chunks: [],
+          gate: {
+            sufficient: false,
+            topScore: 0.1,
+            margin: 0,
+            threshold: 0.35,
+            marginThreshold: 0.05,
+          },
+        }),
+      },
+    };
+    app = (await buildApp({
+      quiet: true,
+      configPath,
+      capabilities: insufficient,
+      useOverlay: false,
+    })) as App;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/public-api/keys',
+      payload: { name: 'insufficient-retrieval' },
+    });
+    const { key } = created.json() as { key: string };
+    const completion = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${key}` },
+      payload: { messages: [{ role: 'user', content: 'How long do refunds take?' }] },
+    });
+    expect(completion.statusCode).toBe(200);
+    const body = completion.json() as {
+      choices: Array<{ message: { content: string } }>;
+      x_triageai: { citations: string[]; runId: string };
+    };
+    expect(body.choices[0]?.message.content).toBe(
+      'I could not verify this from the knowledge base.',
+    );
+    expect(body.x_triageai.citations).toEqual([]);
+
+    const run = await app.kernel!.database.query<{ status: string }>(
+      `SELECT status FROM workflow_runs WHERE id = $1`,
+      [body.x_triageai.runId],
+    );
+    expect(run[0]?.status).toBe('SUCCEEDED');
+    const stages = await app.kernel!.database.query<{ stage_id: string }>(
+      `SELECT stage_id FROM stage_runs WHERE run_id = $1 ORDER BY created_at`,
+      [body.x_triageai.runId],
+    );
+    // the declared `insufficient` edge skips generate/validate/finalize
+    expect(stages.map((stage) => stage.stage_id).sort()).toEqual(['end', 'retrieve']);
+    const hops = await app.kernel!.database.query<{ evidence: Record<string, unknown> }>(
+      `SELECT evidence FROM decision_records
+       WHERE run_id = $1 AND (outcome->>'transition') = 'true' ORDER BY created_at`,
+      [body.x_triageai.runId],
+    );
+    expect(hops[0]?.evidence).toMatchObject({
+      from: 'retrieve',
+      to: 'end',
+      label: 'insufficient',
+    });
+  });
+
   it('registers an external agent, sends it a handoff and records steps', async () => {
     app = (await buildApp({
       quiet: true,
@@ -168,13 +247,38 @@ describeIfDb('public API (phase 13)', () => {
     });
     expect(handoff.statusCode).toBe(200);
 
+    // 18.T16: handoff payloads are gated (secrets refused, PII masked).
+    const piiHandoff = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public-api/external-agents/${id}/handoffs`,
+      payload: {
+        fromAgentId: 'triageai:reviewer',
+        goal: 'PII handoff',
+        handoff: { email: 'alice@example.com' },
+      },
+    });
+    expect(piiHandoff.statusCode).toBe(200);
+    const secretHandoff = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public-api/external-agents/${id}/handoffs`,
+      payload: {
+        fromAgentId: 'triageai:reviewer',
+        goal: 'Secret handoff',
+        handoff: { token: 'sk-abcdefghijklmnop1234' },
+      },
+    });
+    expect(secretHandoff.statusCode).toBe(403);
+
     const received = await app.inject({
       method: 'GET',
       url: '/v1/external-agents/handoffs',
       headers: { authorization: `Bearer ${key}` },
     });
     expect(received.statusCode).toBe(200);
-    expect((received.json() as Array<{ goal: string }>)[0]?.goal).toBe('Review ticket 42');
+    const handoffs = received.json() as Array<{ goal: string; handoff: Record<string, unknown> }>;
+    expect(handoffs[0]?.goal).toBe('Review ticket 42');
+    const pii = handoffs.find((entry) => entry.goal === 'PII handoff');
+    expect(JSON.stringify(pii?.handoff)).not.toContain('alice@example.com');
 
     const step = await app.inject({
       method: 'POST',
@@ -184,6 +288,22 @@ describeIfDb('public API (phase 13)', () => {
     });
     expect(step.statusCode).toBe(200);
     expect(step.json()).toMatchObject({ accepted: true, agentId: id });
+
+    // 17.T3: the /agents monitor reads external activity through this module
+    // route instead of the host touching module-owned tables.
+    const activity = await app.inject({
+      method: 'GET',
+      url: '/api/v1/public-api/external-agents/activity',
+    });
+    expect(activity.statusCode).toBe(200);
+    const snapshot = activity.json() as {
+      agents: Array<{ id: string; name: string }>;
+      handoffs: Array<{ goal: string; agentId: string }>;
+      steps: Array<{ step: string; agentId: string }>;
+    };
+    expect(snapshot.agents.find((agent) => agent.id === id)?.name).toBe('Claude Code');
+    expect(snapshot.handoffs.some((handoff) => handoff.goal === 'Review ticket 42')).toBe(true);
+    expect(snapshot.steps.some((entry) => entry.step === 'reviewing')).toBe(true);
   });
 
   it('enforces the key scope matrix per route (F3)', async () => {

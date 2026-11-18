@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { generatePluginKeyPair, packPlugin, sha256, signPluginPackage } from '@triageai/kernel';
+import type { Kernel } from '@triageai/kernel';
 
 import { buildApp } from '../src/app.js';
 
@@ -39,6 +40,34 @@ export const module = {
       url: '/api/v1/demo/hello',
       handler: async () => ({ hello: 'world' })
     });
+  }
+};
+`;
+
+const SERVER_V2 = `
+export const module = {
+  id: 'demo-plugin',
+  version: '2.0.0',
+  capabilities: [],
+  permissions: {
+    routes: [{ method: 'GET', path: '/api/v1/demo/hello' }],
+    events: { publish: [], subscribe: [] },
+    capabilities: { consume: [], provide: [] },
+    stages: [],
+    workflows: [],
+    evals: [],
+    tools: [],
+    knowledge: { read: [], write: [] }
+  },
+  dependsOn: { capabilities: [] },
+  manifest: {
+    routes: [{ path: '/demo', title: 'Demo' }],
+    nav: [{ label: 'Demo', order: 500, path: '/demo' }],
+    background: []
+  },
+  lifecycle: { health: async () => ({ status: 'healthy' }) },
+  register() {
+    throw new Error('v2 boot failure');
   }
 };
 `;
@@ -276,5 +305,93 @@ export const module = {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ code: 'plugin.SHA256_MISMATCH' });
+  });
+
+  it('restores the previous state when a reload fails (12.T2)', async () => {
+    const keys = generatePluginKeyPair();
+    const v1Archive = packPlugin({ manifest: MANIFEST, server: SERVER });
+    const v2Manifest = { ...MANIFEST, version: '2.0.0' };
+    const v2Archive = packPlugin({ manifest: v2Manifest, server: SERVER_V2 });
+    const v1Path = path.join(root, 'demo-plugin-1.0.0.tgz');
+    const v2Path = path.join(root, 'demo-plugin-2.0.0.tgz');
+    await writeFile(v1Path, v1Archive);
+    await writeFile(v2Path, v2Archive);
+    const indexPath = path.join(root, 'index.json');
+    await writeFile(
+      indexPath,
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          {
+            id: 'demo-plugin',
+            version: '1.0.0',
+            kernelApi: '^1.0.0',
+            sha256: sha256(v1Archive),
+            signature: signPluginPackage(v1Archive, keys.privateKey),
+            url: pathToFileURL(v1Path).href,
+          },
+          {
+            id: 'demo-plugin',
+            version: '2.0.0',
+            kernelApi: '^1.0.0',
+            sha256: sha256(v2Archive),
+            signature: signPluginPackage(v2Archive, keys.privateKey),
+            url: pathToFileURL(v2Path).href,
+          },
+        ],
+      }),
+    );
+
+    app = await buildApp({
+      quiet: true,
+      configPath: path.resolve(process.cwd(), '../../triage.config.json'),
+      pluginsRoot: path.join(root, 'installed'),
+      pluginKeys: [{ id: 'test', publicKey: keys.publicKey }],
+      pluginRegistryUrl: pathToFileURL(indexPath).href,
+    });
+    const typed = app as FastifyInstance & { kernel: Kernel };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/plugins/install',
+      payload: { id: 'demo-plugin', version: '1.0.0' },
+    });
+    expect(first.statusCode).toBe(200);
+    const enabled = await app.inject({ method: 'POST', url: '/api/v1/plugins/demo-plugin/enable' });
+    expect(enabled.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/demo/hello' })).statusCode).toBe(200);
+
+    const upgraded = await app.inject({
+      method: 'POST',
+      url: '/api/v1/plugins/install',
+      payload: { id: 'demo-plugin', version: '2.0.0' },
+    });
+    expect(upgraded.statusCode).toBe(200);
+
+    // The v2 module throws in register(): enabling it must fail and revert the
+    // enabled flag instead of leaving a plugin that breaks every later boot.
+    const failed = await app.inject({ method: 'POST', url: '/api/v1/plugins/demo-plugin/enable' });
+    expect(failed.statusCode).toBeGreaterThanOrEqual(500);
+
+    const listed = await app.inject({ method: 'GET', url: '/api/v1/plugins' });
+    const installed = (listed.json() as { installed: Array<{ version: string; enabled: boolean }> })
+      .installed;
+    expect(installed[0]).toMatchObject({ version: '2.0.0', enabled: false });
+    expect((await app.inject({ method: 'GET', url: '/api/v1/demo/hello' })).statusCode).toBe(404);
+
+    // The previous version is still on disk and can be reinstalled + enabled.
+    const reinstalled = await app.inject({
+      method: 'POST',
+      url: '/api/v1/plugins/install',
+      payload: { id: 'demo-plugin', version: '1.0.0', allowDowngrade: true },
+    });
+    expect(reinstalled.statusCode).toBe(200);
+    const reenabled = await app.inject({
+      method: 'POST',
+      url: '/api/v1/plugins/demo-plugin/enable',
+    });
+    expect(reenabled.statusCode, reenabled.body).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/demo/hello' })).statusCode).toBe(200);
+    expect((await typed.kernel.grantStore.get('demo-plugin'))?.version).toBe('1.0.0');
   });
 });

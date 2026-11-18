@@ -11,7 +11,7 @@ import { KbDataProcessingSchema, KbDocumentDtoSchema } from '@triageai/contracts
 import type { KbDataProcessing } from '@triageai/contracts';
 import type { KernelContext, StageHandlerContext } from '@triageai/kernel';
 import { AppError, internal } from '@triageai/kernel';
-import { chunkByPreset, extractText, type DocumentChunk } from '@triageai/rag';
+import { chunkByPreset, detect, extractText, type DocumentChunk } from '@triageai/rag';
 
 export const CHUNK_PRESET = 'structure-700';
 export const DATA_PROCESSING_KEY = 'dataProcessing';
@@ -31,6 +31,7 @@ export interface SourceRow {
   chunk_preset: string;
   extraction_method: string;
   sensitivity: 'public' | 'internal' | 'restricted' | 'secret';
+  tags?: string[];
   audience: 'public' | 'operator';
   managed_key: string | null;
   read_only: boolean;
@@ -232,13 +233,27 @@ export async function createSource(
 
   const sourceId = ulid();
   const documentId = ulid();
+  // 18.T15: detect PII/secrets at write time; the source can only become
+  // stricter than the operator's choice, never looser.
+  const detection = body ? detect(body) : null;
+  const sensitivityOrder = ['public', 'internal', 'restricted', 'secret'] as const;
+  const declaredSensitivity = input.sensitivity ?? 'internal';
+  const detectedSensitivity = detection?.sensitivity ?? 'internal';
+  const sensitivity =
+    sensitivityOrder[
+      Math.max(
+        sensitivityOrder.indexOf(declaredSensitivity),
+        sensitivityOrder.indexOf(detectedSensitivity),
+      )
+    ];
+  const tags = detection?.tags ?? [];
   try {
     await ctx.database.query(
       `INSERT INTO kb_sources
          (id, title, kind, label, uri, media_type, content_hash, embedding_model, chunk_preset,
           extraction_method, sensitivity, audience, managed_key, read_only, status, item_count,
-          size_bytes, blob_ref, owner_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15,$16,$17,$18)`,
+          size_bytes, blob_ref, owner_id, tags)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15,$16,$17,$18,$19)`,
       [
         sourceId,
         input.title,
@@ -250,7 +265,7 @@ export async function createSource(
         model,
         chunkPreset,
         extractionMethod,
-        input.sensitivity ?? 'internal',
+        sensitivity,
         input.audience ?? 'public',
         input.managedKey ?? null,
         input.readOnly ?? false,
@@ -258,6 +273,7 @@ export async function createSource(
         size,
         blobRef,
         input.ownerId ?? null,
+        tags,
       ],
     );
     await ctx.database.query(
@@ -729,6 +745,44 @@ export function registerIngestWorkflow(ctx: KernelContext, collection: string): 
     version: '0.2.0',
     module: 'kb',
     trigger: { type: 'manual' },
+    // v2 graph (18.3): prepare → embed → index, with the same retry policy.
+    graph: {
+      id: 'kb.ingest',
+      version: '0.2.0',
+      module: 'kb',
+      trigger: { type: 'manual' },
+      start: 'prepare',
+      nodes: [
+        {
+          id: 'prepare',
+          type: 'stage',
+          kind: 'kb.ingest.prepare',
+          input: { sourceIds: '$.sourceIds' },
+        },
+        {
+          id: 'embed',
+          type: 'stage',
+          kind: 'kb.ingest.embed',
+          input: { sourceIds: '$.sourceIds' },
+          retry: { attempts: 2, backoffMs: [250, 1000] },
+        },
+        {
+          id: 'index',
+          type: 'stage',
+          kind: 'kb.ingest.index',
+          input: { sourceIds: '$.sourceIds' },
+        },
+        { id: 'end', type: 'end', end: 'succeeded' },
+        { id: 'failed', type: 'end', end: 'failed' },
+      ],
+      edges: [
+        { from: 'prepare', to: 'embed', label: 'next' },
+        { from: 'embed', to: 'index', label: 'next' },
+        { from: 'index', to: 'end', label: 'next' },
+      ],
+      defaultErrorEdge: { to: 'failed' },
+      budget: { maxSteps: 10, maxDurationMs: 300_000 },
+    },
     stages: [
       { id: 'prepare', kind: 'kb.ingest.prepare', input: { sourceIds: '$.sourceIds' } },
       {

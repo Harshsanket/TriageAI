@@ -10,8 +10,16 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { buildRagPrompt, chunkText, finalizeAnswer, runValidation } from '@triageai/rag';
-import { internal } from '@triageai/kernel';
+import {
+  buildRagPrompt,
+  chunkText,
+  detect,
+  finalizeAnswer,
+  maskPii,
+  redactPii,
+  runValidation,
+} from '@triageai/rag';
+import { classifySend, internal, sanitizeModelText } from '@triageai/kernel';
 import type { TriageModule } from '@triageai/kernel';
 
 const configSchema = z
@@ -122,6 +130,8 @@ export const docAssistantModule: TriageModule = {
                 collection,
                 documentId: relative,
                 text: piece,
+                // Search filters on the embedder, so every writer records it.
+                embeddingModel: embedded.modelVersion,
                 metadata: {
                   path: relative,
                   title: firstHeading(text, relative),
@@ -150,9 +160,37 @@ export const docAssistantModule: TriageModule = {
             limit: z.number().int().positive().max(10).default(5),
           })
           .parse(request.body);
+        const refusal = 'That is not documented (yet).';
+
+        // 18.T16 send gate, module-side pre-gate (the kernel `callModel`
+        // sendGate wiring is a parallel task): the question is what this route
+        // would carry to the model. A secret never reaches a model, whatever
+        // the destination; detector PII is redacted before send (ai-pipeline
+        // pattern). The Generator capability has no describe(), so the
+        // deployment-level hosted switch is the conservative destination
+        // ceiling here. Full `callModel` routing additionally needs a
+        // ChatModel-from-Generator bridge, which the kernel does not export.
+        const hosted = Boolean(ctx.config.hosted?.enabled);
+        const detection = detect(body.question);
+        const gate = classifySend({
+          sensitivity: detection.hasSecret ? 'secret' : 'internal',
+          hosted,
+          tags: detection.tags,
+        });
+        if (gate.decision === 'withheld') {
+          return {
+            answer: refusal,
+            refused: true,
+            reason: `send_gate_withheld:${gate.reason}`,
+            citations: [],
+          };
+        }
+        const question =
+          gate.decision === 'redacted'
+            ? redactPii(maskPii(body.question, 'prompt').text).text
+            : body.question;
 
         const retrieved = await retriever.search(collection, body.question, { limit: body.limit });
-        const refusal = 'That is not documented (yet).';
         if (!retrieved.gate.sufficient || retrieved.chunks.length === 0) {
           return {
             answer: refusal,
@@ -168,16 +206,19 @@ export const docAssistantModule: TriageModule = {
           text: chunk.text,
           score: chunk.score,
         }));
-        const prompt = buildRagPrompt({ question: body.question, chunks, style: 'docs' });
+        const prompt = buildRagPrompt({ question, chunks, style: 'docs' });
         const generated = await generator.generate(prompt, { maxTokens: 384 });
+        // 18.T28 sanitised delivery: model text is sanitised before it is
+        // validated, returned or persisted anywhere downstream.
+        const answerText = sanitizeModelText(generated.text);
         const sources = chunks.map((chunk) => ({ ref: chunk.ref, text: chunk.text }));
         const policy = { maxChars: 8000, groundingThreshold: options.groundingThreshold };
         const validation = ctx.capabilities.validator
           ? await ctx.capabilities.validator.validate(
-              { text: generated.text, sources, question: body.question },
+              { text: answerText, sources, question: body.question },
               policy,
             )
-          : runValidation({ text: generated.text, sources, question: body.question }, policy);
+          : runValidation({ text: answerText, sources, question: body.question }, policy);
         if (!validation.passed) {
           return {
             answer: refusal,
@@ -189,7 +230,7 @@ export const docAssistantModule: TriageModule = {
           };
         }
         const finalized = finalizeAnswer({
-          answer: generated.text,
+          answer: answerText,
           sources,
           threshold: options.groundingThreshold,
         });

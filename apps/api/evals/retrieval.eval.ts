@@ -1,6 +1,9 @@
 /**
  * Retrieval eval (Phase 4, CI gate): seeds fixture documents through the real
- * embedder + pgvector store, then measures recall@3 and MRR on labeled queries.
+ * embedder + pgvector store, then measures recall@3 and MRR on labeled queries
+ * in both modes — hybrid (production) and vector-only (baseline, 18.T9). The
+ * gate requires hybrid recall not to regress against the baseline and to stay
+ * above the absolute floor.
  *
  *   AI_SERVICE_URL=http://localhost:8000 DATABASE_URL=... \
  *   pnpm --filter @triageai/api exec tsx evals/retrieval.eval.ts
@@ -18,6 +21,7 @@ import {
 import { chunkText } from '@triageai/rag';
 
 import { HttpEmbedder, PgRetriever, PgVectorStore } from '../src/services/capabilities.js';
+import { evaluateRetrievalAb, retrievalAbFailure } from './retrievalAb.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COLLECTION = 'eval_kb_docs';
@@ -53,51 +57,31 @@ async function main(): Promise<number> {
           collection: COLLECTION,
           documentId: document.id,
           text,
-          metadata: { documentId: document.id, title: document.title, approved: true },
+          metadata: {
+            documentId: document.id,
+            title: document.title,
+            approved: true,
+            // Keep reads scoped to the model that produced the vectors.
+            embeddingModel: embedded.modelVersion,
+          },
           embedding: embedded.vectors[index] as number[],
         })),
       );
     }
 
     const retriever = new PgRetriever(embedder, vectorStore, 0.1, 0);
-    let hits = 0;
-    let reciprocalRankSum = 0;
-    const rows: Array<{
-      query: string;
-      expected: string;
-      retrieved: string[];
-      rank: number | null;
-    }> = [];
-
-    for (const item of fixtures.queries) {
-      const result = await retriever.search(COLLECTION, item.query, { limit: TOP_K });
-      const retrieved = result.chunks.map((chunk) => chunk.documentId);
-      const rank = retrieved.indexOf(item.expectedDocument);
-      const rankOneBased = rank >= 0 ? rank + 1 : null;
-      if (rankOneBased !== null) {
-        hits += 1;
-        reciprocalRankSum += 1 / rankOneBased;
-      }
-      rows.push({
-        query: item.query,
-        expected: item.expectedDocument,
-        retrieved,
-        rank: rankOneBased,
-      });
-    }
-
-    const recallAt3 = hits / fixtures.queries.length;
-    const mrr = reciprocalRankSum / fixtures.queries.length;
-    const report = {
-      generatedAt: new Date().toISOString(),
+    // Same fixtures, both modes (18.T9): hybrid is production, vector-only is
+    // the baseline the gate compares against.
+    const ab = await evaluateRetrievalAb({
       collection: COLLECTION,
-      queries: fixtures.queries.length,
+      queries: fixtures.queries,
       topK: TOP_K,
-      recallAt3: Number(recallAt3.toFixed(4)),
-      mrr: Number(mrr.toFixed(4)),
       gates: GATES,
-      results: rows,
-    };
+      search: async (collection, query, opts) =>
+        (await retriever.search(collection, query, { limit: opts.limit, hybrid: opts.hybrid }))
+          .chunks,
+    });
+    const report = { generatedAt: new Date().toISOString(), ...ab };
 
     await mkdir(path.join(HERE, 'reports'), { recursive: true });
     await writeFile(
@@ -106,13 +90,19 @@ async function main(): Promise<number> {
     );
     console.log(
       JSON.stringify(
-        { recallAt3: report.recallAt3, mrr: report.mrr, queries: report.queries },
+        {
+          hybrid: { recallAt3: report.hybrid.recallAt3, mrr: report.hybrid.mrr },
+          vectorOnly: { recallAt3: report.vectorOnly.recallAt3, mrr: report.vectorOnly.mrr },
+          delta: report.delta,
+          queries: report.queries,
+        },
         null,
         2,
       ),
     );
-    if (recallAt3 < GATES.recallAt3) {
-      console.error(`GATE FAILURE: recall@${TOP_K} ${recallAt3} < ${GATES.recallAt3}`);
+    const failure = retrievalAbFailure(report);
+    if (failure) {
+      console.error(failure);
       return 1;
     }
     return 0;

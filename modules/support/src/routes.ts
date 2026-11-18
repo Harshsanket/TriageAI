@@ -19,6 +19,7 @@ import { ownedBy, ticketDto, policyDto } from './rows.js';
 import type { TicketRow, PolicyRow, AutoReplyRow } from './rows.js';
 import type { SupportOptions } from './options.js';
 import type { SupportServices } from './services.js';
+import { messageDetection } from './services.js';
 
 export function registerRoutes(
   ctx: KernelContext,
@@ -77,10 +78,12 @@ export function registerRoutes(
           request.actorId ?? null,
         ],
       );
+      const detection = messageDetection(body.body);
       await ctx.database.query(
-        `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body)
-         VALUES ($1, $2, 'customer', $3, $4)`,
-        [ulid(), ticketId, body.requester, body.body],
+        `INSERT INTO support_ticket_messages
+           (id, ticket_id, author_type, author, body, sensitivity, tags)
+         VALUES ($1, $2, 'customer', $3, $4, $5, $6)`,
+        [ulid(), ticketId, body.requester, body.body, detection.sensitivity, detection.tags],
       );
       await ctx.database.query(
         `INSERT INTO support_ticket_events (id, ticket_id, type, payload, actor)
@@ -151,14 +154,20 @@ export function registerRoutes(
           );
       return {
         ticket: ticketDto(ticket),
-        messages: messages.map((message) => ({
-          id: message.id,
-          authorType: message.author_type,
-          author: message.author,
-          body: message.body,
-          meta: message.meta ?? null,
-          createdAt: new Date(message.created_at as string).toISOString(),
-        })),
+        messages: messages.map((message) => {
+          const meta = (message.meta ?? null) as { runId?: unknown } | null;
+          return {
+            id: message.id,
+            authorType: message.author_type,
+            author: message.author,
+            body: message.body,
+            meta,
+            // 19.T6: the auto-reply run id lives in meta; expose it additively
+            // so the ticket view can flag the answer through the audited route.
+            runId: typeof meta?.runId === 'string' ? meta.runId : null,
+            createdAt: new Date(message.created_at as string).toISOString(),
+          };
+        }),
         events: events.map((event) => ({
           id: event.id,
           type: event.type,
@@ -390,10 +399,12 @@ export function registerRoutes(
       );
       const autoReply = latest[0];
       if (body.note) {
+        const detection = messageDetection(body.note);
         await ctx.database.query(
-          `INSERT INTO support_ticket_messages (id, ticket_id, author_type, author, body)
-           VALUES ($1, $2, 'customer', 'customer', $3)`,
-          [ulid(), id, body.note],
+          `INSERT INTO support_ticket_messages
+             (id, ticket_id, author_type, author, body, sensitivity, tags)
+           VALUES ($1, $2, 'customer', 'customer', $3, $4, $5)`,
+          [ulid(), id, body.note, detection.sensitivity, detection.tags],
         );
       }
 

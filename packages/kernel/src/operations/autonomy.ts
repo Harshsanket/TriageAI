@@ -1,6 +1,10 @@
 /** Run receipts, reversibility and per-flow autonomy (Phase 15.T8–T10). */
+import { z } from 'zod';
+
 export type UndoClass = 'free' | 'compensable' | 'none';
-export type AutonomyLevel = 'investigate' | 'draft' | 'internal_note' | 'autopilot';
+export const AUTONOMY_LEVELS = ['investigate', 'draft', 'internal_note', 'autopilot'] as const;
+export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
+export type AutonomyAction = 'reply' | 'clarify' | 'escalate' | 'none';
 
 export interface ToolCallRecord {
   tool: string;
@@ -52,6 +56,27 @@ export function firstIrreversiblePark(
   return index >= 0 ? { parkAt: index } : null;
 }
 
+export interface ToolSequencePlan {
+  /** Reversible calls, in order, that may run before the park point. */
+  execute: number[];
+  /** Index of the first irreversible call, or null when every call is reversible. */
+  parkAt: number | null;
+  /** Calls from the park point on; they wait for a human decision. */
+  remaining: number[];
+}
+
+/** Reversibility-priced plan: finish reversible work, park at the first undo:none. */
+export function planToolSequence(
+  calls: Array<{ tool: string; undo: UndoClass }>,
+): ToolSequencePlan {
+  const parkAt = firstIrreversiblePark(calls)?.parkAt ?? null;
+  return {
+    execute: calls.slice(0, parkAt ?? calls.length).map((_, index) => index),
+    parkAt,
+    remaining: parkAt === null ? [] : calls.slice(parkAt).map((_, index) => parkAt + index),
+  };
+}
+
 export interface FlowAutonomyState {
   level: AutonomyLevel;
   cleanRunStreak: number;
@@ -61,8 +86,14 @@ export interface FlowAutonomyState {
 export function nextAutonomy(
   state: FlowAutonomyState,
   event: { clean: boolean; targetProduction?: boolean },
-): { level: AutonomyLevel; cleanRunStreak: number; changed: boolean; reason: string } {
-  const levels: AutonomyLevel[] = ['investigate', 'draft', 'internal_note', 'autopilot'];
+): {
+  level: AutonomyLevel;
+  cleanRunStreak: number;
+  changed: boolean;
+  reason: string;
+  suggestedLevel?: AutonomyLevel;
+} {
+  const levels: AutonomyLevel[] = [...AUTONOMY_LEVELS];
   if (!event.clean) {
     const current = levels.indexOf(state.level);
     const next = levels[Math.max(0, current - 1)] as AutonomyLevel;
@@ -77,12 +108,67 @@ export function nextAutonomy(
     return { level: 'draft', cleanRunStreak: 0, changed: true, reason: 'production_target' };
   }
   const streak = state.cleanRunStreak + 1;
+  const current = levels.indexOf(state.level);
+  const suggestedLevel =
+    current < levels.length - 1 ? (levels[current + 1] as AutonomyLevel) : undefined;
   return {
     level: state.level,
     cleanRunStreak: streak,
     changed: false,
     reason: streak >= state.promoteAfter ? 'promotion_suggested' : 'streak',
+    ...(streak >= state.promoteAfter && suggestedLevel ? { suggestedLevel } : {}),
   };
+}
+
+/**
+ * Map an observed support auto-reply decision onto the autonomy level it
+ * demonstrates: a sent reply is autopilot, a clarification is draft, and an
+ * escalation is investigate (report/handoff only).
+ */
+export function autonomyForAction(action: AutonomyAction): AutonomyLevel {
+  if (action === 'reply') return 'autopilot';
+  if (action === 'clarify') return 'draft';
+  return 'investigate';
+}
+
+/** A reply is the only clean auto-reply outcome; clarify/escalate are not. */
+export function isCleanAutonomyAction(action: AutonomyAction): boolean {
+  return action === 'reply';
+}
+
+export const AutonomyLevelSchema = z.enum(AUTONOMY_LEVELS);
+
+export const AutonomyChangeSchema = z
+  .object({
+    from: AutonomyLevelSchema,
+    to: AutonomyLevelSchema,
+    reason: z.string().min(1).max(120),
+    by: z.string().min(1).max(200),
+    at: z.string().datetime(),
+  })
+  .strict();
+
+export const FlowAutonomyRecordSchema = z
+  .object({
+    flow: z.string().min(1).max(120),
+    category: z.string().min(1).max(120).nullable(),
+    level: AutonomyLevelSchema,
+    cleanRunStreak: z.number().int().nonnegative(),
+    promoteAfter: z.number().int().min(1).max(50),
+    lastChange: AutonomyChangeSchema.nullable(),
+  })
+  .strict();
+
+export const FlowAutonomySettingsSchema = z
+  .object({ flows: z.array(FlowAutonomyRecordSchema).max(200) })
+  .strict();
+
+export type FlowAutonomyRecord = z.infer<typeof FlowAutonomyRecordSchema>;
+export type FlowAutonomySettings = z.infer<typeof FlowAutonomySettingsSchema>;
+
+/** Stable key for `(flow, category)`; categories are optional per flow. */
+export function flowAutonomyKey(flow: string, category?: string | null): string {
+  return `${flow}::${category ?? '*'}`;
 }
 
 export interface AgentJob {

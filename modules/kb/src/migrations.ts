@@ -143,4 +143,13 @@ export const KB_MIGRATIONS: Migration[] = [
       ALTER TABLE IF EXISTS kb_sources DROP COLUMN IF EXISTS extraction_method;
     `,
   },
+  {
+    id: '0009-kb-source-tags',
+    sql: `
+      ALTER TABLE kb_sources ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `,
+    dropSql: `
+      ALTER TABLE IF EXISTS kb_sources DROP COLUMN IF EXISTS tags;
+    `,
+  },
 ];

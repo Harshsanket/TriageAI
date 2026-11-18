@@ -11,17 +11,26 @@ import {
   AppError,
   FilesystemBlobStore,
   MemoryCache,
+  RedisCache,
+  S3BlobStore,
+  chooseModel,
   configInvalid,
+  estimateCostFromPrices,
   fetchFailure,
   httpFailure,
+  parseBlobStoreAdapterConfig,
+  parseCacheAdapterConfig,
 } from '@triageai/kernel';
 import { runValidation } from '@triageai/rag';
 
+import { logger } from '../platform/logger.js';
 import { assertHostedAllowed, buildChatModel } from './chatModels.js';
 import { EgressClient } from './egress.js';
-import { getControls } from './controls.js';
+import { getControls, type Controls } from './controls.js';
 import { isRuntimeDisabled, runtimeIdFor } from './modelRuntimes.js';
 import type {
+  BlobStore,
+  Cache,
   Capabilities,
   ChatModel,
   ChatRequest,
@@ -31,9 +40,14 @@ import type {
   EmbedResult,
   Generator,
   KernelConfig,
+  KernelLogger,
+  ModelOption,
   ModelRegistry,
   RetrievalResult,
   Retriever,
+  RoutingConfig,
+  RoutingPriceEntry,
+  RoutingTaskRoute,
   ValidationReport,
   Validator,
   ValidatorInput,
@@ -164,6 +178,16 @@ interface VectorRow {
   score: number;
 }
 
+/**
+ * Inline a collection/model as a SQL literal: planner-time constants let
+ * Postgres use the per-(collection, model, dims) partial HNSW index, which a
+ * parameterised predicate cannot guarantee under generic plans. Single quotes
+ * are doubled, so values from config/modules cannot break out.
+ */
+function sqlLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 /** pgvector-backed VectorStore (exact cosine scan; dimension-agnostic column). */
 export class PgVectorStore implements VectorStore {
   constructor(private readonly database: Database) {}
@@ -175,12 +199,15 @@ export class PgVectorStore implements VectorStore {
       documentId: string;
       text: string;
       metadata?: Record<string, unknown>;
+      embeddingModel?: string;
       embedding: number[];
     }>,
   ): Promise<void> {
     for (const chunk of chunks) {
       const dims = chunk.embedding.length;
+      // Prefer the explicit model (embedder result) over older metadata keys.
       const model =
+        chunk.embeddingModel ??
         (chunk.metadata?.embeddingModel as string | undefined) ??
         (chunk.metadata?.modelVersion as string | undefined) ??
         'default';
@@ -218,58 +245,68 @@ export class PgVectorStore implements VectorStore {
       filter?: Record<string, unknown>;
       text?: string;
       audience?: 'public' | 'operator';
+      model?: string;
+      hybrid?: boolean;
     } = {},
   ): Promise<VectorMatch[]> {
     const limit = opts.limit ?? 5;
+    // Every read is scoped to the model that produced the query embedding;
+    // two 384-dim models in one collection must never share neighbours.
+    const model = sqlLiteral(opts.model ?? 'default');
+    const scope = sqlLiteral(collection);
+    const dims = embedding.length;
     const vectorLiteral = `[${embedding.join(',')}]`;
-    // Hybrid (18.T9/13.T7): vector + full-text candidates fused with RRF. The
-    // HNSW index is only available for 384-dimension embeddings; other sizes
-    // keep the exact scan.
-    if (opts.text && embedding.length === 384) {
+    // Hybrid (18.T9/13.T7): vector + full-text candidates fused with RRF.
+    // `hybrid: false` keeps the same filters but skips the keyword leg, which
+    // is the vector-only baseline of the retrieval eval A/B.
+    if (opts.hybrid !== false && opts.text) {
       const rows = (await this.database.query(
         `WITH vec AS (
            SELECT id, ROW_NUMBER() OVER (
-             ORDER BY embedding::vector(384) <=> $2::vector(384)
+             ORDER BY embedding::vector(${dims}) <=> $1::vector(${dims})
            ) AS rank
            FROM vector_chunks
-           WHERE collection = $1 AND dims = 384
-             AND ($3::jsonb IS NULL OR metadata @> $3::jsonb)
-             AND ($6::text IS NULL OR metadata->>'audience' = $6 OR NOT (metadata ? 'audience'))
-           ORDER BY embedding::vector(384) <=> $2::vector(384)
-           LIMIT $4
+           WHERE collection = ${scope} AND dims = ${dims} AND embedding_model = ${model}
+             AND ($2::jsonb IS NULL OR metadata @> $2::jsonb)
+             AND ($5::text IS NULL OR metadata->>'audience' = $5 OR NOT (metadata ? 'audience'))
+           ORDER BY embedding::vector(${dims}) <=> $1::vector(${dims})
+           LIMIT $3
          ), kw AS (
            SELECT id, ROW_NUMBER() OVER (
-             ORDER BY ts_rank_cd(to_tsvector('english', text), plainto_tsquery('english', $5)) DESC
+             ORDER BY ts_rank_cd(to_tsvector('english', text), plainto_tsquery('english', $4)) DESC
            ) AS rank
            FROM vector_chunks
-           WHERE collection = $1 AND dims = 384
-             AND ($3::jsonb IS NULL OR metadata @> $3::jsonb)
-             AND ($6::text IS NULL OR metadata->>'audience' = $6 OR NOT (metadata ? 'audience'))
-             AND to_tsvector('english', text) @@ plainto_tsquery('english', $5)
-           LIMIT $4
+           WHERE collection = ${scope} AND dims = ${dims} AND embedding_model = ${model}
+             AND ($2::jsonb IS NULL OR metadata @> $2::jsonb)
+             AND ($5::text IS NULL OR metadata->>'audience' = $5 OR NOT (metadata ? 'audience'))
+             AND to_tsvector('english', text) @@ plainto_tsquery('english', $4)
+           LIMIT $3
          ), fused AS (
            SELECT COALESCE(v.id, k.id) AS id,
                   COALESCE(1.0 / (60 + v.rank), 0) + COALESCE(1.0 / (60 + k.rank), 0) AS rrf
            FROM vec v FULL OUTER JOIN kw k USING (id)
          )
          SELECT vc.id, vc.document_id, vc.text, vc.metadata,
-                1 - (vc.embedding::vector(384) <=> $2::vector(384)) AS score
-         FROM fused f JOIN vector_chunks vc ON vc.collection = $1 AND vc.id = f.id
+                1 - (vc.embedding::vector(${dims}) <=> $1::vector(${dims})) AS score
+         FROM fused f
+         JOIN vector_chunks vc
+           ON vc.collection = ${scope} AND vc.embedding_model = ${model} AND vc.id = f.id
          ORDER BY f.rrf DESC, score DESC
-         LIMIT $4`,
-        [collection, vectorLiteral, opts.filter ?? null, limit, opts.text, opts.audience ?? null],
+         LIMIT $3`,
+        [vectorLiteral, opts.filter ?? null, limit, opts.text, opts.audience ?? null],
       )) as unknown as VectorRow[];
       return rows.map(toMatch);
     }
     const rows = (await this.database.query(
       `SELECT id, document_id, text, metadata,
-              1 - (embedding <=> $2::vector) AS score
+              1 - (embedding <=> $1::vector) AS score
        FROM vector_chunks
-       WHERE collection = $1 AND ($3::jsonb IS NULL OR metadata @> $3::jsonb)
-         AND ($5::text IS NULL OR metadata->>'audience' = $5 OR NOT (metadata ? 'audience'))
-       ORDER BY embedding <=> $2::vector
-       LIMIT $4`,
-      [collection, vectorLiteral, opts.filter ?? null, limit, opts.audience ?? null],
+       WHERE collection = ${scope} AND embedding_model = ${model}
+         AND ($2::jsonb IS NULL OR metadata @> $2::jsonb)
+         AND ($4::text IS NULL OR metadata->>'audience' = $4 OR NOT (metadata ? 'audience'))
+       ORDER BY embedding <=> $1::vector
+       LIMIT $3`,
+      [vectorLiteral, opts.filter ?? null, limit, opts.audience ?? null],
     )) as unknown as VectorRow[];
     return rows.map(toMatch);
   }
@@ -381,11 +418,13 @@ export class PgRetriever implements Retriever {
       limit?: number;
       filter?: Record<string, unknown>;
       audience?: 'public' | 'operator';
+      hybrid?: boolean;
     } = {},
   ): Promise<RetrievalResult> {
-    const cacheKey = `retrieval:g${this.generation}:${collection}:${opts.limit ?? 5}:${createHash(
-      'sha256',
-    )
+    const hybrid = opts.hybrid ?? true;
+    const cacheKey = `retrieval:g${this.generation}:${collection}:${opts.limit ?? 5}:${
+      hybrid ? 'hybrid' : 'vector'
+    }:${createHash('sha256')
       .update(JSON.stringify({ query, filter: opts.filter ?? {}, audience: opts.audience ?? null }))
       .digest('hex')}`;
     const cached = await this.cache?.get<RetrievalResult>(cacheKey);
@@ -395,8 +434,12 @@ export class PgRetriever implements Retriever {
     const candidates = await this.vectorStore.search(collection, embedded.vectors[0] as number[], {
       limit: Math.max(requested * 4, 20),
       filter: opts.filter,
-      text: query,
+      // The keyword leg only exists in hybrid mode; vector-only keeps the same
+      // model/filter scope but skips fusion (eval baseline).
+      text: hybrid ? query : undefined,
       audience: opts.audience,
+      model: embedded.modelVersion,
+      hybrid,
     });
     const chunks = rerankChunks(candidates, query, collection, this.collections[collection]).slice(
       0,
@@ -437,12 +480,32 @@ export class OllamaGenerator implements Generator {
     private readonly baseUrl: string,
     private readonly model: string,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    /** 14.T1: when the runtime inventory has this model, generate() wraps it. */
+    private readonly chatModel?: ChatModel,
   ) {}
 
   async generate(
     prompt: string,
     opts: { maxTokens?: number; temperature?: number; signal?: AbortSignal } = {},
   ): Promise<{ text: string; modelVersion: string; usage?: Record<string, number> }> {
+    if (this.chatModel) {
+      // Generator wraps ChatModel (14.T1): one user message, temperature and
+      // token budget pass through, the runtime's kill switch still applies.
+      const response = await this.chatModel.chat({
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: opts.maxTokens ?? 384,
+        temperature: opts.temperature,
+        signal: opts.signal ?? AbortSignal.timeout(GENERATION_TIMEOUT_MS),
+      });
+      return {
+        text: response.message.content,
+        modelVersion: response.modelVersion,
+        usage: {
+          completionTokens: response.usage.outputTokens,
+          promptTokens: response.usage.inputTokens,
+        },
+      };
+    }
     const res = await this.fetchImpl(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -481,12 +544,28 @@ export class OpenAICompatibleGenerator implements Generator {
     private readonly model: string,
     private readonly apiKey = 'local',
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    /** 14.T1: when the runtime inventory has this model, generate() wraps it. */
+    private readonly chatModel?: ChatModel,
   ) {}
 
   async generate(
     prompt: string,
     opts: { maxTokens?: number; temperature?: number; signal?: AbortSignal } = {},
   ): Promise<{ text: string; modelVersion: string }> {
+    if (this.chatModel) {
+      // Generator wraps ChatModel (14.T1): single user message with the same
+      // temperature/maxTokens defaults as the legacy HTTP path.
+      const response = await this.chatModel.chat({
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: opts.maxTokens ?? 384,
+        temperature: opts.temperature,
+        signal: opts.signal ?? AbortSignal.timeout(GENERATION_TIMEOUT_MS),
+      });
+      return {
+        text: response.message.content,
+        modelVersion: response.modelVersion,
+      };
+    }
     const res = await this.fetchImpl(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
@@ -571,32 +650,183 @@ class GuardedGenerator implements Generator {
   }
 }
 
-class PooledChatModel implements ChatModel {
+/** One runtime in the pool: config inventory id + its guarded ChatModel. */
+export interface RuntimeChatEntry {
+  id: string;
+  adapter: string;
+  model: string;
+  hosted: boolean;
+  chatModel: ChatModel;
+}
+
+/** Optional per-call hint supplied by `callModel` deps `resolveModel` (19.2). */
+export interface ChatRouteHint {
+  task?: string;
+  stepName?: string;
+}
+
+export interface PoolRoutingOptions {
+  /** Task → route table from `config.routing.tasks`. */
+  routes: Record<string, RoutingTaskRoute>;
+  /** Price table from `config.routing.prices` (`provider:model` → USD/1K). */
+  prices?: Record<string, RoutingPriceEntry>;
+  logger?: KernelLogger;
+}
+
+const SWITCH_MODEL_CATEGORIES: ReadonlySet<AppError['category']> = new Set([
+  'timeout',
+  'rate_limited',
+  'dependency_unavailable',
+]);
+
+/**
+ * The runtime pool (25.T5, 19.2): enabled runtimes only; when the caller names
+ * a task with a configured route, kernel `chooseModel` scores the options
+ * (egress precedence, then cost/quality); without a task the first enabled
+ * runtime serves. A failing hosted call switches once to a local runtime
+ * (`switch_model`, 14.T3).
+ */
+export class PooledChatModel implements ChatModel {
   private current: ChatModel | null = null;
+  private routingReason: string | null = null;
 
   constructor(
-    private readonly entries: Array<{ id: string; hosted: boolean; model: ChatModel }>,
+    private readonly entries: RuntimeChatEntry[],
     private readonly database: Database,
+    private readonly routing: PoolRoutingOptions = { routes: {} },
   ) {}
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  /** Why the last `chat()` picked its runtime, or null when unrouted. */
+  get lastRoutingReason(): string | null {
+    return this.routingReason;
+  }
+
+  /**
+   * Resolver seam for `callModel` deps (`resolveModel`) — the pool is
+   * resolver-ready; module wiring is a follow-up. Returns a task-bound view so
+   * the pool can still route inside `chat()` (a bare pool reference would
+   * never receive the task).
+   */
+  resolve(task: string, stepName?: string): { chatModel: ChatModel; reason: string } {
+    const route = this.routing.routes[task];
+    return {
+      chatModel: new TaskBoundChatModel(this, { task, stepName }),
+      reason: route ? `route:${task}` : 'pool_first_enabled',
+    };
+  }
+
+  async chat(request: ChatRequest, hint?: ChatRouteHint): Promise<ChatResponse> {
     const controls = await getControls(this.database);
-    for (const entry of this.entries) {
-      if (isRuntimeDisabled(controls, entry.id)) continue;
-      if (entry.hosted && controls.hostedModelsDisabled) continue;
-      this.current = entry.model;
-      return entry.model.chat(request);
+    const entry = this.selectEntry(controls, hint?.task);
+    this.current = entry.chatModel;
+    try {
+      return await entry.chatModel.chat(request);
+    } catch (err) {
+      // switch_model (14.T3): hosted outage/rate limit → one local retry.
+      if (entry.hosted && err instanceof AppError && SWITCH_MODEL_CATEGORIES.has(err.category)) {
+        const local = this.entries.find(
+          (candidate) =>
+            candidate !== entry && !candidate.hosted && !isRuntimeDisabled(controls, candidate.id),
+        );
+        if (local) {
+          this.routing.logger?.warn(
+            { from: entry.id, to: local.id, code: err.code },
+            'switch_model:hosted_to_local',
+          );
+          this.routingReason = 'switch_model_hosted_to_local';
+          this.current = local.chatModel;
+          return local.chatModel.chat(request);
+        }
+      }
+      throw err;
     }
-    throw new AppError('models.DISABLED', 'no enabled model runtime is available', undefined, 503, {
-      category: 'policy_blocked',
-      retryable: false,
-      userMessage: 'AI generation is turned off.',
+  }
+
+  private selectEntry(controls: Controls, task?: string): RuntimeChatEntry {
+    const enabled = this.entries.filter(
+      (entry) =>
+        !isRuntimeDisabled(controls, entry.id) && !(entry.hosted && controls.hostedModelsDisabled),
+    );
+    if (enabled.length === 0) {
+      throw new AppError(
+        'models.DISABLED',
+        'no enabled model runtime is available',
+        undefined,
+        503,
+        {
+          category: 'policy_blocked',
+          retryable: false,
+          userMessage: 'AI generation is turned off.',
+        },
+      );
+    }
+    this.routingReason = null;
+    const route = task ? this.routing.routes[task] : undefined;
+    if (!route) return enabled[0] as RuntimeChatEntry;
+
+    // Cost cap (19.2), enforced here: a priced option over the budget is out
+    // of the running even as `primary`; unpriced options stay because missing
+    // price data must not silently reroute (no data → configured primary).
+    const maxCostPerCall = route.maxCostPerCall;
+    const withinBudget =
+      maxCostPerCall === undefined
+        ? enabled
+        : enabled.filter((entry) => {
+            const price = this.routing.prices?.[`${entry.adapter}:${entry.model}`];
+            return price?.outputPer1k === undefined || price.outputPer1k <= maxCostPerCall;
+          });
+    const decision = chooseModel({
+      route: {
+        primary: route.primary,
+        fallback: route.fallback,
+        qualityFloor: route.qualityFloor ?? 0,
+      },
+      options: withinBudget.map((entry): ModelOption => ({
+        provider: entry.adapter,
+        model: entry.model,
+        // The runtime inventory carries no tier/quality measurements yet
+        // (19.2): inventing either would let the router skip `primary`.
+        tier: 'small',
+        quality: undefined,
+        costPer1k: this.routing.prices?.[`${entry.adapter}:${entry.model}`]?.outputPer1k,
+        egress: entry.hosted ? 'hosted' : 'local',
+        enabled: true,
+      })),
+      taskSensitivity: route.sensitivity ?? 'internal',
     });
+    const picked = decision.option
+      ? withinBudget.find(
+          (entry) =>
+            entry.adapter === decision.option?.provider && entry.model === decision.option?.model,
+        )
+      : undefined;
+    if (picked) {
+      this.routingReason = decision.reason;
+      return picked;
+    }
+    // Egress precedence (19.2): a restricted/secret task never falls back to a
+    // hosted runtime, even when that is the configured primary.
+    if (route.sensitivity === 'restricted' || route.sensitivity === 'secret') {
+      const local = withinBudget.find((entry) => !entry.hosted);
+      if (local) return local;
+      throw new AppError(
+        'models.EGRESS_BLOCKED',
+        `task "${task}" is ${route.sensitivity} and no local model runtime is enabled`,
+        { task, sensitivity: route.sensitivity },
+        403,
+        {
+          category: 'policy_blocked',
+          retryable: false,
+          userMessage: 'No local AI runtime is available for this data.',
+        },
+      );
+    }
+    return enabled[0] as RuntimeChatEntry;
   }
 
   describe(): ReturnType<ChatModel['describe']> {
     return (
-      (this.current ?? this.entries[0]?.model)?.describe() ?? {
+      (this.current ?? this.entries[0]?.chatModel)?.describe() ?? {
         provider: 'none',
         model: 'none',
         hosted: false,
@@ -609,11 +839,104 @@ class PooledChatModel implements ChatModel {
   }
 }
 
+/** Task-bound view returned by `PooledChatModel.resolve` (19.2). */
+class TaskBoundChatModel implements ChatModel {
+  constructor(
+    private readonly pool: PooledChatModel,
+    private readonly hint: ChatRouteHint,
+  ) {}
+
+  async chat(request: ChatRequest): Promise<ChatResponse> {
+    return this.pool.chat(request, this.hint);
+  }
+
+  describe(): ReturnType<ChatModel['describe']> {
+    return this.pool.describe();
+  }
+}
+
+export interface RoutingPriceTable {
+  prices?: Record<string, RoutingPriceEntry>;
+}
+
+/**
+ * Price-table estimate (19.3 v1): delegates to the kernel helper
+ * (`estimateCostFromPrices`) so modules and the host share one arithmetic:
+ * `input × inPer1k + output × outPer1k`, per 1K tokens; cached input tokens
+ * are free. Unknown models estimate to 0 until they get a price row — never
+ * an invented price.
+ */
+export function estimateCostFromRouting(
+  routing: RoutingPriceTable | undefined,
+  provider: string,
+  model: string,
+  tokensIn: number,
+  tokensOut: number,
+  tokensCached: number,
+): number {
+  return estimateCostFromPrices(routing?.prices, {
+    provider,
+    model,
+    tokensIn,
+    tokensOut,
+    tokensCached,
+  });
+}
+
 function requireModel(adapter: string, model: unknown): string {
   if (typeof model !== 'string' || model.length === 0) {
     throw configInvalid(`capability adapter "${adapter}" requires a config-bound "model"`);
   }
   return model;
+}
+
+/**
+ * `capabilities.cache` selection (18.T11): memory by default; Redis when the
+ * operator names it and the configured env carries a URL. A missing URL is a
+ * boot error, not a silent in-memory fallback — the deployment asked for a
+ * shared cache and would otherwise get per-process results.
+ */
+export function createCacheAdapter(
+  config: Pick<KernelConfig, 'capabilities'>,
+  env: NodeJS.ProcessEnv = process.env,
+): Cache {
+  const cache = parseCacheAdapterConfig(config.capabilities.cache);
+  if (cache.adapter === 'memory') return new MemoryCache(cache.maxEntries);
+  const url = env[cache.urlEnv];
+  if (!url) {
+    throw configInvalid(`cache adapter "redis" needs env ${cache.urlEnv} (redis://host:port)`);
+  }
+  return new RedisCache({ url, namespace: cache.namespace });
+}
+
+/**
+ * `capabilities.blobStore` selection (18.T12): filesystem by default; the
+ * S3-compatible adapter reads endpoint/credentials from the configured env
+ * names so secrets stay out of triage.config.json.
+ */
+export function createBlobStoreAdapter(
+  config: Pick<KernelConfig, 'capabilities'>,
+  env: NodeJS.ProcessEnv = process.env,
+): BlobStore {
+  const blob = parseBlobStoreAdapterConfig(config.capabilities.blobStore);
+  if (blob.adapter === 'filesystem') {
+    const root =
+      env.TRIAGEAI_BLOB_ROOT ?? resolve(env.TRIAGEAI_DATA_DIR ?? process.cwd(), blob.root);
+    return new FilesystemBlobStore(root);
+  }
+  const missing = [blob.endpointEnv, blob.accessKeyEnv, blob.secretKeyEnv].filter(
+    (name) => !env[name],
+  );
+  if (missing.length > 0) {
+    throw configInvalid(`blobStore adapter "s3" needs env ${missing.join(', ')}`);
+  }
+  return new S3BlobStore({
+    bucket: blob.bucket,
+    endpoint: env[blob.endpointEnv] as string,
+    accessKey: env[blob.accessKeyEnv] as string,
+    secretKey: env[blob.secretKeyEnv] as string,
+    region: blob.region,
+  });
 }
 
 /** Deterministic validation stack; checks live in @triageai/rag (ADR-0002). */
@@ -657,18 +980,15 @@ function cacheProvider(
 }
 
 export function createCapabilities(
-  config: KernelConfig,
+  config: KernelConfig & { routing?: RoutingConfig },
   fallbackBaseUrl: string,
   database: Database,
   modelRegistry?: ModelRegistry,
 ): Capabilities {
   const capabilities: Capabilities = {
     validator: new DeterministicValidator(),
-    cache: new MemoryCache(),
-    blobStore: new FilesystemBlobStore(
-      process.env.TRIAGEAI_BLOB_ROOT ??
-        resolve(process.env.TRIAGEAI_DATA_DIR ?? process.cwd(), 'data/blobs'),
-    ),
+    cache: createCacheAdapter(config),
+    blobStore: createBlobStoreAdapter(config),
     egress: new EgressClient(database, [
       ...(config.egress?.allowlist ?? []),
       ...cacheProvider(config),
@@ -721,6 +1041,45 @@ export function createCapabilities(
       capabilities.cache,
     );
   }
+  const hosted = config.hosted ?? { enabled: false, allowedProviders: [] };
+  const runtimeRows = Array.isArray(cfg.runtimes)
+    ? (cfg.runtimes as Array<Record<string, unknown>>)
+    : [];
+  // Build every runtime ChatModel once, before the Generator seam, so the pool
+  // and a wrapping Generator share one guarded instance (14.T1).
+  const runtimeEntries: RuntimeChatEntry[] = [];
+  for (const row of runtimeRows) {
+    const adapter = String(row.adapter ?? '');
+    const model = String(row.model ?? '');
+    if (!adapter || !model) continue;
+    assertHostedAllowed({ adapter, hosted });
+    const apiKeyEnv =
+      (row.apiKeyEnv as string | undefined) ??
+      {
+        anthropic: 'ANTHROPIC_API_KEY',
+        openai: 'OPENAI_API_KEY',
+        google: 'GOOGLE_API_KEY',
+        openai_compatible: 'OPENAI_API_KEY',
+      }[adapter] ??
+      undefined;
+    const built = buildChatModel({
+      adapter,
+      model,
+      baseUrl: row.baseUrl as string | undefined,
+      apiKey: apiKeyEnv ? process.env[apiKeyEnv] : undefined,
+      contextWindow: row.contextWindow as number | undefined,
+      maxOutput: row.maxOutput as number | undefined,
+      egress: capabilities.egress,
+    });
+    const id = String(row.id ?? runtimeIdFor(adapter, model));
+    runtimeEntries.push({
+      id,
+      adapter,
+      model,
+      hosted: ['anthropic', 'openai', 'google', 'openai_compatible'].includes(adapter),
+      chatModel: new GuardedChatModel(built, database, id),
+    });
+  }
   if (cfg.generator) {
     const adapter = cfg.generator.adapter;
     const model = requireModel(adapter, cfg.generator.model);
@@ -729,16 +1088,27 @@ export function createCapabilities(
     // runtime can be any reachable URL.
     const generatorBaseUrl =
       process.env.TRIAGEAI_GENERATOR_BASE_URL ?? (cfg.generator.baseUrl as string | undefined);
+    // 14.T1: when the inventory has the same runtime, the Generator wraps its
+    // (kill-switched) ChatModel instead of re-implementing the wire protocol;
+    // the runtime's baseUrl is authoritative. Without a match the legacy
+    // direct-HTTP path stays.
+    const delegate = runtimeEntries.find(
+      (entry) => entry.adapter === adapter && entry.model === model,
+    );
     if (adapter === 'ollama') {
       capabilities.generator = new OllamaGenerator(
         generatorBaseUrl ?? 'http://localhost:11434',
         model,
+        undefined,
+        delegate?.chatModel,
       );
     } else if (adapter === 'lmstudio' || adapter === 'openai_compatible_local') {
       capabilities.generator = new OpenAICompatibleGenerator(
         generatorBaseUrl ?? 'http://localhost:1234/v1',
         model,
         (cfg.generator.apiKey as string | undefined) ?? 'local',
+        undefined,
+        delegate?.chatModel,
       );
     } else {
       throw configInvalid(
@@ -746,43 +1116,14 @@ export function createCapabilities(
       );
     }
   }
-  const hosted = config.hosted ?? { enabled: false, allowedProviders: [] };
-  const runtimeRows = Array.isArray(cfg.runtimes)
-    ? (cfg.runtimes as Array<Record<string, unknown>>)
-    : [];
   if (runtimeRows.length > 0) {
-    const entries: Array<{ id: string; hosted: boolean; model: ChatModel }> = [];
-    for (const row of runtimeRows) {
-      const adapter = String(row.adapter ?? '');
-      const model = String(row.model ?? '');
-      if (!adapter || !model) continue;
-      assertHostedAllowed({ adapter, hosted });
-      const apiKeyEnv =
-        (row.apiKeyEnv as string | undefined) ??
-        {
-          anthropic: 'ANTHROPIC_API_KEY',
-          openai: 'OPENAI_API_KEY',
-          google: 'GOOGLE_API_KEY',
-          openai_compatible: 'OPENAI_API_KEY',
-        }[adapter] ??
-        undefined;
-      const built = buildChatModel({
-        adapter,
-        model,
-        baseUrl: row.baseUrl as string | undefined,
-        apiKey: apiKeyEnv ? process.env[apiKeyEnv] : undefined,
-        contextWindow: row.contextWindow as number | undefined,
-        maxOutput: row.maxOutput as number | undefined,
-        egress: capabilities.egress,
-      });
-      const id = String(row.id ?? runtimeIdFor(adapter, model));
-      entries.push({
-        id,
-        hosted: ['anthropic', 'openai', 'google', 'openai_compatible'].includes(adapter),
-        model: new GuardedChatModel(built, database, id),
+    if (runtimeEntries.length > 0) {
+      capabilities.chatModel = new PooledChatModel(runtimeEntries, database, {
+        routes: config.routing?.tasks ?? {},
+        prices: config.routing?.prices,
+        logger,
       });
     }
-    if (entries.length > 0) capabilities.chatModel = new PooledChatModel(entries, database);
   } else if (cfg.chatModel) {
     const adapter = String(cfg.chatModel.adapter);
     const model = String(cfg.chatModel.model ?? '');

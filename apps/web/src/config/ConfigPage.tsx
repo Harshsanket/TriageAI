@@ -208,6 +208,11 @@ interface DataPolicy {
     sensitivity: string;
     modelUse: string;
     retention: { mode: string; days?: number };
+    bounds?: {
+      minRetentionDays?: number;
+      maxRetentionDays?: number;
+      strictestModelUse?: string;
+    };
     effective?: {
       retentionDays: number | null;
       modelUse: string;
@@ -391,6 +396,7 @@ function SettingsView({ status, refresh }: { status: SetupStatus; refresh: () =>
         </div>
       )}
       <AppearanceCard />
+      <KernelControlsCard />
       {effective && (
         <div className="cfg-card">
           <h2>Modules</h2>
@@ -748,7 +754,13 @@ function SettingsView({ status, refresh }: { status: SetupStatus; refresh: () =>
       {secrets && <SecretsCard list={secrets} onSaved={() => setNonce((n) => n + 1)} />}
       <DashboardSettingsCard />
       <ConnectionsCard />
+      <GenericConnectorsCard />
       <SkillsSettingsCard />
+      <PacksCard />
+      <WorkflowsCard />
+      <DocsInternalCard />
+      <SchedulesCard />
+      <AutonomyCard />
       <div className="cfg-card cfg-danger">
         <h2>Danger zone</h2>
         <p>
@@ -1207,7 +1219,10 @@ function DataProcessingCard({ data, onSaved }: { data: KbDataProcessing; onSaved
   );
 }
 
-function DataPolicyCard({ data, onSaved }: { data: DataPolicy; onSaved: () => void }) {
+const MODEL_USE_ORDER = ['never', 'local_only', 'redacted', 'allowed'] as const;
+const SENSITIVITY_ORDER = ['public', 'internal', 'restricted', 'secret'] as const;
+
+export function DataPolicyCard({ data, onSaved }: { data: DataPolicy; onSaved: () => void }) {
   const defaults = Object.fromEntries(
     (data.classes ?? []).map((cls) => [
       cls.id,
@@ -1314,14 +1329,34 @@ function DataPolicyCard({ data, onSaved }: { data: DataPolicy; onSaved: () => vo
           <tbody>
             {(data.classes ?? []).map((cls) => {
               const value = overrides[cls.id] ?? defaults[cls.id] ?? {};
+              const minDays = cls.bounds?.minRetentionDays ?? 1;
+              const maxDays = cls.bounds?.maxRetentionDays ?? 3650;
+              const strictest = cls.bounds?.strictestModelUse;
+              const strictestRank = strictest
+                ? Math.max(
+                    0,
+                    MODEL_USE_ORDER.indexOf(strictest as (typeof MODEL_USE_ORDER)[number]),
+                  )
+                : MODEL_USE_ORDER.length - 1;
+              const sensitivityFloor = Math.max(
+                0,
+                SENSITIVITY_ORDER.indexOf(cls.sensitivity as (typeof SENSITIVITY_ORDER)[number]),
+              );
               return (
                 <tr key={cls.id}>
-                  <td>{cls.id}</td>
+                  <td>
+                    {cls.id}
+                    <span className="cfg-hint">
+                      {' '}
+                      · {minDays}–{maxDays} days
+                      {strictest ? ` · ≤ ${strictest}` : ''}
+                    </span>
+                  </td>
                   <td>
                     <input
                       type="number"
-                      min={1}
-                      max={3650}
+                      min={minDays}
+                      max={maxDays}
                       aria-label={`${cls.id} retention days`}
                       value={String(value.retentionDays ?? '')}
                       onChange={(event) =>
@@ -1335,8 +1370,14 @@ function DataPolicyCard({ data, onSaved }: { data: DataPolicy; onSaved: () => vo
                       value={value.modelUse ?? 'never'}
                       onChange={(event) => update(cls.id, { modelUse: event.target.value })}
                     >
-                      {['never', 'local_only', 'redacted', 'allowed'].map((option) => (
-                        <option key={option} value={option}>
+                      {MODEL_USE_ORDER.map((option, index) => (
+                        <option
+                          key={option}
+                          value={option}
+                          disabled={
+                            index > strictestRank || (cls.sensitivity === 'secret' && index > 0)
+                          }
+                        >
                           {option}
                         </option>
                       ))}
@@ -1348,8 +1389,8 @@ function DataPolicyCard({ data, onSaved }: { data: DataPolicy; onSaved: () => vo
                       value={value.sensitivity ?? 'internal'}
                       onChange={(event) => update(cls.id, { sensitivity: event.target.value })}
                     >
-                      {['public', 'internal', 'restricted', 'secret'].map((option) => (
-                        <option key={option} value={option}>
+                      {SENSITIVITY_ORDER.map((option, index) => (
+                        <option key={option} value={option} disabled={index < sensitivityFloor}>
                           {option}
                         </option>
                       ))}
@@ -1381,6 +1422,300 @@ function DataPolicyCard({ data, onSaved }: { data: DataPolicy; onSaved: () => vo
         Send gate: {data.sendGate?.sent ?? 0} sent · {data.sendGate?.redacted ?? 0} redacted ·{' '}
         {data.sendGate?.withheld ?? 0} withheld
       </p>
+    </div>
+  );
+}
+
+interface ControlMetaView {
+  section: string;
+  label: string;
+  help: string;
+  default: unknown;
+  applies: 'immediately' | 'soft-reload' | 'restart';
+  danger?: boolean;
+  secret?: boolean;
+}
+
+interface SystemConfigView {
+  profile?: string;
+  queue?: unknown;
+  modules?: unknown;
+  capabilities?: unknown;
+  retention?: unknown;
+  hosted?: unknown;
+  controls?: {
+    fields: string[];
+    catalog: Record<string, ControlMetaView>;
+  };
+}
+
+function formatControlValue(value: unknown): string {
+  if (value === undefined) return '—';
+  if (typeof value === 'string') return value;
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * 18.T8: top-level controls rendered from the kernel catalog metadata, so a
+ * new config field shows up here (and in the coverage test) instead of
+ * requiring a hand-written row. Values are read-only; edits stay in the
+ * dedicated cards or the wizard.
+ */
+export function KernelControlsCard() {
+  const [data, setData] = useState<SystemConfigView | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => {
+    setupJson<SystemConfigView>('/api/v1/system/config').then(setData, (err: Error) =>
+      setNote(err.message),
+    );
+  }, []);
+  const controls = data?.controls;
+  return (
+    <div className="cfg-card">
+      <h2>Kernel controls</h2>
+      <p className="cfg-hint">
+        Declared configuration fields and when a change takes effect. Generated from the kernel
+        control catalog; edit values in the cards below or in Change setup.
+      </p>
+      {note ? <p role="alert">{note}</p> : null}
+      {!controls ? (
+        <p className="cfg-hint">Control metadata unavailable.</p>
+      ) : (
+        <div className="dashboard__table-scroll">
+          <table className="dashboard__table">
+            <thead>
+              <tr>
+                <th>Control</th>
+                <th>Current</th>
+                <th>Default</th>
+                <th>Applies</th>
+              </tr>
+            </thead>
+            <tbody>
+              {controls.fields.map((field) => {
+                const meta = controls.catalog[field];
+                if (!meta) return null;
+                return (
+                  <tr key={field}>
+                    <td>
+                      <strong>{meta.label}</strong>
+                      <span className="cfg-hint">
+                        {' '}
+                        · {field} · {meta.section}
+                      </span>
+                      <div className="cfg-hint">{meta.help}</div>
+                    </td>
+                    <td>
+                      <code>{formatControlValue(data?.[field as keyof SystemConfigView])}</code>
+                    </td>
+                    <td>
+                      <code>{formatControlValue(meta.default)}</code>
+                    </td>
+                    <td>
+                      {meta.applies}
+                      {meta.danger ? ' · danger' : ''}
+                      {meta.secret ? ' · secret' : ''}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PackView {
+  id: string;
+  version: string;
+  name: string;
+  license: string;
+  sha256: string;
+  modules: string[];
+  skills: string[];
+  agents: string[];
+  installedBy: string | null;
+  installedAt: string;
+}
+
+interface PackItemResultView {
+  id: string;
+  kind: string;
+  status: string;
+  version?: string;
+  reason?: string;
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
+}
+
+/**
+ * 22.T12: signed pack install. A pack is verified before any module entry is
+ * installed; the result lists what happened to each module, skill and profile.
+ */
+export function PacksCard() {
+  const [packs, setPacks] = useState<PackView[] | null>(null);
+  const [url, setUrl] = useState('');
+  const [signature, setSignature] = useState('');
+  const [sha256, setSha256] = useState('');
+  const [file, setFile] = useState<{ name: string; base64: string } | null>(null);
+  const [results, setResults] = useState<PackItemResultView[] | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setupJson<{ packs?: PackView[] }>('/api/v1/plugins').then(
+      (body) => setPacks(Array.isArray(body.packs) ? body.packs : []),
+      (err: Error) => setNote(err.message),
+    );
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const install = async () => {
+    setBusy(true);
+    setNote(null);
+    setResults(null);
+    try {
+      const payload = file
+        ? {
+            pack: file.base64,
+            signature: signature.trim(),
+            ...(sha256.trim() ? { sha256: sha256.trim() } : {}),
+          }
+        : {
+            packUrl: url.trim(),
+            signature: signature.trim(),
+            ...(sha256.trim() ? { sha256: sha256.trim() } : {}),
+          };
+      const body = await setupJson<{
+        pack?: PackView;
+        items?: PackItemResultView[];
+        ok?: boolean;
+      }>('/api/v1/plugins/install', { method: 'POST', body: JSON.stringify(payload) });
+      setResults(Array.isArray(body.items) ? body.items : []);
+      setNote(
+        body.ok === false
+          ? `Pack ${body.pack?.id ?? ''} installed with failures; review the item list.`
+          : `Verified and installed ${body.pack?.id ?? 'pack'} v${body.pack?.version ?? ''}.`,
+      );
+      await load();
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canInstall = Boolean(signature.trim() && (file || url.trim()));
+  return (
+    <div className="cfg-card">
+      <h2>Packs</h2>
+      <p className="cfg-hint">
+        A signed pack installs its module entries as one unit. The archive is verified against a
+        trusted key before anything is written; skills and agent profiles are imported as content
+        only.
+      </p>
+      {packs === null ? (
+        <p className="cfg-hint">Loading packs…</p>
+      ) : packs.length === 0 ? (
+        <p className="cfg-muted">No packs installed.</p>
+      ) : (
+        <ul className="cfg-list">
+          {packs.map((pack) => (
+            <li key={pack.id}>
+              <strong>{pack.name}</strong> v{pack.version} · {pack.license} ·{' '}
+              {(pack.modules ?? []).length} modules · sha {(pack.sha256 ?? '').slice(0, 12)}…
+              {(pack.skills ?? []).length > 0 ? ` · ${pack.skills.length} skills` : ''}
+              {(pack.agents ?? []).length > 0 ? ` · ${pack.agents.length} agent profiles` : ''}
+              {pack.installedBy ? ` · ${pack.installedBy}` : ''}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="cfg-inline">
+        <label className="cfg-field">
+          <span>Pack URL</span>
+          <input
+            value={url}
+            placeholder="https://example.com/ticket-solver-1.0.0.tgz"
+            disabled={Boolean(file)}
+            onChange={(event) => setUrl(event.target.value)}
+          />
+        </label>
+        <label className="cfg-field">
+          <span>Pack file</span>
+          <input
+            type="file"
+            accept=".tgz,.gz,.pack"
+            aria-label="Pack file"
+            onChange={(event) => {
+              const selected = event.target.files?.[0];
+              if (!selected) {
+                setFile(null);
+                return;
+              }
+              void fileToBase64(selected).then((base64) =>
+                setFile({ name: selected.name, base64 }),
+              );
+            }}
+          />
+        </label>
+      </div>
+      {file ? <p className="cfg-hint">Selected {file.name}</p> : null}
+      <div className="cfg-inline">
+        <label className="cfg-field">
+          <span>Signature (base64)</span>
+          <input
+            value={signature}
+            aria-label="Pack signature"
+            onChange={(event) => setSignature(event.target.value)}
+          />
+        </label>
+        <label className="cfg-field">
+          <span>Expected SHA-256 (optional)</span>
+          <input
+            value={sha256}
+            aria-label="Expected pack SHA-256"
+            onChange={(event) => setSha256(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="cfg-button"
+          disabled={busy || !canInstall}
+          onClick={() => void install()}
+        >
+          {busy ? 'Verifying…' : 'Install pack'}
+        </button>
+      </div>
+      {note ? <p aria-live="polite">{note}</p> : null}
+      {results && results.length > 0 ? (
+        <ul className="cfg-list" aria-label="Pack install results">
+          {results.map((item) => (
+            <li key={`${item.kind}:${item.id}`}>
+              {item.kind} {item.id}
+              {item.version ? `@${item.version}` : ''} · {item.status}
+              {item.reason ? ` · ${item.reason}` : ''}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -1561,6 +1896,405 @@ export function SkillsSettingsCard() {
   );
 }
 
+interface WorkflowGraphView {
+  nodes: Array<{ id: string; type: string; kind?: string; end?: string }>;
+  edges: Array<{ from: string; to: string; label: string; when?: string; on?: string[] }>;
+}
+
+interface WorkflowView {
+  id: string;
+  version: string;
+  module: string;
+  trigger: { type: string };
+  graph?: WorkflowGraphView;
+}
+
+/**
+ * Read-only workflow catalog (18.T22): each declared graph with its version.
+ * Editing a graph is a reviewed code/config change, never an ad-hoc UI edit.
+ */
+function WorkflowsCard() {
+  const [workflows, setWorkflows] = useState<WorkflowView[] | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => {
+    setupJson<{ workflows: WorkflowView[] }>('/api/v1/system/workflows').then(
+      (data) => setWorkflows(data.workflows ?? []),
+      (err: Error) => setNote(err.message),
+    );
+  }, []);
+  return (
+    <div className="cfg-card">
+      <h2>Workflows</h2>
+      <p>
+        Declared control flow, read-only. A graph change is a reviewed code or plugin change, never
+        an edit to a live run.
+      </p>
+      {note ? <p role="alert">{note}</p> : null}
+      {workflows && workflows.length > 0 ? (
+        <ul className="cfg-list">
+          {workflows.map((workflow) => (
+            <li key={`${workflow.id}@${workflow.version}`}>
+              <strong>{workflow.id}</strong> v{workflow.version} · {workflow.module} ·{' '}
+              {workflow.trigger.type}
+              {workflow.graph ? (
+                <details>
+                  <summary>
+                    {workflow.graph.nodes.length} nodes · {workflow.graph.edges.length} edges
+                  </summary>
+                  <ul>
+                    {workflow.graph.nodes.map((node) => (
+                      <li key={node.id}>
+                        {node.id} · {node.type}
+                        {node.kind ? ` · ${node.kind}` : ''}
+                        {node.end ? ` · ${node.end}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                  <ul>
+                    {workflow.graph.edges.map((edge) => (
+                      <li key={`${edge.from}->${edge.to}:${edge.label}`}>
+                        {edge.from} → {edge.to} · {edge.label}
+                        {edge.when ? ` · when ${edge.when}` : ''}
+                        {edge.on?.length ? ` · on ${edge.on.join('|')}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : (
+                ' · v1 stage list'
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+interface ScheduleReceiptView {
+  runs: number;
+  noChange: number;
+  useful: number;
+  neededHuman: number;
+  repeatedFailures: number;
+  skippedOverlap: number;
+  manualRuns: number;
+  cost: number;
+  costPerUsefulRun: number | null;
+  lastUsefulAt: string | null;
+  suggestion: string;
+}
+
+interface ScheduleView {
+  id: string;
+  module: string;
+  cron: string | null;
+  probe: { kind: string; read: string } | null;
+  silentWhenEmpty: boolean;
+  managed: boolean;
+  nextRunAt: string | null;
+  state: {
+    watermark: unknown;
+    lastRunAt: string | null;
+    lastStatus: string | null;
+    skippedOverlap: number;
+  } | null;
+  receipt: ScheduleReceiptView;
+  acceptedSuggestion: { suggestion: string; acceptedAt: string } | null;
+}
+
+function watermarkLabel(watermark: unknown): string {
+  if (watermark == null) return '—';
+  if (typeof watermark === 'object' && 'value' in watermark) {
+    return String((watermark as { value: unknown }).value ?? '—');
+  }
+  return typeof watermark === 'string' ? watermark : JSON.stringify(watermark);
+}
+
+/**
+ * Schedules + routine receipts (18.T33/19.T8). Suggestions are advisory: the
+ * card shows the estimated saving and writes an accepted setting, never a
+ * schedule change.
+ */
+export function SchedulesCard() {
+  const [schedules, setSchedules] = useState<ScheduleView[] | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = () =>
+    setupJson<{ schedules: ScheduleView[] }>('/api/v1/system/schedules').then(
+      (data) => setSchedules(data.schedules ?? []),
+      (err: Error) => setNote(err.message),
+    );
+  useEffect(() => {
+    void load();
+  }, []);
+  const runNow = async (schedule: ScheduleView) => {
+    setBusy(`run:${schedule.id}`);
+    try {
+      await setupJson(`/api/v1/system/schedules/${encodeURIComponent(schedule.id)}/run`, {
+        method: 'POST',
+      });
+      setNote(`Started a manual run of ${schedule.id}. It is counted separately.`);
+      await load();
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const accept = async (schedule: ScheduleView) => {
+    setBusy(`accept:${schedule.id}`);
+    try {
+      await setupJson(`/api/v1/system/schedules/${encodeURIComponent(schedule.id)}/suggestion`, {
+        method: 'PUT',
+        body: JSON.stringify({ suggestion: schedule.receipt.suggestion, days: 30 }),
+      });
+      setNote(
+        `Accepted ${schedule.receipt.suggestion} for ${schedule.id}. Nothing changes until the next reviewed config change.`,
+      );
+      await load();
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="cfg-card">
+      <h2>Schedules</h2>
+      <p className="cfg-hint">
+        Recurring routines run through the kernel scheduler. A probe makes an unchanged wake-up
+        free; a still-running occurrence is skipped, never queued. Receipts cover the last 30 days
+        and suggestions are never applied automatically.
+      </p>
+      {note ? <p aria-live="polite">{note}</p> : null}
+      {schedules === null ? (
+        <p className="cfg-hint">Loading schedules…</p>
+      ) : schedules.length === 0 ? (
+        <p className="cfg-hint">No scheduled workflows are registered.</p>
+      ) : (
+        <ul className="cfg-list">
+          {schedules.map((schedule) => {
+            const receipt = schedule.receipt;
+            const accepted = schedule.acceptedSuggestion?.suggestion === receipt.suggestion;
+            return (
+              <li key={schedule.id}>
+                <strong>{schedule.id}</strong> · {schedule.module} ·{' '}
+                {schedule.cron ?? 'not scheduler-managed'}
+                {schedule.probe ? ` · probe ${schedule.probe.read}` : ' · no probe'}
+                {schedule.silentWhenEmpty ? ' · silent when empty' : ''}
+                <div className="cfg-hint">
+                  last {schedule.state?.lastRunAt ?? 'never'} ·{' '}
+                  {schedule.state?.lastStatus ?? 'no runs'} · next {schedule.nextRunAt ?? '—'} ·
+                  watermark {watermarkLabel(schedule.state?.watermark)} · overlap skips{' '}
+                  {schedule.state?.skippedOverlap ?? 0}
+                </div>
+                <div className="cfg-hint">
+                  {receipt.runs} runs · {receipt.noChange} no-change · {receipt.useful} useful ·{' '}
+                  {receipt.neededHuman} needed a human · {receipt.repeatedFailures} failures ·{' '}
+                  {receipt.skippedOverlap} skipped · {receipt.manualRuns} manual · cost{' '}
+                  {receipt.cost.toFixed(2)}
+                  {receipt.costPerUsefulRun != null
+                    ? ` · ${receipt.costPerUsefulRun.toFixed(2)} per useful run`
+                    : ''}
+                  {receipt.lastUsefulAt
+                    ? ` · last useful ${new Date(receipt.lastUsefulAt).toLocaleString()}`
+                    : ' · no useful run in the window'}
+                </div>
+                <div className="cfg-inline">
+                  <span>suggestion: {receipt.suggestion}</span>
+                  <button
+                    type="button"
+                    className="cfg-button cfg-button--ghost"
+                    aria-label={`Run now ${schedule.id}`}
+                    disabled={busy === `run:${schedule.id}`}
+                    onClick={() => void runNow(schedule)}
+                  >
+                    Run now
+                  </button>
+                  {accepted ? (
+                    <span className="cfg-hint">accepted</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="cfg-button"
+                      aria-label={`Accept ${receipt.suggestion} for ${schedule.id}`}
+                      disabled={busy === `accept:${schedule.id}`}
+                      onClick={() => void accept(schedule)}
+                    >
+                      Accept {receipt.suggestion}
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+interface AutonomyFlowView {
+  key: string;
+  flow: string;
+  category: string | null;
+  level: string;
+  cleanRunStreak: number;
+  promoteAfter: number;
+  lastChange: {
+    from: string;
+    to: string;
+    reason: string;
+    by: string;
+    at: string;
+  } | null;
+  suggestion: { level: string; reason: string } | null;
+}
+
+/**
+ * Per-flow autonomy (15.T10): promotion is a suggestion the admin accepts;
+ * demotions are automatic and recorded. The card never raises a flow itself.
+ */
+export function AutonomyCard() {
+  const [flows, setFlows] = useState<AutonomyFlowView[] | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const load = () =>
+    setupJson<{ flows: AutonomyFlowView[] }>('/api/v1/system/autonomy').then(
+      (data) => setFlows(data.flows ?? []),
+      (err: Error) => setNote(err.message),
+    );
+  useEffect(() => {
+    void load();
+  }, []);
+  const accept = async (flow: AutonomyFlowView) => {
+    if (!flow.suggestion) return;
+    try {
+      await setupJson(`/api/v1/system/autonomy/${encodeURIComponent(flow.flow)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ category: flow.category, level: flow.suggestion.level }),
+      });
+      setNote(
+        `Accepted ${flow.suggestion.level} for ${flow.flow}${flow.category ? ` (${flow.category})` : ''}.`,
+      );
+      await load();
+    } catch (err) {
+      setNote((err as Error).message);
+    }
+  };
+  return (
+    <div className="cfg-card">
+      <h2>Autonomy</h2>
+      <p className="cfg-hint">
+        Trust is earned per flow and category. After {flows?.[0]?.promoteAfter ?? 5} clean runs the
+        next level is suggested; nothing is raised without you. A dirty run or a production target
+        demotes the flow immediately.
+      </p>
+      {note ? <p aria-live="polite">{note}</p> : null}
+      {flows === null ? (
+        <p className="cfg-hint">Loading autonomy…</p>
+      ) : flows.length === 0 ? (
+        <p className="cfg-hint">No flows observed yet. Run a flow to start earning autonomy.</p>
+      ) : (
+        <ul className="cfg-list">
+          {flows.map((flow) => (
+            <li key={flow.key}>
+              <strong>{flow.flow}</strong>
+              {flow.category ? ` · ${flow.category}` : ''} · {flow.level} · {flow.cleanRunStreak}/
+              {flow.promoteAfter} clean runs
+              {flow.lastChange
+                ? ` · last change ${flow.lastChange.from} → ${flow.lastChange.to} (${flow.lastChange.reason})`
+                : ''}
+              {flow.suggestion ? (
+                <span>
+                  {' '}
+                  · suggestion: {flow.suggestion.level}
+                  <button
+                    type="button"
+                    className="cfg-button"
+                    aria-label={`Accept ${flow.suggestion.level} for ${flow.flow}${flow.category ? ` (${flow.category})` : ''}`}
+                    onClick={() => void accept(flow)}
+                  >
+                    Accept {flow.suggestion.level}
+                  </button>
+                </span>
+              ) : (
+                <span className="cfg-hint"> · no promotion suggested</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DocsInternalCard() {
+  const [root, setRoot] = useState('');
+  const [result, setResult] = useState<{
+    questions: string[];
+    instructions: string;
+    principles: string;
+    skillMode: string;
+    layout: string[];
+  } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const load = async () => {
+    setNote(null);
+    const res = await setupJson<{
+      questions: string[];
+      instructions: string;
+      principles: string;
+      skillMode: string;
+      layout: string[];
+    }>('/api/v1/setup/docs-internal', {
+      method: 'POST',
+      body: JSON.stringify({ root }),
+    }).catch((err: Error) => {
+      setNote(err.message);
+      return null;
+    });
+    if (res) setResult(res);
+  };
+  return (
+    <div className="cfg-card">
+      <h2>Docs-internal import</h2>
+      <p>
+        Read a local docs-internal checkout and reproduce its setup interview, instructions and
+        principles for agent profiles.
+      </p>
+      <label className="cfg-field">
+        <span>Checkout path</span>
+        <input
+          className="cfg-input"
+          value={root}
+          onChange={(event) => setRoot(event.target.value)}
+          placeholder="/path/to/docs-internal"
+        />
+      </label>
+      <div className="cfg-inline">
+        <button type="button" className="cfg-button" disabled={!root.trim()} onClick={load}>
+          Import
+        </button>
+      </div>
+      {note ? <p role="alert">{note}</p> : null}
+      {result ? (
+        <div>
+          <p>
+            Skill mode <strong>{result.skillMode}</strong> · layout{' '}
+            {result.layout.join(', ') || '—'}
+          </p>
+          <p>
+            <strong>Questions</strong>: {result.questions.join(' · ') || '—'}
+          </p>
+          {result.instructions ? <p>Instructions: {result.instructions}</p> : null}
+          {result.principles ? <p>Principles: {result.principles}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DashboardSettingsCard() {
   const [refreshMs, setRefreshMs] = useState(600_000);
   const [note, setNote] = useState<string | null>(null);
@@ -1605,6 +2339,142 @@ function DashboardSettingsCard() {
         </button>
       </div>
       {note ? <p aria-live="polite">{note}</p> : null}
+    </div>
+  );
+}
+
+function GenericConnectorsCard() {
+  interface Row {
+    id: string;
+    name: string;
+    kind: 'graphql' | 'sql';
+    status: string;
+    endpoint: string | null;
+    dialect: string | null;
+    tools: unknown[];
+    sync: { enabled: boolean; tool: string } | null;
+  }
+  const [rows, setRows] = useState<Row[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ name: '', kind: 'graphql', value: '' });
+  const empty = { name: '', kind: 'graphql', value: '' };
+  const load = () => {
+    void setupJson<{ connections?: Row[] }>('/api/v1/connectors').then(
+      (body) => setRows(Array.isArray(body.connections) ? body.connections : []),
+      (err: Error) => setError(err.message),
+    );
+  };
+  useEffect(load, []);
+  const create = async () => {
+    setError(null);
+    try {
+      await setupJson('/api/v1/connectors', {
+        method: 'POST',
+        body: JSON.stringify(
+          draft.kind === 'graphql'
+            ? { name: draft.name, kind: 'graphql', endpoint: draft.value }
+            : { name: draft.name, kind: 'sql', dialect: draft.value || 'postgres' },
+        ),
+      });
+      setDraft(empty);
+      setNote('Connector saved. Import operations, then complete their tool contracts.');
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const act = async (row: Row, path: string, label: string) => {
+    setError(null);
+    try {
+      await setupJson(`/api/v1/connectors/${row.id}/${path}`, { method: 'POST', body: '{}' });
+      setNote(`${row.name}: ${label} finished.`);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  return (
+    <div className="cfg-card">
+      <h2>Generic connectors</h2>
+      <p>
+        GraphQL and SQL connections become tools under the tool contract. Imported tools start
+        disabled until their input/output schemas are completed.
+      </p>
+      {rows.length === 0 ? (
+        <p className="cfg-hint">No generic connectors yet.</p>
+      ) : (
+        <ul className="cfg-list">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <div className="cfg-inline">
+                <strong>{row.name}</strong>
+                <span className="cfg-hint">
+                  {row.kind} · {row.status} · {row.tools.length} tools
+                  {row.sync?.enabled ? ` · sync ${row.sync.tool}` : ''}
+                </span>
+              </div>
+              <div className="cfg-inline">
+                <button
+                  type="button"
+                  className="cfg-button"
+                  onClick={() => act(row, 'test', 'test')}
+                >
+                  Test
+                </button>
+                <button
+                  type="button"
+                  className="cfg-button"
+                  onClick={() => act(row, 'import', 'import')}
+                >
+                  Import
+                </button>
+                {row.sync?.enabled ? (
+                  <button
+                    type="button"
+                    className="cfg-button"
+                    onClick={() => act(row, 'sync', 'sync')}
+                  >
+                    Sync now
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="cfg-inline">
+        <input
+          className="cfg-input"
+          placeholder="Name"
+          value={draft.name}
+          onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+        />
+        <select
+          className="cfg-input"
+          value={draft.kind}
+          onChange={(event) => setDraft({ ...draft, kind: event.target.value, value: '' })}
+        >
+          <option value="graphql">GraphQL</option>
+          <option value="sql">SQL (Postgres)</option>
+        </select>
+        <input
+          className="cfg-input"
+          placeholder={draft.kind === 'graphql' ? 'https://api.example.com/graphql' : 'postgres'}
+          value={draft.value}
+          onChange={(event) => setDraft({ ...draft, value: event.target.value })}
+        />
+        <button
+          type="button"
+          className="cfg-button"
+          disabled={!draft.name.trim() || !draft.value.trim()}
+          onClick={create}
+        >
+          Add connector
+        </button>
+      </div>
+      {note ? <p className="cfg-hint">{note}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
     </div>
   );
 }

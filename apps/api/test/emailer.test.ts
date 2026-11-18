@@ -238,4 +238,32 @@ describeIfDb('emailer (phase 13)', () => {
     expect(res.statusCode).toBe(401);
     expect(res.json()).toMatchObject({ code: 'emailer.SIGNATURE_INVALID' });
   });
+
+  it('dedupes one reply per inbound message without blocking later thread replies (13.T2)', async () => {
+    app = (await buildApp({ quiet: true, configPath, capabilities })) as App;
+    // Unique per run: the shared test DB keeps prior outbox rows.
+    const ticketId = `ticket-thread-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const firstMessage = `msg-a-${ticketId}@customer.test`;
+    const secondMessage = `msg-b-${ticketId}@customer.test`;
+    const send = (inReplyTo: string) =>
+      app!.inject({
+        method: 'POST',
+        url: '/api/v1/emailer/send',
+        payload: {
+          to: 'customer@test.dev',
+          subject: 'Re: thread',
+          body: 'Answer.',
+          ticketId,
+          inReplyTo,
+        },
+      });
+
+    const first = await send(firstMessage);
+    expect(first.json()).toMatchObject({ queued: true });
+    const duplicate = await send(firstMessage);
+    expect(duplicate.json()).toMatchObject({ queued: false, reason: 'already_replied' });
+    // A later customer message in the same thread is a new reply, not a repeat.
+    const next = await send(secondMessage);
+    expect(next.json()).toMatchObject({ queued: true });
+  });
 });

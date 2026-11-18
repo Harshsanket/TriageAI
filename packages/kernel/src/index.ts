@@ -25,9 +25,20 @@ export {
   parseConfigFile,
   parseConfigOverlay,
   applyConfigOverlay,
+  parseCacheAdapterConfig,
+  parseBlobStoreAdapterConfig,
+  cacheAdapterConfigSchema,
+  blobStoreAdapterConfigSchema,
   PROFILE_PRESETS,
 } from './config.js';
-export type { ConfigFile, ConfigOverlay, RawConfigFile } from './config.js';
+export type {
+  CacheAdapterConfig,
+  ConfigFile,
+  ConfigOverlay,
+  BlobStoreAdapterConfig,
+  RawConfigFile,
+} from './config.js';
+export type { RoutingConfig, RoutingPriceEntry, RoutingTaskRoute } from './config.js';
 export { PostgresDatabase, MigrationRunner, checksumSql, MIGRATIONS_TABLE_SQL } from './storage.js';
 export { bootKernel, resolveModules, DEFAULT_RETENTION } from './kernel.js';
 export type { Kernel } from './kernel.js';
@@ -60,7 +71,12 @@ export { InlineQueue } from './queue/inline.js';
 export { PgQueue } from './queue/pg.js';
 export { CORE_MIGRATIONS } from './migrations.js';
 export { satisfiesRange, parseVersion } from './semver.js';
-export { createOutputChannelRegistry } from './outputChannel.js';
+export { createOutputChannelRegistry, setOutputChannelGuard } from './outputChannel.js';
+export type {
+  GuardedOutputChannelRegistry,
+  OutputChannelGuard,
+  OutputChannelGuardContext,
+} from './outputChannel.js';
 export { HttpOutputChannel, TokenRotator, requestWithRetry } from './outputChannel/http.js';
 export type {
   ChannelContractFactory,
@@ -106,6 +122,7 @@ export type {
   RegistryIndex,
   RegistryEntry,
   PackManifest,
+  PackPackage,
 } from '@triageai/plugin-sdk';
 export { ModuleClient, createModuleClient } from '@triageai/plugin-sdk';
 export type { Mp1Transport, ModuleClientOptions } from '@triageai/plugin-sdk';
@@ -113,11 +130,16 @@ export * from './tools/index.js';
 export * from './skills/index.js';
 export * from './skills/store.js';
 export * from './state/index.js';
+export * from './runState.js';
 export * from './memory/index.js';
 export * from './storage/cache.js';
 export * from './storage/blob.js';
+export * from './vector/indexes.js';
 export * from './data/classes.js';
 export * from './approvals.js';
+export * from './approvals/policy.js';
+export * from './approvals/expiry.js';
+export * from './approvals/preview.js';
 export * from './models/callModel.js';
 export * from './data/sendGate.js';
 export * from './outbox.js';
@@ -139,6 +161,9 @@ export * from './data/requiredFields.js';
 export * from './operations/autonomy.js';
 export * from './tools/mcp.js';
 export * from './agents/workspace.js';
+export * from './agents/need.js';
+export * from './agents/context.js';
+export * from './agents/workflow.js';
 export * from './tools/openapi.js';
 export * from './graph/v2.js';
 export * from './models/trace.js';
@@ -187,3 +212,4 @@ export {
 } from './mp1/mtls.js';
 export type { MtlsPolicy } from './mp1/mtls.js';
 export type { SessionTokenClaims } from './mp1/sessionToken.js';
+export * from './scheduler/index.js';

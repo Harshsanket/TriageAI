@@ -6,6 +6,7 @@ import { PreferencesResponseSchema } from '@triageai/contracts';
 import { apiFetch, apiStream, type ApiFailure } from '../../host/api';
 import { readChatFiles, saveAttachmentsToKb, type ChatAttachment } from '../../host/attachments';
 import { ProgressStatus } from '../../ui/ProgressStatus';
+import { Markdown } from '../../ui/Markdown';
 import { Button, Card, EmptyState, ErrorNotice, Field, Input, Page } from '../../ui';
 
 interface Message {
@@ -13,6 +14,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   citations: string[];
+  runId?: string | null;
   createdAt: string;
 }
 
@@ -98,6 +100,7 @@ export default function ChatApp({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [fileNote, setFileNote] = useState<string | null>(null);
+  const [flagged, setFlagged] = useState<Record<string, string>>({});
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const busy = useRef(false);
@@ -152,6 +155,7 @@ export default function ChatApp({
     }
     setError(null);
     setMessages(res.data.messages);
+    setFlagged({});
     setContext(res.data.context ?? null);
   }, []);
 
@@ -335,6 +339,22 @@ export default function ChatApp({
     await loadList();
   };
 
+  // 19.T6 data policy: flag the answer's run through the existing audited
+  // endpoint; the flag rate and review queue consume the audit row.
+  const flagAnswer = async (message: Message) => {
+    if (!message.runId) return;
+    const res = await apiFetch(`/api/v1/system/runs/${message.runId}/flag`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'user flagged chat answer' }),
+    });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setFlagged((current) => ({ ...current, [message.id]: 'Flagged for review' }));
+  };
+
   const sidebarPanel = (
     <aside className="ui-chat-sidebar" aria-label="Conversation history">
       <div className="ui-stack">
@@ -511,7 +531,9 @@ export default function ChatApp({
                         : undefined
                     }
                   >
-                    <p className="ui-chat__body">{message.content}</p>
+                    <div className="ui-chat__body">
+                      <Markdown text={message.content} />
+                    </div>
                     {message.citations.length > 0 && (
                       <p className="ui-citations">
                         sources: {message.citations.map((citation) => `[${citation}]`).join(' ')}
@@ -519,9 +541,22 @@ export default function ChatApp({
                     )}
                   </div>
                   {message.role === 'assistant' ? (
-                    <span className="ui-chat__name" style={{ color: agent.color }}>
-                      {agent.displayName}
-                    </span>
+                    <div className="ui-chat__meta">
+                      <span className="ui-chat__name" style={{ color: agent.color }}>
+                        {agent.displayName}
+                      </span>
+                      {message.runId ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          aria-label={`flag answer ${message.id}`}
+                          onClick={() => void flagAnswer(message)}
+                          disabled={flagged[message.id] != null}
+                        >
+                          {flagged[message.id] ?? 'Flag answer'}
+                        </Button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </article>
               ))

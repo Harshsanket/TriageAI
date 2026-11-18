@@ -92,6 +92,43 @@ export function skillIndexForPrompt(skills: SkillIndexEntry[]): string {
   return skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n');
 }
 
+/**
+ * Deterministic prompt accounting (15.T5). The estimator is intentionally
+ * model-independent: four characters per token, rounded up. The same index
+ * always produces the same number, so a run's recorded cost is reproducible.
+ */
+export function promptTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export interface ContextPackRecord {
+  /** Estimated tokens the skill index occupies in the system prompt. */
+  skillIndexTokens: number;
+  skillCount: number;
+  skillIndexCharacters: number;
+  tokenMethod: 'chars/4';
+}
+
+/** The estimated tokens a skill index adds to a prompt. */
+export function skillIndexTokens(
+  skills: Array<Pick<SkillIndexEntry, 'name' | 'description'>>,
+): number {
+  return accountSkillIndex(skills).skillIndexTokens;
+}
+
+/** Per-run/step prompt accounting record for the skill index (15.T5). */
+export function accountSkillIndex(
+  skills: Array<Pick<SkillIndexEntry, 'name' | 'description'>>,
+): ContextPackRecord {
+  const text = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n');
+  return {
+    skillIndexTokens: promptTokens(text),
+    skillCount: skills.length,
+    skillIndexCharacters: text.length,
+    tokenMethod: 'chars/4',
+  };
+}
+
 const SKILL_SECRET =
   /(?:bearer\s+[a-z0-9._-]{8,}|api[_-]?key\s*[:=]|password\s*[:=]|-----BEGIN [A-Z ]+PRIVATE KEY-----)/i;
 

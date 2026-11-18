@@ -132,4 +132,18 @@ export const MIGRATIONS = [
     `,
     dropSql: 'DROP TABLE IF EXISTS support_canned_responses;',
   },
+  {
+    id: '0006-support-message-tags',
+    sql: `
+      ALTER TABLE support_ticket_messages
+        ADD COLUMN IF NOT EXISTS sensitivity TEXT NOT NULL DEFAULT 'internal'
+          CHECK (sensitivity IN ('public','internal','restricted','secret'));
+      ALTER TABLE support_ticket_messages
+        ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `,
+    dropSql: `
+      ALTER TABLE IF EXISTS support_ticket_messages DROP COLUMN IF EXISTS tags;
+      ALTER TABLE IF EXISTS support_ticket_messages DROP COLUMN IF EXISTS sensitivity;
+    `,
+  },
 ];

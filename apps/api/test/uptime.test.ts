@@ -75,13 +75,15 @@ describeIfDb('uptime maintenance (phase 23.2)', () => {
 
   it('counts restarts as boot rows in the window minus the current process', async () => {
     const db = app.kernel!.database;
-    await db.query(`DELETE FROM app_boots WHERE at < '2021-01-01'`);
+    // Use a far-future window so boots from parallel test files (which use
+    // now()) are outside it; app_boots is shared by the whole suite.
+    await db.query(`DELETE FROM app_boots WHERE at >= '2040-01-01' AND at < '2041-01-01'`);
     const [one] = await db.query<{ at: string }>(
-      `INSERT INTO app_boots (at) VALUES ('2020-01-01T00:00:00Z') RETURNING at`,
+      `INSERT INTO app_boots (at) VALUES ('2040-01-01T00:00:00Z') RETURNING at`,
     );
     expect(one).toBeTruthy();
-    await recordBoot(db, new Date('2020-01-01T01:00:00Z'));
-    await recordBoot(db, new Date('2020-01-01T02:00:00Z'));
-    expect(await countRestarts(db, new Date('2019-12-31T00:00:00Z'))).toBe(2);
+    await recordBoot(db, new Date('2040-01-01T01:00:00Z'));
+    await recordBoot(db, new Date('2040-01-01T02:00:00Z'));
+    expect(await countRestarts(db, new Date('2039-12-31T00:00:00Z'))).toBe(2);
   });
 });

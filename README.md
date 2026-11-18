@@ -111,6 +111,8 @@ The chat is **grounded by default**: answers cite enabled KB sources. With `know
 
 Operations surfaces: workflow inspector at `/runs`, admin dashboard at `/dashboard`, Prometheus metrics at `/metrics`, and the optional observability stack via `docker compose --profile observ up -d` (Prometheus `:9090`, Grafana `:3310`).
 
+Storage defaults to the `triageai-blobs` volume (content-addressed files) plus the in-process cache. For a shared Redis cache or S3/MinIO blobs, select `capabilities.cache` / `capabilities.blobStore` in `triage.config.json` and start the storage profile alongside core: `docker compose --profile core --profile storage up -d` (Redis `:6379`, MinIO API `:9000`, console `:9001`). Env names and defaults are in [`apps/api/.env.example`](apps/api/.env.example).
+
 Assistant profile (KB + retrieval + local generation): first download a model into the local runtime, then start the assistant stack:
 
 ```bash

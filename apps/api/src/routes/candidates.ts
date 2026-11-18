@@ -8,6 +8,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ulid } from 'ulid';
 
+import { maskPii } from '@triageai/rag';
+
 import {
   CandidateExportDtoSchema,
   FeedbackInsightsSchema,
@@ -68,14 +70,19 @@ export function registerCandidateRoutes(app: FastifyInstance, kernel: Kernel): v
       category: query.category ?? null,
       status,
       count: rows.length,
-      examples: rows.map((row) => ({
-        id: row.id,
-        text: candidateText(row.input),
-        expected: labelOf(row.gold),
-        input: row.input,
-        gold: row.gold,
-        provenance: row.provenance ?? {},
-      })),
+      examples: rows.map((row) => {
+        // 18.T31: exports use the same PII masking as prompt delivery.
+        const mask = (value: unknown) =>
+          JSON.parse(maskPii(JSON.stringify(value), 'prompt').text) as unknown;
+        return {
+          id: row.id,
+          text: maskPii(candidateText(row.input), 'prompt').text,
+          expected: labelOf(row.gold),
+          input: mask(row.input),
+          gold: mask(row.gold),
+          provenance: row.provenance ?? {},
+        };
+      }),
     });
   });
 

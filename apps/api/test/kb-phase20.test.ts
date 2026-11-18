@@ -88,6 +88,41 @@ describeIfDb('knowledge sources (phase 20)', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('tags and escalates a source with a pasted secret (18.T15)', async () => {
+    const title = `${TITLE} secret`;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/kb/documents',
+      payload: {
+        title,
+        body: 'The integration key is sk-abcdefghijklmnop1234 and must stay private.',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const rows = await database.query<{ id: string; sensitivity: string; tags: string[] }>(
+      `SELECT id, sensitivity, tags FROM mod_kb.kb_sources
+        WHERE title = $1 ORDER BY created_at DESC LIMIT 1`,
+      [title],
+    );
+    expect(rows[0]?.sensitivity).toBe('secret');
+    expect(rows[0]?.tags).toContain('secret:api_key');
+    if (rows[0]) {
+      await database.query(
+        `DELETE FROM vector_chunks WHERE document_id IN
+           (SELECT id FROM mod_kb.kb_documents WHERE source_id = $1)`,
+        [rows[0].id],
+      );
+      await database.query(`DELETE FROM mod_kb.kb_ingest_items WHERE source_id = $1`, [rows[0].id]);
+      await database.query(
+        `DELETE FROM mod_kb.kb_ingest_runs WHERE document_id IN
+           (SELECT id FROM mod_kb.kb_documents WHERE source_id = $1)`,
+        [rows[0].id],
+      );
+      await database.query(`DELETE FROM mod_kb.kb_documents WHERE source_id = $1`, [rows[0].id]);
+      await database.query(`DELETE FROM mod_kb.kb_sources WHERE id = $1`, [rows[0].id]);
+    }
+  });
+
   it('dedupes the same content and toggles retrieval per source', async () => {
     const created = await app.inject({
       method: 'POST',

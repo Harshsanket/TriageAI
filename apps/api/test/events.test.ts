@@ -24,8 +24,18 @@ afterEach(async () => {
 describeIfDb('live events (phase 18)', () => {
   it('delivers workflow run changes through LISTEN/NOTIFY', async () => {
     const runId = ulid();
-    const payload = new Promise<string>((resolve) => {
-      void app.kernel!.database.listen!('triageai_events', resolve).then(async (off) => {
+    const payload = new Promise<string>((resolve, reject) => {
+      // The LISTEN channel is shared with every parallel test in this DB run;
+      // wait for our own run id instead of asserting on the first notification.
+      const timer = setTimeout(
+        () => reject(new Error('timed out waiting for the workflow run notification')),
+        10_000,
+      );
+      void app.kernel!.database.listen!('triageai_events', (message) => {
+        if (!message.includes(runId)) return;
+        clearTimeout(timer);
+        resolve(message);
+      }).then(async (off) => {
         try {
           await app.kernel!.database.query(
             `INSERT INTO workflow_runs

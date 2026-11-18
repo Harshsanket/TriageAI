@@ -132,9 +132,16 @@ export function validateGraph(graph: WorkflowGraph): string[] {
     if (node.type === 'end' && !node.end) problems.push(`end ${node.id} needs an outcome`);
   }
 
-  // Reachability from start.
+  // Reachability from start. Nodes referenced by declared error edges or the
+  // default error edge are reachable through the failure machinery, so they
+  // seed the walk as well.
   const reachable = new Set<string>();
   const queue = [graph.start];
+  for (const edge of graph.edges) {
+    if (edge.on?.length && !ids.has(edge.to)) problems.push(`edge from missing node ${edge.to}`);
+    if (edge.on?.length) queue.push(edge.to);
+  }
+  queue.push(graph.defaultErrorEdge.to);
   while (queue.length > 0) {
     const current = queue.shift() as string;
     if (reachable.has(current)) continue;
@@ -175,6 +182,11 @@ export function compileV1(args: {
   id: string;
   version: string;
   module: string;
+  /** The def's trigger is carried onto the graph (inspector display); defaults to endpoint. */
+  trigger?: {
+    type: 'endpoint' | 'manual' | 'event' | 'schedule';
+    config?: Record<string, unknown>;
+  };
   stages: Array<{ id: string; kind: string; when?: string }>;
 }): WorkflowGraph {
   const nodes: GraphNode[] = [
@@ -194,7 +206,7 @@ export function compileV1(args: {
     id: args.id,
     version: args.version,
     module: args.module,
-    trigger: { type: 'endpoint' },
+    trigger: args.trigger ?? { type: 'endpoint' },
     start: 'input',
     nodes: [{ id: 'input', type: 'stage', kind: 'input' }, ...nodes],
     edges,
