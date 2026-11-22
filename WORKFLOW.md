@@ -261,6 +261,7 @@ is deny-by-default; `disabled` makes every caller admin, so bind to loopback.
 | GET | `/api/v1/system/modules/health` | admin |
 | GET | `/api/v1/system/retention` | admin |
 | POST | `/api/v1/system/retention/run` | admin |
+| POST | `/api/v1/system/reveal` | admin |
 | GET | `/api/v1/system/runs` | agent, admin |
 | GET | `/api/v1/system/runs/:id` | agent, admin |
 | POST | `/api/v1/system/runs/:id/cancel` | agent, admin |

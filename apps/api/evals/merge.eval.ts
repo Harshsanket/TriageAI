@@ -60,6 +60,12 @@ async function main(): Promise<number> {
     metrics: Record<string, number>;
     gates: Record<string, number>;
   }>(path.join(HERE, 'reports/redteam-latest.json'));
+  const chatOnly = await readJson<{
+    generatedAt: string;
+    status: 'passed' | 'failed';
+    metrics: Record<string, number>;
+    gates: Record<string, number>;
+  }>(path.join(HERE, 'reports/chat-only-latest.json'));
 
   const classificationPassed =
     classification.macroF1 >= classification.gates.macro_f1 &&
@@ -118,12 +124,18 @@ async function main(): Promise<number> {
       metrics: redteam.metrics,
       gates: redteam.gates,
     },
+    {
+      suite: 'chatOnly',
+      status: chatOnly.status,
+      metrics: chatOnly.metrics,
+      gates: chatOnly.gates,
+    },
   ];
 
   const merged = mergeEvalSuites(suites, {
     generatedAt: new Date().toISOString(),
     artifact: 'apps/api/evals/reports/merged-latest.json',
-    notes: `Sources: classification ${classification.generatedAt}, retrieval ${retrieval.generatedAt}, scenarios ${scenarios.generatedAt}, redteam ${redteam.generatedAt}`,
+    notes: `Sources: classification ${classification.generatedAt}, retrieval ${retrieval.generatedAt}, scenarios ${scenarios.generatedAt}, redteam ${redteam.generatedAt}, chatOnly ${chatOnly.generatedAt}`,
   });
   const reportsDir = path.join(HERE, 'reports');
   await mkdir(reportsDir, { recursive: true });

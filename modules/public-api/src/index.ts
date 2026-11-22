@@ -161,7 +161,7 @@ export const publicApiModule: TriageModule = {
     ],
     events: { publish: [], subscribe: [] },
     capabilities: {
-      consume: ['queue', 'eventBus', 'retriever', 'generator', 'embedder', 'validator'],
+      consume: ['queue', 'eventBus', 'retriever', 'generator', 'embedder', 'validator', 'cache'],
       provide: [],
     },
     stages: [],
@@ -222,13 +222,20 @@ export const publicApiModule: TriageModule = {
         );
       }
       const limit = row.rate_limit_per_minute ?? options.rateLimitPerMinute;
-      const now = Date.now();
-      const window = windows.get(row.id);
-      if (!window || now - window.startedAt > 60_000) {
-        windows.set(row.id, { startedAt: now, count: 1 });
+      const cache = ctx.capabilities.cache;
+      if (cache?.increment) {
+        // 18.T11: shared across API instances (Redis) or process-local (memory).
+        const counter = await cache.increment(`public-api:ratelimit:${row.id}`, 60_000);
+        if (counter.count > limit) throw rateLimited(60_000, 'API key rate limit exceeded');
       } else {
-        window.count += 1;
-        if (window.count > limit) throw rateLimited(60_000, 'API key rate limit exceeded');
+        const now = Date.now();
+        const window = windows.get(row.id);
+        if (!window || now - window.startedAt > 60_000) {
+          windows.set(row.id, { startedAt: now, count: 1 });
+        } else {
+          window.count += 1;
+          if (window.count > limit) throw rateLimited(60_000, 'API key rate limit exceeded');
+        }
       }
       await ctx.database.query(`UPDATE public_api_keys SET last_used_at = now() WHERE id = $1`, [
         row.id,

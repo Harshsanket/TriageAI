@@ -2231,15 +2231,18 @@ export function AutonomyCard() {
 
 function DocsInternalCard() {
   const [root, setRoot] = useState('');
+  const [repo, setRepo] = useState('Harshsanket/docs-internal');
+  const [ref, setRef] = useState('main');
   const [result, setResult] = useState<{
     questions: string[];
     instructions: string;
     principles: string;
     skillMode: string;
     layout: string[];
+    commit?: string;
   } | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const load = async () => {
+  const load = async (body: { root: string } | { repo: string; ref?: string }) => {
     setNote(null);
     const res = await setupJson<{
       questions: string[];
@@ -2247,9 +2250,10 @@ function DocsInternalCard() {
       principles: string;
       skillMode: string;
       layout: string[];
+      commit?: string;
     }>('/api/v1/setup/docs-internal', {
       method: 'POST',
-      body: JSON.stringify({ root }),
+      body: JSON.stringify(body),
     }).catch((err: Error) => {
       setNote(err.message);
       return null;
@@ -2273,8 +2277,37 @@ function DocsInternalCard() {
         />
       </label>
       <div className="cfg-inline">
-        <button type="button" className="cfg-button" disabled={!root.trim()} onClick={load}>
-          Import
+        <button
+          type="button"
+          className="cfg-button"
+          disabled={!root.trim()}
+          onClick={() => void load({ root })}
+        >
+          Import checkout
+        </button>
+      </div>
+      <div className="cfg-inline">
+        <input
+          className="cfg-input"
+          aria-label="docs-internal repository"
+          value={repo}
+          onChange={(event) => setRepo(event.target.value)}
+          placeholder="owner/docs-internal"
+        />
+        <input
+          className="cfg-input"
+          aria-label="docs-internal ref"
+          value={ref}
+          onChange={(event) => setRef(event.target.value)}
+          placeholder="main or commit SHA"
+        />
+        <button
+          type="button"
+          className="cfg-button"
+          disabled={!repo.trim()}
+          onClick={() => void load({ repo, ...(ref.trim() ? { ref: ref.trim() } : {}) })}
+        >
+          Import pinned repo
         </button>
       </div>
       {note ? <p role="alert">{note}</p> : null}
@@ -2284,6 +2317,7 @@ function DocsInternalCard() {
             Skill mode <strong>{result.skillMode}</strong> · layout{' '}
             {result.layout.join(', ') || '—'}
           </p>
+          {result.commit ? <p className="cfg-hint">Pinned {result.commit}</p> : null}
           <p>
             <strong>Questions</strong>: {result.questions.join(' · ') || '—'}
           </p>

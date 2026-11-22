@@ -1,6 +1,6 @@
 # TriageAI
 
-> **v1.3.0** — security-hardening release: closes the plugin-bundle file read, enforces public-API key scopes and A2A/skill ownership, routes setup probes through egress, revokes access tokens on logout/role change, adds an audited KB vector purge, and upgrades zod/vitest.
+> **v1.4.0** — agents, tools and connectors release: checkpointed agent runs with vector memory and teams, generic GraphQL/PostgreSQL connectors with OAuth and sync, MCP client/server, Redis and S3/MinIO storage adapters, graph-v2 workflows, the full metrics dashboard, and PII masking with audited reveals.
 
 A **modular, self-hosted AI automation platform** built around interchangeable components and configurable workflows.
 
@@ -26,6 +26,7 @@ packages/
                  #   grants, module protocol, agents, tools, skills, memory, data policy
   contracts/     # Shared Zod DTOs (feedback/datasets/models/agents/jobs/errors) → JSON Schema
   rag/           # Prompt boundaries, chunking, grounding, deterministic validation
+  connectors/    # GraphQL/PostgreSQL import, OAuth2 PKCE, contract-valid tool descriptors
   plugin-sdk/    # Manifest, signing and install helpers for runtime plugins
   integrations-core/  # Audited action rows + approve/reject/retry routes for integrations
 apps/
@@ -157,9 +158,12 @@ Auto-reply is per-category and versioned (`GET/PUT /api/v1/support/auto-reply-po
 
 ## Agents, tools, and skills
 
-- **Tools** use one mandatory contract with read/write and low/high-risk labels, a rule floor, undo class and preview checks; high-risk calls are gated.
-- **Skills** follow the Agent Skills format: frontmatter index, lazy body loading and path-traversal guards. User skills are owner-scoped, can be enabled/disabled, imported from GitHub with pin/ETag, or suggested from chat; enabled skills are mirrored into the KB as read-only operator sources.
-- The agent runtime's checkpointed state, need-based context, structured handoffs, shared work board and long-term memory are landing across Phases 15–17; the contracts and stores are in place, with the full agent loop still in progress.
+- **Agents** run a bounded, checkpointed `agent.run` graph that resumes after a crash, with per-step context packs, workspace mirrors, structured handoffs, shared state/work items, teams (pipeline, fan-out, reviewer, supervisor), and an `/agents` monitor with an audited watchdog.
+- **Memory** stores sourced entries (≤300 characters), rejects volatile facts with the live read tool named, keeps lessons proposed until reviewed, and recalls by vector or lexical search. Agents use `memory.create` / `memory.search`; `memory.md` and the `/agents` viewer expose the same entries.
+- **Tools** use one mandatory contract with read/write and low/high-risk labels, a rule floor, undo class and preview checks; high-risk calls are gated. Tool results, context packs, handoffs and connector egress all pass the same send gate.
+- **Connectors** turn external apps into tools: GraphQL operations and parameterised PostgreSQL queries, imported disabled until their schemas are completed, OAuth2 authorization-code + PKCE with encrypted tokens, and a scheduled sync into managed KB sources. Admin management lives in `/config` → Connections.
+- **MCP** connects external stdio/HTTP servers as namespaced tools, and exposes TriageAI's tool registry as an MCP server (admin session or public API key).
+- **Skills** follow the Agent Skills format: frontmatter index, lazy body loading and path-traversal guards. User skills are owner-scoped, can be enabled/disabled, imported from GitHub with commit pinning, or imported from Cursor-style packs; enabled skills are mirrored into the KB as read-only operator sources.
 
 ## Models and runtime control
 
@@ -173,8 +177,8 @@ Runtime plugins are signed `.tgz` packages verified with ed25519 + sha256; insta
 
 ## Public API and email
 
-- **`public-api`** issues hashed API keys with enforced `chat`, `embeddings` and `kb` scopes, and exposes OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings`, plus KB search, so other apps and agents can use TriageAI as a backend. External-agent keys are a separate credential class.
-- **`emailer`** accepts a signed inbound webhook, threads replies into tickets and sends approval-gated outbound mail through an SMTP outbox. IMAP polling is still planned.
+- **`public-api`** issues hashed API keys with enforced `chat`, `embeddings`, `kb` and `tickets` scopes, and exposes OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings`, KB search, key-authenticated MCP (`/api/v1/public-api/mcp`) and ticket REST (`/api/v1/public-api/tickets`). External agents get their own credential class and handoff/step endpoints.
+- **`emailer`** accepts a signed inbound webhook (or config-gated IMAP polling), threads replies into tickets and sends approval-gated outbound mail through an SMTP outbox.
 
 ## Feedback, datasets, and the model registry
 
@@ -227,6 +231,7 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 | `pnpm eval:classification` | Run the classifier eval gates                        |
 | `pnpm eval:retrieval`      | Run the retrieval eval gates (needs DB + ai-service) |
 | `pnpm eval:generation`     | Run the grounding/validation eval gates              |
+| `pnpm eval:chat-only`      | Run the chat-only bootstrap/direct/injection gates   |
 | `pnpm eval:merge`          | Merge suites into the registry report format         |
 | `pnpm eval:fixtures`       | Export approved corrections as blessed fixtures      |
 | `pnpm seed:demo`           | Seed demo KB docs + a ticket (after `readyz`)        |
@@ -237,7 +242,7 @@ Outward calls use the `OutputChannel` capability; all adapters pass the same con
 
 **TriageAI** is an open-source project focused on building modular, self-hosted AI automation systems. It prioritizes extensibility, local inference, and transparent decision-making.
 
-Current release: **v1.3.0**.
+Current release: **v1.4.0**.
 
 Developed and maintained by **Harsh Sanket**.  
 **DeepSeek 4.1** was used during development.

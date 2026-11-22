@@ -1,6 +1,6 @@
 {
   "name": "triageai",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "packageManager": "pnpm@12.11.2",
   "engines": {
@@ -24,7 +24,8 @@
     "seed:demo": "bash scripts/seed-demo.sh",
     "docs:workflow": "pnpm --filter @triageai/api exec tsx ../../scripts/docs-workflow.ts",
     "docs:workflow:check": "pnpm --filter @triageai/api exec tsx ../../scripts/docs-workflow.ts --check",
-    "pack:first-party": "pnpm --filter @triageai/api exec tsx ../../scripts/pack-first-party.ts"
+    "pack:first-party": "pnpm --filter @triageai/api exec tsx ../../scripts/pack-first-party.ts",
+    "eval:chat-only": "pnpm --filter @triageai/api exec tsx evals/chatOnly.eval.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

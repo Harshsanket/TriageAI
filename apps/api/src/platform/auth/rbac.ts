@@ -63,6 +63,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', pattern: '/api/v1/system/storage', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/system/events', roles: AGENT },
   { method: 'GET', pattern: '/api/v1/system/jobs', roles: ANY },
+  { method: 'POST', pattern: '/api/v1/system/reveal', roles: ADMIN },
   { method: 'GET', pattern: '/api/v1/system/jobs/stream', roles: ANY },
   { method: 'POST', pattern: '/api/v1/system/jobs/:id/cancel', roles: ANY },
   { method: 'GET', pattern: '/api/v1/system/modules', roles: ADMIN },

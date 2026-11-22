@@ -22,6 +22,8 @@ export interface AgentContextSources {
   database: Database;
   workspaceId?: string;
   agentId?: string;
+  /** Optional embedding capability for vector memory recall (16.T5). */
+  embedder?: { embed(texts: string[]): Promise<{ vectors: number[][]; modelVersion: string }> };
 }
 
 export interface AgentStepContext {
@@ -96,6 +98,12 @@ export async function buildAgentStepContext(args: {
   if (needs.needs.includes('memory') && sources) {
     const scopeId = sources.workspaceId ?? sources.agentId;
     if (scopeId) {
+      let vector: { vectors: number[][]; modelVersion: string } | null = null;
+      if (sources.embedder) {
+        vector = await sources.embedder
+          .embed([goal])
+          .catch(() => null as { vectors: number[][]; modelVersion: string } | null);
+      }
       const hits = await new MemoryStore(sources.database).recall({
         query: goal,
         ...(sources.agentId ? { agentId: sources.agentId } : {}),
@@ -103,6 +111,9 @@ export async function buildAgentStepContext(args: {
         limit: 5,
         floor: 0.75,
         tokenCeiling: Math.max(0, Math.floor(args.windowTokens * 0.1)),
+        ...(vector?.vectors[0]
+          ? { queryEmbedding: vector.vectors[0], embeddingModel: vector.modelVersion }
+          : {}),
       });
       for (const hit of hits) {
         const memory = hit.entry;

@@ -33,6 +33,9 @@ export interface MemoryRecallOptions {
   tokenCeiling?: number;
   /** Bump `use_count`/`last_used_at` for returned entries; defaults to true. */
   touch?: boolean;
+  /** Query vector + model; when present, vector similarity blends with lexical. */
+  queryEmbedding?: number[];
+  embeddingModel?: string;
 }
 
 export interface MemoryRecallHit {
@@ -104,9 +107,26 @@ export async function recallMemories(
   const tokenCeiling = Math.max(0, options.tokenCeiling ?? 1024);
   const params: unknown[] = [];
   const where = whereClause({ ...options, statuses: options.statuses ?? ['active'] }, params);
+  const vector =
+    options.queryEmbedding && options.queryEmbedding.length > 0 && options.embeddingModel
+      ? {
+          model: options.embeddingModel,
+          literal: `[${options.queryEmbedding.join(',')}]`,
+        }
+      : null;
+  let vectorScoreSelect = '';
+  if (vector) {
+    params.push(vector.model);
+    const modelIndex = params.length;
+    params.push(vector.literal);
+    const vectorIndex = params.length;
+    vectorScoreSelect = `,
+      CASE WHEN embedding IS NOT NULL AND embedding_model = $${modelIndex}
+           THEN 1 - (embedding <=> $${vectorIndex}::vector) END AS vector_score`;
+  }
   params.push(Math.min(500, Math.max(limit * 5, 25)));
   const rows = await database.query<Record<string, unknown>>(
-    `SELECT ${MEMORY_COLUMNS} FROM memories
+    `SELECT ${MEMORY_COLUMNS}${vectorScoreSelect} FROM memories
       WHERE ${where}
       ORDER BY created_at DESC, id ASC
       LIMIT $${params.length}`,
@@ -115,9 +135,12 @@ export async function recallMemories(
   const hits = rows
     .map((row) => {
       const entry = rowToMemory(row);
+      const lexical = memoryRelevance(options.query, entry.text);
+      const vectorScore = row.vector_score == null ? null : Number(row.vector_score);
       return {
         entry,
-        score: memoryRelevance(options.query, entry.text),
+        // Vector recall blends with lexical so exact terms still win ties.
+        score: vectorScore == null ? lexical : 0.7 * vectorScore + 0.3 * lexical,
         tokens: estimateTokens(entry.text),
       };
     })

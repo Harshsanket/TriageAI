@@ -12,6 +12,8 @@ import {
 import type { DatasetSplitName } from '@triageai/contracts';
 import type { Kernel } from '@triageai/kernel';
 
+import { maskPii } from '@triageai/rag';
+
 import { buildDataset, datasetDto } from '../services/datasets.js';
 import { AppError } from '../platform/errors.js';
 
@@ -110,13 +112,18 @@ export function registerDatasetRoutes(app: FastifyInstance, kernel: Kernel): voi
       version: row.version,
       purpose: row.purpose,
       sha256: row.sha256,
-      examples: examples.map(({ split, example }) => ({
-        id: example.id,
-        split,
-        input: example.input,
-        gold: example.gold,
-        provenance: example.provenance ?? {},
-      })),
+      examples: examples.map(({ split, example }) => {
+        // 18.T31: exports are masked like prompt delivery.
+        const mask = (value: unknown) =>
+          JSON.parse(maskPii(JSON.stringify(value ?? null), 'prompt').text) as unknown;
+        return {
+          id: example.id,
+          split,
+          input: mask(example.input),
+          gold: mask(example.gold),
+          provenance: example.provenance ?? {},
+        };
+      }),
     });
   });
 }

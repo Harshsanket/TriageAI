@@ -10,6 +10,7 @@ import {
   TicketTriagePolicyDtoSchema,
 } from '@triageai/contracts';
 import { AppError } from '@triageai/kernel';
+import { maskPii } from '@triageai/rag';
 import type { KernelContext } from '@triageai/kernel';
 
 import { TICKET_STATUSES } from './state.js';
@@ -139,7 +140,8 @@ export function registerRoutes(
       // Customers see their own and agent messages plus system messages that
       // were explicitly marked customer-visible; internal events stay hidden.
       const messages = await ctx.database.query<{ [key: string]: unknown }>(
-        `SELECT id, author_type, author, body, meta, created_at FROM support_ticket_messages
+        `SELECT id, author_type, author, body, meta, sensitivity, tags, created_at
+           FROM support_ticket_messages
          WHERE ticket_id = $1
            AND (NOT $2::boolean OR author_type <> 'system' OR meta->>'customerVisible' = 'true')
          ORDER BY created_at`,
@@ -156,11 +158,24 @@ export function registerRoutes(
         ticket: ticketDto(ticket),
         messages: messages.map((message) => {
           const meta = (message.meta ?? null) as { runId?: unknown } | null;
+          const tags = Array.isArray(message.tags) ? (message.tags as string[]) : [];
+          const sensitivity = String(message.sensitivity ?? 'internal');
+          // 18.T31: UI/API reads mask PII by default; the audited reveal route
+          // returns one message to an admin. Customers see their own text.
+          const masked =
+            !customerView &&
+            (sensitivity === 'restricted' ||
+              sensitivity === 'secret' ||
+              tags.some((tag) => tag.startsWith('pii:')));
+          const body = masked ? maskPii(String(message.body), 'log').text : String(message.body);
           return {
             id: message.id,
             authorType: message.author_type,
             author: message.author,
-            body: message.body,
+            body,
+            masked,
+            sensitivity,
+            tags,
             meta,
             // 19.T6: the auto-reply run id lives in meta; expose it additively
             // so the ticket view can flag the answer through the audited route.

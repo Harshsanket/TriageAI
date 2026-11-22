@@ -1215,4 +1215,20 @@ export const CORE_MIGRATIONS: Migration[] = [
     `,
   },
   { id: '0035-vector-model-index', sql: VECTOR_MODEL_INDEX },
+  {
+    id: '0036-memory-embedding',
+    sql: `
+      ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding vector;
+      ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_model TEXT;
+      ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_dims INT;
+      CREATE INDEX IF NOT EXISTS memories_embedding_lookup
+        ON memories (scope, scope_id, embedding_model) WHERE embedding IS NOT NULL;
+    `,
+    dropSql: `
+      DROP INDEX IF EXISTS memories_embedding_lookup;
+      ALTER TABLE IF EXISTS memories DROP COLUMN IF EXISTS embedding_dims;
+      ALTER TABLE IF EXISTS memories DROP COLUMN IF EXISTS embedding_model;
+      ALTER TABLE IF EXISTS memories DROP COLUMN IF EXISTS embedding;
+    `,
+  },
 ];

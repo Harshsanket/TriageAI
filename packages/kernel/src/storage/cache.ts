@@ -6,6 +6,11 @@ export interface Cache {
   set<T>(key: string, value: T, ttlMs: number): Promise<void>;
   delete(key: string): Promise<void>;
   /**
+   * Atomic counter with a TTL (rate limits, 18.T11). Redis uses INCR+PEXPIRE
+   * in one script so two API instances share the same window.
+   */
+  increment?(key: string, ttlMs: number): Promise<{ count: number; ttlMs: number }>;
+  /**
    * Drop every entry. KB source changes call this so cached retrieval results
    * (and answers generated from them) cannot outlive an Off switch.
    */
@@ -30,6 +35,7 @@ interface Entry {
 
 export class MemoryCache implements Cache {
   private readonly entries = new Map<string, Entry>();
+  private readonly counters = new Map<string, { count: number; expiresAt: number }>();
   private hits = 0;
   private misses = 0;
 
@@ -64,10 +70,24 @@ export class MemoryCache implements Cache {
 
   async delete(key: string): Promise<void> {
     this.entries.delete(key);
+    this.counters.delete(key);
+  }
+
+  async increment(key: string, ttlMs: number): Promise<{ count: number; ttlMs: number }> {
+    const now = Date.now();
+    const current = this.counters.get(key);
+    if (!current || current.expiresAt <= now) {
+      const expiresAt = now + Math.max(1, ttlMs);
+      this.counters.set(key, { count: 1, expiresAt });
+      return { count: 1, ttlMs: Math.max(1, ttlMs) };
+    }
+    current.count += 1;
+    return { count: current.count, ttlMs: Math.max(0, current.expiresAt - now) };
   }
 
   clear(): void {
     this.entries.clear();
+    this.counters.clear();
   }
 
   stats(): { hits: number; misses: number; size: number; hitRate: number } {
@@ -151,6 +171,18 @@ export class RedisCache implements Cache {
 
   async delete(key: string): Promise<void> {
     await this.redis.unlink(this.key(key));
+  }
+
+  async increment(key: string, ttlMs: number): Promise<{ count: number; ttlMs: number }> {
+    const result = (await this.redis.eval(
+      `local count = redis.call('INCR', KEYS[1])
+       if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+       return {count, redis.call('PTTL', KEYS[1])}`,
+      1,
+      this.key(key),
+      String(Math.max(1, ttlMs)),
+    )) as [number, number];
+    return { count: Number(result[0]), ttlMs: Math.max(0, Number(result[1])) };
   }
 
   /** SCAN/UNLINK inside this namespace only; safe beside other Redis users. */

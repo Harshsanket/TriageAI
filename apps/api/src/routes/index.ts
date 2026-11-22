@@ -29,6 +29,7 @@ import { registerModelRoutes } from './models.js';
 import { registerModuleRoutes } from './modules.js';
 import { registerPluginRoutes, type PluginRouteDeps } from './plugins.js';
 import { registerPreferenceRoutes } from './preferences.js';
+import { registerPrivacyRoutes } from './privacy.js';
 import { registerPublicTicketRoutes } from './publicTickets.js';
 import { registerRetentionRoutes } from './retention.js';
 import { registerSkillRoutes } from './skills.js';
@@ -53,6 +54,7 @@ export function registerHostRoutes(
   registerSystemRoutes(app, kernel, deps.setup.runtime);
   registerUpdateRoutes(app, kernel);
   registerPreferenceRoutes(app, kernel);
+  registerPrivacyRoutes(app, kernel);
   registerDashboardRoutes(app, kernel, deps.setup.runtime);
   registerConnectionRoutes(app, kernel, deps.setup.runtime);
   registerConnectorRoutes(app, kernel, deps.setup.runtime);

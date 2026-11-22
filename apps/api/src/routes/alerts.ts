@@ -33,7 +33,7 @@ export function detectEvalDrift(rows: EvalMetricsRow[]): boolean {
 
 export function registerAlertRoutes(app: FastifyInstance, kernel: Kernel): void {
   app.get('/api/v1/system/alerts', async () => {
-    const [runs, queue, approvals, egress, tokens, evalReports] = await Promise.all([
+    const [runs, queue, approvals, egress, tokens, watchdog, evalReports] = await Promise.all([
       kernel.database.query<{ total: number; failed: number }>(
         `SELECT COUNT(*)::int AS total,
                 COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed
@@ -53,6 +53,10 @@ export function registerAlertRoutes(app: FastifyInstance, kernel: Kernel): void 
       kernel.database.query<{ provider: string; tokens: number }>(
         `SELECT provider, SUM(tokens_in + tokens_out)::int AS tokens
          FROM cost_ledger WHERE at >= date_trunc('day', now()) GROUP BY provider`,
+      ),
+      kernel.database.query<{ total: number }>(
+        `SELECT COUNT(*)::int AS total FROM audit_events
+         WHERE action = 'agent.watchdog.pause' AND created_at > now() - interval '24 hours'`,
       ),
       kernel.database.query<EvalMetricsRow>(
         `SELECT metrics FROM eval_reports
@@ -77,8 +81,8 @@ export function registerAlertRoutes(app: FastifyInstance, kernel: Kernel): void 
         stuckApprovals: approvals[0]?.stuck ?? 0,
         egressDenials: egress[0]?.denied ?? 0,
         ...(burns.length > 0 ? { budgetBurn: Math.max(...burns) } : {}),
-        // Watchdog decisions are not persisted yet (17.T2 is a pure rule
-        // function), so watchdogInterventions stays unset instead of guessing.
+        // 17.T2 writes an audited `agent.watchdog.pause` row per intervention.
+        watchdogInterventions: watchdog[0]?.total ?? 0,
         drift: detectEvalDrift(evalReports),
       }),
     };

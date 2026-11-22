@@ -16,6 +16,7 @@ import type { ToolRegistry } from '../tools/registry.js';
 import type { ChatModel, Database, KernelLogger } from '../types.js';
 import type { WorkflowEngine } from '../workflow.js';
 import { AgentCheckpointStore, AgentDefinitionSchema, runAgentStep } from './runtime.js';
+import type { AgentContextSources } from './context.js';
 import type { AgentState } from './runtime.js';
 
 export const AgentSkillSchema = z
@@ -65,6 +66,8 @@ export interface AgentWorkflowDeps {
   /** Resolved lazily: a generation may boot before a model is configured. */
   chatModel: () => ChatModel | undefined;
   logger?: KernelLogger;
+  /** Optional embedder for vector memory recall/search. */
+  embedder?: () => AgentContextSources['embedder'];
   /** Human-readable per-run mirror root (`agents/<id>/<runId>/…`). */
   workspaceRoot?: string;
   /** Test/ops seam; defaults to the kernel-owned `agent.paused` state key. */
@@ -129,7 +132,12 @@ export function registerAgentWorkflow(engine: WorkflowEngine, deps: AgentWorkflo
         ...(input.skills ? { skills: input.skills } : {}),
         approvals: new ApprovalStore(stage.database),
         policy: await loadApprovalPolicy(stage.database),
-        contextSources: { database: stage.database },
+        contextSources: {
+          database: stage.database,
+          agentId,
+          ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+          ...(deps.embedder?.() ? { embedder: deps.embedder() } : {}),
+        },
         ...(deps.workspaceRoot ? { workspaceRoot: deps.workspaceRoot } : {}),
       });
       return {

@@ -64,6 +64,23 @@ export function cacheContractSuite(name: string, factory: CacheContractFactory):
     }
   });
 
+  it(`${name}: increments a counter atomically and resets after the TTL`, async () => {
+    const { cache, dispose } = await factory();
+    try {
+      expect(cache.increment).toBeTypeOf('function');
+      const first = await cache.increment?.('limit:key', 150);
+      expect(first?.count).toBe(1);
+      const second = await cache.increment?.('limit:key', 150);
+      expect(second?.count).toBe(2);
+      expect(second?.ttlMs).toBeGreaterThan(0);
+      await tick(300);
+      const reset = await cache.increment?.('limit:key', 150);
+      expect(reset?.count).toBe(1);
+    } finally {
+      await dispose?.();
+    }
+  });
+
   it(`${name}: clear() drops only this cache's keys`, async () => {
     const { cache, sibling, dispose } = await factory();
     try {

@@ -107,6 +107,30 @@ describeIfDb('support vertical slice (phase 3, no LLM)', () => {
     );
     expect(rows[0]?.sensitivity).toBe('restricted');
     expect(rows[0]?.tags).toContain('pii:email');
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/support/tickets/${ticketId}`,
+    });
+    expect(detail.statusCode).toBe(200);
+    const message = (
+      detail.json() as { messages: Array<{ id: string; body: string; masked?: boolean }> }
+    ).messages[0];
+    expect(message?.masked).toBe(true);
+    expect(message?.body).not.toContain('alice@example.com');
+
+    const reveal = await app.inject({
+      method: 'POST',
+      url: '/api/v1/system/reveal',
+      payload: { kind: 'ticket_message', ticketId, messageId: message?.id },
+    });
+    expect(reveal.statusCode).toBe(200);
+    expect((reveal.json() as { value: string }).value).toContain('alice@example.com');
+    const audit = await app.kernel!.database.query<{ action: string }>(
+      `SELECT action FROM audit_events WHERE subject = $1`,
+      [message?.id],
+    );
+    expect(audit.map((row) => row.action)).toContain('privacy.revealed');
   });
 
   it('classifies, routes, and resolves a billing ticket with full decision trail', async () => {

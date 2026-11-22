@@ -1,0 +1,59 @@
+{
+  "generatedAt": "2026-11-22T17:58:01.981Z",
+  "status": "passed",
+  "metrics": {
+    "cases": 5,
+    "answeredOrRefused": 5,
+    "crashes": 0,
+    "fabricatedCitations": 0,
+    "bootstrapOnlyWhenIntended": 1
+  },
+  "gates": {
+    "answeredOrRefused": 5,
+    "crashes": 0,
+    "fabricatedCitations": 0,
+    "bootstrapOnlyWhenIntended": 1
+  },
+  "results": [
+    {
+      "id": "no_kb",
+      "passed": true,
+      "status": 200,
+      "answer": "Here is a direct answer from the seed.",
+      "citations": 0,
+      "bootstrap": true
+    },
+    {
+      "id": "empty_collection",
+      "passed": true,
+      "status": 200,
+      "answer": "Here is a direct answer from the seed.",
+      "citations": 0,
+      "bootstrap": true
+    },
+    {
+      "id": "embedding_down",
+      "passed": true,
+      "status": 200,
+      "answer": "Direct fallback answer.",
+      "citations": 0,
+      "bootstrap": false
+    },
+    {
+      "id": "multi_turn",
+      "passed": true,
+      "status": 200,
+      "answer": "Here is a direct answer from the seed.",
+      "citations": 0,
+      "bootstrap": true
+    },
+    {
+      "id": "injection",
+      "passed": true,
+      "status": 200,
+      "answer": "I could not verify this from the knowledge base.",
+      "citations": 0,
+      "bootstrap": false
+    }
+  ]
+}

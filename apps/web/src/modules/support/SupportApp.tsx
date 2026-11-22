@@ -48,6 +48,9 @@ interface TicketDetail {
     authorType: string;
     author: string | null;
     body: string;
+    masked?: boolean;
+    sensitivity?: string;
+    tags?: string[];
     meta?: { runId?: string | null; kind?: string } | null;
     runId?: string | null;
     createdAt: string;
@@ -85,6 +88,7 @@ export default function SupportApp() {
   const [teamId, setTeamId] = useState('');
   const [assignee, setAssignee] = useState('');
   const [flagged, setFlagged] = useState<Record<string, string>>({});
+  const [revealed, setRevealed] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const res = await apiFetch<Ticket[]>(
@@ -227,6 +231,25 @@ export default function SupportApp() {
       return;
     }
     setFlagged((current) => ({ ...current, [messageId]: 'Flagged for review' }));
+  };
+
+  // 18.T31: masked reads; reveal is one audited field at a time.
+  const revealMessage = async (messageId: string) => {
+    if (!selected) return;
+    const res = await apiFetch<{ value: string }>('/api/v1/system/reveal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'ticket_message',
+        ticketId: selected.ticket.id,
+        messageId,
+      }),
+    });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setRevealed((current) => ({ ...current, [messageId]: res.data.value }));
   };
 
   return (
@@ -439,7 +462,18 @@ export default function SupportApp() {
             <ul>
               {selected.messages.map((message) => (
                 <li key={message.id}>
-                  <strong>{message.authorType}</strong> {message.author ?? ''}: {message.body}
+                  <strong>{message.authorType}</strong> {message.author ?? ''}:{' '}
+                  {revealed[message.id] ?? message.body}
+                  {message.masked && revealed[message.id] == null ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      aria-label={`reveal message ${message.id}`}
+                      onClick={() => void revealMessage(message.id)}
+                    >
+                      Reveal
+                    </Button>
+                  ) : null}
                   {!customer && message.runId ? (
                     <Button
                       type="button"

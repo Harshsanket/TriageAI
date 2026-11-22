@@ -42,6 +42,9 @@ export interface AgentRuntimeOptions {
   chatModel: () => import('@triageai/kernel').ChatModel | undefined;
   logger?: KernelLogger;
   workspaceRoot?: string;
+  /** Optional embedder for vector memory recall. */
+  embedder?: () =>
+    { embed(texts: string[]): Promise<{ vectors: number[][]; modelVersion: string }> } | undefined;
 }
 
 /** Register the agent graph + step handler on one kernel generation. */
@@ -52,6 +55,7 @@ export function registerAgentRuntime(kernel: Kernel, options: AgentRuntimeOption
     chatModel: options.chatModel,
     ...(options.logger ? { logger: options.logger } : {}),
     ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
+    ...(options.embedder ? { embedder: options.embedder } : {}),
   });
 }
 

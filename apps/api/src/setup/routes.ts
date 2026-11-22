@@ -32,7 +32,7 @@ import {
 import { presetModels, searchHuggingFace } from './catalog.js';
 import { probeHardware } from './hardware.js';
 import { agentDefaults } from './agents.js';
-import { importDocsInternal } from './docsInternal.js';
+import { importDocsInternal, importDocsInternalRepo } from './docsInternal.js';
 import { mergeInterfacesOverlay, planSetup, SECRET_ENV } from './plan.js';
 import { SecretStore } from './secrets.js';
 
@@ -571,14 +571,50 @@ export function registerSetupRoutes(
 
   app.post('/api/v1/setup/plan', async (request) => plan(SetupAnswersSchema.parse(request.body)));
 
-  // 17.T4: read a local docs-internal checkout and reproduce its setup
-  // interview/instructions/principles for the wizard to prefill.
+  // 17.T4: read a local docs-internal checkout or a pinned GitHub repo and
+  // reproduce its setup interview/instructions/principles for the wizard.
   app.post('/api/v1/setup/docs-internal', async (request) => {
     const body = z
-      .object({ root: z.string().trim().min(1).max(500) })
-      .strict()
+      .union([
+        z.object({ root: z.string().trim().min(1).max(500) }).strict(),
+        z
+          .object({
+            repo: z
+              .string()
+              .trim()
+              .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+              .max(300),
+            ref: z.string().trim().min(1).max(200).optional(),
+          })
+          .strict(),
+      ])
       .parse(request.body ?? {});
-    return importDocsInternal(body.root);
+    if ('root' in body) return importDocsInternal(body.root);
+    const client = new EgressClient(
+      kernel.database,
+      [
+        { host: 'api.github.com', dataClass: 'public' },
+        { host: 'raw.githubusercontent.com', dataClass: 'public' },
+      ],
+      { maxBytes: 500_000, timeoutMs: 30_000 },
+    );
+    const fetcher = {
+      fetch: (
+        url: string,
+        init?: { method?: string; headers?: Record<string, string> },
+        options?: { purpose?: string; maxBytes?: number },
+      ) =>
+        client.fetch(url, init ?? {}, {
+          actor: request.principal?.email ?? null,
+          purpose: options?.purpose ?? 'docs-internal-import',
+          ...(options?.maxBytes ? { maxBytes: options.maxBytes } : {}),
+        }),
+    };
+    return importDocsInternalRepo({
+      repo: body.repo,
+      ...(body.ref ? { ref: body.ref } : {}),
+      fetcher,
+    });
   });
 
   app.post('/api/v1/setup/apply', async (request, reply) => {

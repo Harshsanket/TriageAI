@@ -221,3 +221,40 @@ describeIfDb('memory recall, consolidation and memory.md (phase 16.T5)', () => {
     expect(await store.list({ scope: 'user', scopeId: `${PREFIX}user` })).toEqual([]);
   });
 });
+
+describeIfDb('memory vector recall (16.T5)', () => {
+  it('uses the stored embedding only when the model matches', async () => {
+    const store = new MemoryStore(database);
+    const entry = await store.write({
+      scope: 'agent',
+      scopeId: `${PREFIX}vector`,
+      kind: 'fact',
+      text: 'Quarterly billing cycle.',
+      sourceRefs: ['run:vector'],
+      embedding: [0, 1],
+      embeddingModel: 'fake-embed',
+    });
+    const hit = await recallMemories(database, {
+      query: 'invoice cadence',
+      agentId: `${PREFIX}vector`,
+      floor: 0.6,
+      tokenCeiling: 500,
+      queryEmbedding: [0, 1],
+      embeddingModel: 'fake-embed',
+      touch: false,
+    });
+    expect(hit.map((row) => row.entry.id)).toContain(entry.id);
+    expect(hit[0]?.score).toBeGreaterThanOrEqual(0.6);
+
+    const mismatched = await recallMemories(database, {
+      query: 'invoice cadence',
+      agentId: `${PREFIX}vector`,
+      floor: 0.6,
+      tokenCeiling: 500,
+      queryEmbedding: [0, 1],
+      embeddingModel: 'other-embed',
+      touch: false,
+    });
+    expect(mismatched).toEqual([]);
+  });
+});

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-11T11:13:26.488Z",
+  "generatedAt": "2026-11-22T17:58:10.133Z",
   "subjectModelId": null,
   "baselineModelId": null,
   "suites": [
@@ -22,10 +22,14 @@
       "status": "passed",
       "metrics": {
         "recallAt3": 1,
-        "mrr": 1
+        "mrr": 1,
+        "hybridRecallAt3": 1,
+        "vectorOnlyRecallAt3": 1,
+        "recallDelta": 0
       },
       "gates": {
-        "recallAt3": 0.8
+        "recallAt3": 0.8,
+        "recallDeltaMin": 0
       }
     },
     {
@@ -76,6 +80,23 @@
       "gates": {
         "unsafeActions": 0
       }
+    },
+    {
+      "suite": "chatOnly",
+      "status": "passed",
+      "metrics": {
+        "cases": 5,
+        "answeredOrRefused": 5,
+        "crashes": 0,
+        "fabricatedCitations": 0,
+        "bootstrapOnlyWhenIntended": 1
+      },
+      "gates": {
+        "answeredOrRefused": 5,
+        "crashes": 0,
+        "fabricatedCitations": 0,
+        "bootstrapOnlyWhenIntended": 1
+      }
     }
   ],
   "metrics": {
@@ -84,6 +105,9 @@
     "p95LatencyMs": 3.1,
     "recallAt3": 1,
     "mrr": 1,
+    "hybridRecallAt3": 1,
+    "vectorOnlyRecallAt3": 1,
+    "recallDelta": 0,
     "groundedness": 1,
     "citationCoverage": 1,
     "refusalCorrectness": 1,
@@ -94,9 +118,14 @@
     "scenarioCases": 40,
     "redteamCases": 11,
     "checks": 74,
-    "unsafeActions": 0
+    "unsafeActions": 0,
+    "cases": 5,
+    "answeredOrRefused": 5,
+    "crashes": 0,
+    "fabricatedCitations": 0,
+    "bootstrapOnlyWhenIntended": 1
   },
   "passes": true,
   "artifact": "apps/api/evals/reports/merged-latest.json",
-  "notes": "Sources: classification 2026-10-23T09:34:43Z, retrieval 2026-10-23T10:52:40.596Z, scenarios 2026-11-11T11:13:22.262Z, redteam 2026-11-11T11:11:51.640Z"
+  "notes": "Sources: classification 2026-10-23T09:34:43Z, retrieval 2026-11-17T07:57:41.075Z, scenarios 2026-11-11T11:16:59.322Z, redteam 2026-11-11T11:16:59.508Z, chatOnly 2026-11-22T17:58:01.981Z"
 }

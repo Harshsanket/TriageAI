@@ -49,6 +49,7 @@ import { BaseMemoryService } from './services/baseMemory.js';
 import { syncDefaultSkillSources, syncSkillMirror } from './services/skills.js';
 import { registerAgentRuntime, watchdogScanAndPause } from './services/agents.js';
 import { readSystemStatus, type ConnectedApiFact } from './services/dashboardReads.js';
+import { registerMemoryTools } from './services/memoryTools.js';
 import { registerSystemTools } from './services/systemTools.js';
 import { readConnections } from './routes/connections.js';
 import { EgressClient } from './services/egress.js';
@@ -73,6 +74,7 @@ import { scrubSecrets } from './platform/redact.js';
 import { logger } from './platform/logger.js';
 import { config } from './platform/config.js';
 import { createAuthGuard, registerAuthRoutes } from './platform/auth/index.js';
+import { CacheRateLimitStore } from './platform/rateLimitStore.js';
 import { AuthService } from './platform/auth/service.js';
 
 export { MODULES } from './modules.js';
@@ -329,6 +331,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         global: true,
         max: limitMax,
         timeWindow: options.rateLimit?.timeWindow ?? config.rateLimitWindow,
+        store: CacheRateLimitStore,
       });
     }
     registerAuthRoutes(app, authService, { mode: authMode });
@@ -428,6 +431,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         caps.cache = createCacheAdapter(nextConfig);
         ownedCache = caps.cache;
       }
+      CacheRateLimitStore.setCache(caps.cache);
       caps.egress ??= new EgressClient(database, [...(nextConfig.egress?.allowlist ?? [])]);
       caps.blobStore ??= createBlobStoreAdapter(nextConfig);
       caps.systemStatus ??= {
@@ -491,10 +495,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         );
       }
       registerSystemTools(nextKernel, systemReads);
+      registerMemoryTools(nextKernel, { embedder: () => caps.embedder });
       registerAgentRuntime(nextKernel, {
         chatModel: () => caps.chatModel,
         logger: kernelLogger,
         workspaceRoot: AGENTS_ROOT,
+        ...(caps.embedder ? { embedder: () => caps.embedder } : {}),
       });
       nextKernel.events.subscribe('chat.skill.changed', async () => {
         await syncSkillMirror(nextKernel).catch((err: unknown) =>

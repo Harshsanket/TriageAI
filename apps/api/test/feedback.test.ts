@@ -118,7 +118,12 @@ describeIfDb('feedback review + datasets (phase 6)', () => {
       for (let index = 0; index < 5; index += 1) {
         const runId = index < 2 ? `testfeedback-${label}-a` : `testfeedback-${label}-${index}`;
         const created = await createCandidate(
-          { text: `${label}-${index}` },
+          {
+            text:
+              label === 'billing' && index === 0
+                ? 'billing-0 alice@example.com'
+                : `${label}-${index}`,
+          },
           { category: label },
           { runId, method: index % 2 === 0 ? 'mistake' : 'better_answer' },
         );
@@ -187,6 +192,7 @@ describeIfDb('feedback review + datasets (phase 6)', () => {
     expect(new Set(body.examples.map((entry) => entry.split))).toEqual(
       new Set(['train', 'val', 'test']),
     );
+    expect(JSON.stringify(body.examples)).not.toContain('alice@example.com');
 
     const audit = await database.query<{ action: string }>(
       `SELECT action FROM audit_events WHERE action = 'dataset.built'`,

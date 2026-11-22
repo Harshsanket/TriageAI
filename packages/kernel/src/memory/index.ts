@@ -54,6 +54,9 @@ export class MemoryStore {
     derivedFromUntrusted?: boolean;
     liveTools?: MemoryLiveToolLookup;
     liveSourceRefs?: string[];
+    /** Optional vector for recall; omitted rows stay lexical-only. */
+    embedding?: number[];
+    embeddingModel?: string;
   }): Promise<MemoryEntry> {
     const context: MemoryWriteContext = {
       ...(args.liveTools ? { liveTools: args.liveTools } : {}),
@@ -74,13 +77,20 @@ export class MemoryStore {
       const mergedText =
         String(duplicate.text).length >= args.text.length ? String(duplicate.text) : args.text;
       const rows = await this.database.query<Record<string, unknown>>(
-        `UPDATE memories SET text = $2, source_refs = $3, confidence = $4, last_used_at = now()
-         WHERE id = $1 RETURNING ${MEMORY_COLUMNS}`,
+        `UPDATE memories
+            SET text = $2, source_refs = $3, confidence = $4, last_used_at = now(),
+                embedding = COALESCE($5::vector, embedding),
+                embedding_model = COALESCE($6, embedding_model),
+                embedding_dims = COALESCE($7, embedding_dims)
+          WHERE id = $1 RETURNING ${MEMORY_COLUMNS}`,
         [
           duplicate.id,
           mergedText.slice(0, 300),
           [...new Set([...(duplicate.source_refs as string[]), ...args.sourceRefs])],
           Math.max(Number(duplicate.confidence), args.confidence ?? 1),
+          args.embedding ? `[${args.embedding.join(',')}]` : null,
+          args.embeddingModel ?? null,
+          args.embedding?.length ?? null,
         ],
       );
       return rowToMemory(rows[0] as Record<string, unknown>);
@@ -88,8 +98,9 @@ export class MemoryStore {
     const id = ulid();
     const rows = await this.database.query<Record<string, unknown>>(
       `INSERT INTO memories
-         (id, scope, scope_id, kind, text, source_refs, confidence, status, derived_from_untrusted)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${MEMORY_COLUMNS}`,
+         (id, scope, scope_id, kind, text, source_refs, confidence, status,
+          derived_from_untrusted, embedding, embedding_model, embedding_dims)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12) RETURNING ${MEMORY_COLUMNS}`,
       [
         id,
         args.scope,
@@ -100,6 +111,9 @@ export class MemoryStore {
         args.confidence ?? 1,
         status,
         args.derivedFromUntrusted ?? false,
+        args.embedding ? `[${args.embedding.join(',')}]` : null,
+        args.embeddingModel ?? null,
+        args.embedding?.length ?? null,
       ],
     );
     return rowToMemory(rows[0] as Record<string, unknown>);
